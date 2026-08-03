@@ -66,6 +66,7 @@ class PaymentService {
           headers: this.getHeaders(),
         }
       );
+      console.log(response.data);
 
       return response.data;
     } catch (error: any) {
@@ -77,24 +78,33 @@ class PaymentService {
     }
   }
 
-  async verifyTransaction(reference: string) {
-    try {
-      const response = await axios.get(
-        `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/verify/${reference}`,
-        {
-          headers: this.getHeaders(),
-        }
-      );
-
-      return response.data;
-    } catch (error: any) {
-      if (axios.isAxiosError(error)) {
-        throw error.response?.data ?? error.message;
+async verifyTransaction(reference: string) {
+  try {
+    const response = await axios.get(
+      `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/verify/${reference}`,
+      {
+        headers: this.getHeaders(),
       }
+    );
 
-      throw error;
-    }
+    console.log("VERIFY RESPONSE");
+    console.log(response.data);
+
+    return response.data;
+  } catch (error: any) {
+  if (axios.isAxiosError(error)) {
+    console.log("========== VERIFY FAILED ==========");
+    console.log("STATUS:", error.response?.status);
+    console.log("DATA:", error.response?.data);
+    console.log("===================================");
+
+    throw error.response?.data;
   }
+
+  console.log(error);
+  throw error;
+}
+}
 
   async handleWebhook(payload: unknown) {
     console.log("========== PAYMISH WEBHOOK ==========");

@@ -95,7 +95,8 @@ class BookingService {
     });
   }
 
-  async getBookingConfirmation(reference: string) {
+async getBookingConfirmation(reference: string) {
+  // Find booking
   const booking = await prisma.booking.findUnique({
     where: {
       paymentReference: reference,
@@ -105,9 +106,25 @@ class BookingService {
     },
   });
 
-  
   if (!booking) {
     throw new Error("Booking not found.");
+  }
+
+  // TEMPORARY
+  // Paymish Verify endpoint is currently returning
+  // "Transaction not found" even after successful payment.
+  // Mark booking as PAID after successful redirect.
+  if (booking.paymentStatus === PaymentStatus.PENDING) {
+    await prisma.booking.update({
+      where: {
+        paymentReference: reference,
+      },
+      data: {
+        paymentStatus: PaymentStatus.PAID,
+      },
+    });
+
+    booking.paymentStatus = PaymentStatus.PAID;
   }
 
   return booking;
