@@ -13,8 +13,11 @@ app.use(express.json());
 // Middleware
 app.use(
   cors({
-    origin: "http://localhost:3000",
-
+    origin: [
+      "http://localhost:3000",
+      "https://sculpt-labs.vercel.app",
+    ],
+    credentials: true,
   })
 );
 
