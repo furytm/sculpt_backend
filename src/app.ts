@@ -11,14 +11,21 @@ const app = express();
 
 app.use(express.json());
 // Middleware
+// app.use(
+//   cors({
+//     origin: [
+//       "http://localhost:3000",
+//       "https://sculpt-labs.vercel.app",
+//      " https://sculpt-lab-booking-flow-1.v0.build",
+//      "http://localhost:3001"
+//     ],
+//     credentials: true,
+//   })
+// );
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:3000",
-      "https://sculpt-labs.vercel.app",
-     " https://sculpt-lab-booking-flow-1.v0.build",
-     "http://localhost:3001"
-    ],
+    origin: true,
     credentials: true,
   })
 );
