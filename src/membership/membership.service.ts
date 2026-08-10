@@ -1,13 +1,15 @@
 import prisma from "../config/prisma.js";
+import { MembershipType } from "@prisma/client";
 
 class MembershipService {
   /**
    * Get all active memberships
    */
-  async getAllMemberships() {
+  async getAllMemberships(type?: MembershipType) {
     return await prisma.membership.findMany({
       where: {
         isActive: true,
+        ...(type && { type }),
       },
       orderBy: {
         displayOrder: "asc",
@@ -18,6 +20,8 @@ class MembershipService {
   /**
    * Get a membership by ID
    */
+ 
+
   async getMembershipById(id: string) {
     return await prisma.membership.findUnique({
       where: {
@@ -25,7 +29,6 @@ class MembershipService {
       },
     });
   }
-
   /**
    * Create a new membership
    */
@@ -35,6 +38,8 @@ class MembershipService {
     description?: string;
     price: number;
     period: string;
+      type: MembershipType;
+
     classLimit: number | null;
     duration: string;
     features: string[];
@@ -49,7 +54,7 @@ class MembershipService {
         name: data.name,
         slug: data.slug,
         description: data.description,
-
+  type: data.type,
         price: data.price,
         period: data.period,
 
@@ -80,6 +85,7 @@ class MembershipService {
       description?: string;
       price?: number;
       period?: string;
+          type?: MembershipType;
       classLimit?: number | null;
       duration?: string;
       features?: string[];
@@ -103,6 +109,7 @@ class MembershipService {
       data,
     });
   }
+  
 
   /**
    * Soft delete membership

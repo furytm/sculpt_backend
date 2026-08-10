@@ -1,13 +1,16 @@
 import { Request, Response } from "express";
 import membershipService from "./membership.service.js";
+import { MembershipType } from "@prisma/client";
 
 class MembershipController {
   /**
    * GET /api/memberships
    */
-  async getMemberships(req: Request, res: Response) {
+   async getMemberships(req: Request, res: Response) {
     try {
-      const memberships = await membershipService.getAllMemberships();
+      const type = req.query.type as MembershipType | undefined;
+
+      const memberships = await membershipService.getAllMemberships(type);
 
       return res.status(200).json({
         success: true,
@@ -23,6 +26,7 @@ class MembershipController {
       });
     }
   }
+
 
   /**
    * GET /api/memberships/:id

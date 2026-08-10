@@ -30,11 +30,19 @@ model Booking {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 }
+enum MembershipType {
+  GROUP
+  PRIVATE
+  
+}
+
 model Membership {
   id            String   @id @default(cuid())
   name          String
   slug          String   @unique
   description   String?
+
+type MembershipType
 
   price         Int
   period        String

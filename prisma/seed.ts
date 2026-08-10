@@ -17,6 +17,7 @@ async function main() {
         duration: "1 Week",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: "New Members",
         displayOrder: 1,
         features: [
@@ -37,6 +38,7 @@ async function main() {
         duration: "Monthly",
         autoRenew: true,
         highlighted: true,
+        type: "GROUP",
         badge: "Limited to 30",
         displayOrder: 2,
         features: [
@@ -59,6 +61,7 @@ async function main() {
         duration: "Single",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 3,
         features: [
@@ -79,6 +82,7 @@ async function main() {
         duration: "Monthly",
         autoRenew: true,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 4,
         features: [
@@ -94,12 +98,13 @@ async function main() {
         slug: "monthly-10",
         name: "10 Classes/Month",
         description: "Best for regular practitioners",
-        price: 177000,
+        price: 165000,
         period: "/month",
         classLimit: 10,
         duration: "Monthly",
         autoRenew: true,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 5,
         features: [
@@ -123,6 +128,7 @@ async function main() {
         duration: "Monthly",
         autoRenew: true,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 6,
         features: [
@@ -146,6 +152,7 @@ async function main() {
         duration: "Quarterly",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 7,
         features: [
@@ -166,6 +173,7 @@ async function main() {
         duration: "Quarterly",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 8,
         features: [
@@ -187,6 +195,7 @@ async function main() {
         duration: "Quarterly",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 9,
         features: [
@@ -209,6 +218,7 @@ async function main() {
         duration: "Quarterly",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: null,
         displayOrder: 10,
         features: [
@@ -231,6 +241,7 @@ async function main() {
         duration: "Annual",
         autoRenew: false,
         highlighted: false,
+        type: "GROUP",
         badge: "Best Value",
         displayOrder: 11,
         features: [
@@ -242,7 +253,68 @@ async function main() {
           "Exclusive member events",
           "Save over ₦500,000 vs monthly"
         ]
-      }
+      },
+
+      {
+  slug: "private-single",
+  type: "PRIVATE",
+  name: "Single Private Session",
+  description: "One private reformer pilates session with a dedicated instructor.",
+  price: 75000,
+  period: "per session",
+  classLimit: 1,
+  duration: "Single",
+  autoRenew: false,
+  highlighted: false,
+  badge: null,
+  displayOrder: 12,
+  features: [
+    "1 private session",
+    "Dedicated instructor",
+    "Personalised workout",
+    "Flexible scheduling"
+  ]
+},
+{
+  slug: "private-5",
+  type: "PRIVATE",
+  name: "5 Private Sessions",
+  description: "Ideal for clients wanting consistent one-on-one coaching.",
+  price: 350000,
+  period: "package",
+  classLimit: 5,
+  duration: "Package",
+  autoRenew: false,
+  highlighted: false,
+  badge: null,
+  displayOrder: 13,
+  features: [
+    "5 private sessions",
+    "Dedicated instructor",
+    "Personalised workout plan",
+    "Flexible scheduling"
+  ]
+},
+{
+  slug: "private-10",
+  type: "PRIVATE",
+  name: "10 Private Sessions",
+  description: "Best value for regular private training.",
+  price: 650000,
+  period: "package",
+  classLimit: 10,
+  duration: "Package",
+  autoRenew: false,
+  highlighted: true,
+  badge: "Best Value",
+  displayOrder: 14,
+  features: [
+    "10 private sessions",
+    "Dedicated instructor",
+    "Personalised workout plan",
+    "Priority scheduling"
+  ]
+}
     ]
   });
 
