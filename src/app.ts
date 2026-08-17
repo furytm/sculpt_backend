@@ -1,28 +1,28 @@
 import dotenv from "dotenv";
-import membershipRoutes from "./membership/membership.route.js";
 import express from "express";
-import paymentRoutes from "./payment/payment.routes.js";import bookingRoutes from "./booking/booking.routes.js";
 import cors from "cors";
 
+import membershipRoutes from "./membership/membership.route.js";
+import paymentRoutes from "./payment/payment.routes.js";
+import bookingRoutes from "./booking/booking.routes.js";
+import authRoutes from "./auth/auth.routes.js";
+
+import swaggerUi from "swagger-ui-express";
+import swaggerSpec from "./config/swagger.js";
 
 dotenv.config();
 
 const app = express();
 
 app.use(express.json());
-// Middleware
-// app.use(
-//   cors({
-//     origin: [
-//       "http://localhost:3000",
-//       "https://sculpt-labs.vercel.app",
-//      " https://sculpt-lab-booking-flow-1.v0.build",
-//      "http://localhost:3001"
-//     ],
-//     credentials: true,
-//   })
-// );
 
+// Swagger MUST have /api-docs here
+app.use(
+  "/api-docs",
+  swaggerUi.serve,
+  swaggerUi.setup(swaggerSpec)
+);
+// CORS
 app.use(
   cors({
     origin: true,
@@ -30,9 +30,10 @@ app.use(
   })
 );
 
+// Routes
+app.use("/api/auth", authRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/memberships", membershipRoutes);
-
 
 export default app;

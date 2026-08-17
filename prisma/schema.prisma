@@ -20,6 +20,10 @@ model Booking {
   membershipId     String
   membership       Membership    @relation(fields: [membershipId], references: [id])
 
+  // NEW
+  userId           String?
+  user             User?         @relation(fields: [userId], references: [id])
+
   bookingDate      DateTime
 
   amount           Int
@@ -30,6 +34,49 @@ model Booking {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 }
+
+model User {
+  id                String          @id @default(cuid())
+
+  fullName          String
+
+  email             String          @unique
+  password          String?
+
+  phone             String?
+
+  provider          AuthProvider    @default(LOCAL)
+
+  role              UserRole        @default(MEMBER)
+
+  isEmailVerified   Boolean         @default(false)
+
+  avatar            String?
+
+  bookings          Booking[]
+
+  refreshTokens     RefreshToken[]
+
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+
+
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+model RefreshToken {
+  id          String    @id @default(cuid())
+
+  token       String    @unique
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt   DateTime
+
+  createdAt   DateTime  @default(now())
+}
+
 enum MembershipType {
   GROUP
   PRIVATE
@@ -64,8 +111,42 @@ type MembershipType
   updatedAt      DateTime @updatedAt
 }
 
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
 enum PaymentStatus {
   PENDING
   PAID
   FAILED
+}
+
+enum UserRole {
+  MEMBER
+  ADMIN
+}
+enum AuthProvider {
+  LOCAL
+  GOOGLE
 }

@@ -1,16 +1,24 @@
 import dotenv from "dotenv";
-import membershipRoutes from "./membership/membership.route.js";
 import express from "express";
+import cors from "cors";
+import membershipRoutes from "./membership/membership.route.js";
 import paymentRoutes from "./payment/payment.routes.js";
 import bookingRoutes from "./booking/booking.routes.js";
-import cors from "cors";
+import authRoutes from "./auth/auth.routes.js";
+import swaggerUi from "swagger-ui-express";
+import swaggerSpec from "./config/swagger.js";
 dotenv.config();
 const app = express();
 app.use(express.json());
-// Middleware
+// Swagger MUST have /api-docs here
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// CORS
 app.use(cors({
-    origin: "http://localhost:3000",
+    origin: true,
+    credentials: true,
 }));
+// Routes
+app.use("/api/auth", authRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/memberships", membershipRoutes);

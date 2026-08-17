@@ -3,10 +3,11 @@ class MembershipService {
     /**
      * Get all active memberships
      */
-    async getAllMemberships() {
+    async getAllMemberships(type) {
         return await prisma.membership.findMany({
             where: {
                 isActive: true,
+                ...(type && { type }),
             },
             orderBy: {
                 displayOrder: "asc",
@@ -32,6 +33,7 @@ class MembershipService {
                 name: data.name,
                 slug: data.slug,
                 description: data.description,
+                type: data.type,
                 price: data.price,
                 period: data.period,
                 classLimit: data.classLimit,

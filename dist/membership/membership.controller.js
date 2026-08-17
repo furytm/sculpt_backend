@@ -5,7 +5,8 @@ class MembershipController {
      */
     async getMemberships(req, res) {
         try {
-            const memberships = await membershipService.getAllMemberships();
+            const type = req.query.type;
+            const memberships = await membershipService.getAllMemberships(type);
             return res.status(200).json({
                 success: true,
                 message: "Memberships retrieved successfully.",
