@@ -829,7 +829,7 @@ async resetPassword(
 ) {
   if (!token) {
     throw new Error(
-      "Reset token is required."getComputedStyle
+      "Reset token is required."
     );
   }
 
