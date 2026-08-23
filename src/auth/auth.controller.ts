@@ -212,105 +212,88 @@ class AuthController {
   /**
    * GET /api/auth/verify-email?token=...
    */
-  async verifyEmail(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const token =
-        req.query.token as string;
+async verifyEmail(
+  req: Request,
+  res: Response
+) {
+  try {
+    const token = req.query.token as string;
 
-      const result =
-        await authService.verifyEmail(
-          token
-        );
+    const result = await authService.verifyEmail(token);
 
-      return res.status(200).json({
-        success: true,
-        ...result,
-      });
-    } catch (error: any) {
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(400).json({
+      success: false,
+      message:
+        error.message ||
+        "Email verification failed.",
+    });
+  }
+}
+
+/**
+ * POST /api/auth/forgot-password
+ */
+async forgotPassword(
+  req: Request,
+  res: Response
+) {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
       return res.status(400).json({
         success: false,
-        message:
-          error.message ||
-          "Email verification failed.",
+        message: "Email is required.",
       });
     }
+
+    const result =
+      await authService.forgotPassword(email);
+
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to process password reset request.",
+    });
   }
+}
 
-  /**
-   * POST /api/auth/forgot-password
-   */
-  async forgotPassword(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const { email } =
-        req.body;
+/**
+ * POST /api/auth/reset-password
+ */
+async resetPassword(
+  req: Request,
+  res: Response
+) {
+  try {
+    const {
+      token,
+      password,
+      confirmPassword,
+    } = req.body;
 
-      if (!email) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Email is required.",
-        });
-      }
-
-      const result =
-        await authService.forgotPassword(
-          email
-        );
-
-      return res.status(200).json({
-        success: true,
-        ...result,
-      });
-    } catch (error: any) {
-      return res.status(500).json({
-        success: false,
-        message:
-          error.message ||
-          "Unable to process password reset request.",
-      });
-    }
-  }
-
-  /**
-   * POST /api/auth/reset-password
-   */
-  async resetPassword(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const {
+    const result =
+      await authService.resetPassword(
         token,
         password,
-        confirmPassword,
-      } = req.body;
+        confirmPassword
+      );
 
-      const result =
-        await authService.resetPassword(
-          token,
-          password,
-          confirmPassword
-        );
-
-      return res.status(200).json({
-        success: true,
-        ...result,
-      });
-    } catch (error: any) {
-      return res.status(400).json({
-        success: false,
-        message:
-          error.message ||
-          "Unable to reset password.",
-      });
-    }
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(400).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to reset password.",
+    });
   }
+}
 
 }
 
