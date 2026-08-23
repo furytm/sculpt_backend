@@ -1,0 +1,4 @@
+-- AlterTable
+ALTER TABLE "Booking" ALTER COLUMN "classId" DROP NOT NULL,
+ALTER COLUMN "scheduleId" DROP NOT NULL,
+ALTER COLUMN "bookingDate" DROP NOT NULL;
