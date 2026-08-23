@@ -8,6 +8,7 @@ router.post("/initialize", paymentController.initializePayment);
 
 // Verify a transaction
 router.get("/verify/:reference", paymentController.verifyPayment);
+router.get("/callback", paymentController.callback);
 
 // Receive Paymish webhook events
 router.post("/webhook", paymentController.webhook);

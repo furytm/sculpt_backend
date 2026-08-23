@@ -41,6 +41,38 @@ async verifyPayment(
       res.status(500).json(error);
     }
   }
+
+  async callback(req: Request, res: Response) {
+  try {
+    const { reference } = req.query;
+
+    if (!reference || typeof reference !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
+
+    const payment =
+      await paymentService.verifyTransaction(reference);
+
+    // TODO: mark booking as PAID after successful verification
+
+    return res.redirect(
+      `https://sculpt-labs.vercel.app/confirmation?reference=${encodeURIComponent(
+        reference
+      )}`
+    );
+  } catch (error) {
+    console.error("Payment Callback Error:", error);
+
+    return res.redirect(
+      "https://sculpt-labs.vercel.app/confirmation?payment=failed"
+    );
+  }
 }
+}
+
+
 
 export default new PaymentController();
