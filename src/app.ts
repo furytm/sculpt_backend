@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
-
+import cookieParser from "cookie-parser";
 import membershipRoutes from "./membership/membership.route.js";
 import paymentRoutes from "./payment/payment.routes.js";
 import bookingRoutes from "./booking/booking.routes.js";
@@ -22,6 +22,7 @@ app.use(
   swaggerUi.serve,
   swaggerUi.setup(swaggerSpec)
 );
+app.use(cookieParser());
 // CORS
 app.use(
   cors({
@@ -29,6 +30,7 @@ app.use(
     credentials: true,
   })
 );
+
 
 // Routes
 app.use("/api/auth", authRoutes);

@@ -84,22 +84,12 @@ router.post("/login", authController.login);
  *     tags:
  *       - Authentication
  *     summary: Refresh access token
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - refreshToken
- *             properties:
- *               refreshToken:
- *                 type: string
+ *     description: Refreshes the access token using the refresh token stored in an HttpOnly cookie.
  *     responses:
  *       200:
- *         description: Token refreshed successfully
+ *         description: Token refreshed successfully. New authentication cookies are set.
  *       401:
- *         description: Invalid refresh token
+ *         description: Invalid or expired refresh token.
  */
 router.post("/refresh", authController.refreshToken);
 
@@ -110,28 +100,13 @@ router.post("/refresh", authController.refreshToken);
  *     tags:
  *       - Authentication
  *     summary: Logout
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - refreshToken
- *             properties:
- *               refreshToken:
- *                 type: string
+ *     description: Logs out the current user and clears the authentication cookies.
  *     responses:
  *       200:
- *         description: Logged out successfully
- *       401:
- *         description: Unauthorized
+ *         description: Logged out successfully.
  */
 router.post(
   "/logout",
-  authenticate,
   authController.logout
 );
 
