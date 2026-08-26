@@ -1,22 +1,16 @@
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 465),
-  secure: process.env.SMTP_SECURE === "true",
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASSWORD,
-  },
-});
+const resend = new Resend(
+  process.env.RESEND_API_KEY
+);
 
 export async function sendVerificationEmail(
   email: string,
   fullName: string,
   verificationUrl: string
 ) {
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
+  const { error } = await resend.emails.send({
+    from: "Sculpt Lab <onboarding@resend.dev>",
     to: email,
     subject: "Verify your Sculpt Lab account",
     html: `
@@ -57,6 +51,11 @@ export async function sendVerificationEmail(
       </div>
     `,
   });
+
+  if (error) {
+    console.error("Verification email error:", error);
+    throw new Error("Unable to send verification email.");
+  }
 }
 
 export async function sendPasswordResetEmail(
@@ -64,8 +63,8 @@ export async function sendPasswordResetEmail(
   fullName: string,
   resetUrl: string
 ) {
-  await transporter.sendMail({
-    from: process.env.SMTP_FROM,
+  const { error } = await resend.emails.send({
+    from: "Sculpt Lab <onboarding@resend.dev>",
     to: email,
     subject: "Reset your Sculpt Lab password",
     html: `
@@ -104,4 +103,9 @@ export async function sendPasswordResetEmail(
       </div>
     `,
   });
+
+  if (error) {
+    console.error("Password reset email error:", error);
+    throw new Error("Unable to send password reset email.");
+  }
 }
