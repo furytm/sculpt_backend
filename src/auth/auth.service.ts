@@ -645,12 +645,13 @@ async sendVerificationEmailForUser(
 
   const verificationUrl =
     `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
-
+console.log("📧 About to send verification email:", user.email);
   await sendVerificationEmail(
     user.email,
     user.fullName,
     verificationUrl
   );
+  console.log("✅ Verification email sent successfully");
 
   return {
     success: true,
