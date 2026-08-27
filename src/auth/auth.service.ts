@@ -119,11 +119,20 @@ async register(data: RegisterDto) {
   const verificationUrl =
     `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
+try {
   await sendVerificationEmail(
     user.email,
     user.fullName,
     verificationUrl
   );
+} catch (emailError) {
+  console.error(
+    "Verification email could not be sent:",
+    emailError
+  );
+
+  // Do not fail registration if email delivery fails.
+};
 
   // ==========================================
   // GENERATE JWT TOKENS
