@@ -84,17 +84,49 @@ async register(data: RegisterDto) {
       },
     });
 
-  // Link previous guest bookings using the same email
-  await prisma.booking.updateMany({
-    where: {
-      email: normalizedEmail,
-      userId: null,
-    },
+// Link previous guest bookings using the same email
+await prisma.booking.updateMany({
+  where: {
+    email: normalizedEmail,
+    userId: null,
+  },
+  data: {
+    userId: user.id,
+  },
+});
+
+// ==========================================
+// CREATE ACTIVE MEMBERSHIP FROM PAID BOOKING
+// ==========================================
+
+const paidBooking = await prisma.booking.findFirst({
+  where: {
+    email: normalizedEmail,
+    userId: user.id,
+    paymentStatus: PaymentStatus.PAID,
+  },
+  include: {
+    membership: true,
+  },
+  orderBy: {
+    createdAt: "desc",
+  },
+});
+
+if (paidBooking) {
+  await prisma.memberMembership.create({
     data: {
       userId: user.id,
+      membershipId: paidBooking.membershipId,
+      bookingId: paidBooking.id,
+      status: "ACTIVE",
+      startDate: null,
+      expiryDate: null,
     },
   });
+}
 
+  
   // ==========================================
   // CREATE EMAIL VERIFICATION TOKEN
   // ==========================================

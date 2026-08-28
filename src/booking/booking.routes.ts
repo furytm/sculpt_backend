@@ -1,14 +1,34 @@
 import { Router } from "express";
 import bookingController from "./booking.controller.js";
+import authenticate from "../middleware/authenticate.js";
 
 const router = Router();
 
-router.post("/", bookingController.createBooking);
-router.get(
-    "/confirmation/:reference",
-    bookingController.getBookingConfirmation
+router.post(
+  "/",
+  bookingController.createBooking
 );
 
-router.get("/:bookingId", bookingController.getBooking);
+router.get(
+  "/confirmation/:reference",
+  bookingController.getBookingConfirmation
+);
+
+/**
+ * Authenticated member bookings
+ *
+ * IMPORTANT:
+ * This must come before /:bookingId
+ */
+router.get(
+  "/my",
+  authenticate,
+  bookingController.getMyBookings
+);
+
+router.get(
+  "/:bookingId",
+  bookingController.getBooking
+);
 
 export default router;

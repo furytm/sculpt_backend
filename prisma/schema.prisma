@@ -6,114 +6,117 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
 model Booking {
-  id               String        @id @default(cuid())
+  id String @id @default(cuid())
 
-  fullName         String
-  email            String
-  phone            String
+  fullName String
+  email    String
+  phone    String
 
-  classId          String?
-  scheduleId       String?
+  classId    String?
+  scheduleId String?
 
-  membershipId     String
-  membership       Membership    @relation(fields: [membershipId], references: [id])
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
 
-  userId           String?
-  user             User?         @relation(fields: [userId], references: [id])
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
 
-  bookingDate      DateTime?
+  bookingDate DateTime?
 
-  amount           Int
+  amount Int
 
-  paymentReference String        @unique
-  paymentStatus    PaymentStatus @default(PENDING)
+  paymentReference String            @unique
+  paymentStatus    PaymentStatus     @default(PENDING)
+  memberMembership MemberMembership?
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model User {
-  id                String          @id @default(cuid())
+  id String @id @default(cuid())
 
-  fullName          String
+  fullName String
 
-  email             String          @unique
-  password          String?
+  email    String  @unique
+  password String?
 
-  phone             String?
+  phone String?
 
-  provider          AuthProvider    @default(LOCAL)
+  provider AuthProvider @default(LOCAL)
 
-  role              UserRole        @default(MEMBER)
+  role UserRole @default(MEMBER)
 
-  isEmailVerified   Boolean         @default(false)
+  isEmailVerified Boolean @default(false)
 
-  avatar            String?
+  avatar String?
 
-  bookings          Booking[]
+  bookings Booking[]
 
-  refreshTokens     RefreshToken[]
+  refreshTokens RefreshToken[]
 
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  memberships             MemberMembership[]
 
-
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
+
 model RefreshToken {
-  id          String    @id @default(cuid())
+  id String @id @default(cuid())
 
-  token       String    @unique
+  token String @unique
 
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  expiresAt   DateTime
+  expiresAt DateTime
 
-  createdAt   DateTime  @default(now())
+  createdAt DateTime @default(now())
 }
 
 enum MembershipType {
   GROUP
   PRIVATE
-  
 }
 
 model Membership {
-  id            String   @id @default(cuid())
-  name          String
-  slug          String   @unique
-  description   String?
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
 
-type MembershipType
+  type MembershipType
 
-  price         Int
-  period        String
-  classLimit    Int?
-  duration      String
+  price      Int
+  period     String
+  classLimit Int?
+  duration   String
 
-  features      Json
+  features Json
 
-  highlighted   Boolean  @default(false)
-  badge         String?
+  highlighted Boolean @default(false)
+  badge       String?
 
-  displayOrder  Int      @default(0)
-  autoRenew     Boolean  @default(false)
-  isActive      Boolean  @default(true)
+  displayOrder Int     @default(0)
+  autoRenew    Boolean @default(false)
+  isActive     Boolean @default(true)
 
-  bookings       Booking[]
+  bookings          Booking[]
+  memberMemberships MemberMembership[]
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model EmailVerificationToken {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
+  id        String @id @default(cuid())
+  tokenHash String @unique
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   expiresAt DateTime
   createdAt DateTime @default(now())
@@ -123,10 +126,10 @@ model EmailVerificationToken {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
-  tokenHash String   @unique
+  id        String @id @default(cuid())
+  tokenHash String @unique
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   expiresAt DateTime
   createdAt DateTime @default(now())
@@ -134,6 +137,38 @@ model PasswordResetToken {
   @@index([userId])
   @@index([expiresAt])
 }
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model MemberMembership {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
+
+  bookingId String?  @unique
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+
+  status MembershipStatus @default(ACTIVE)
+
+  startDate  DateTime?
+  expiryDate DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiryDate])
+}
+
 enum PaymentStatus {
   PENDING
   PAID
@@ -144,6 +179,7 @@ enum UserRole {
   MEMBER
   ADMIN
 }
+
 enum AuthProvider {
   LOCAL
   GOOGLE

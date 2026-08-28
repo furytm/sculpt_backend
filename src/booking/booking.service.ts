@@ -7,59 +7,63 @@ import {
 } from "./booking.types.js";
 
 class BookingService {
-async createBooking(
-  data: CreateBookingDto
-): Promise<BookingResponse> {
-  const paymentReference = `SL-${Date.now()}`;
+  async createBooking(
+    data: CreateBookingDto
+  ): Promise<BookingResponse> {
+    const paymentReference = `SL-${Date.now()}`;
 
-  // Check that the selected membership exists
-  const membership = await prisma.membership.findUnique({
-    where: {
-      id: data.membershipId,
-    },
-  });
+    const membership =
+      await prisma.membership.findUnique({
+        where: {
+          id: data.membershipId,
+        },
+      });
 
-  if (!membership) {
-    throw new Error("Membership not found.");
+    if (!membership) {
+      throw new Error("Membership not found.");
+    }
+
+    const booking =
+      await prisma.booking.create({
+        data: {
+          fullName: data.fullName,
+          email: data.email,
+          phone: data.phone,
+
+          classId: data.classId,
+          scheduleId:
+            data.scheduleId ?? null,
+          bookingDate:
+            data.bookingDate ?? null,
+
+          membership: {
+            connect: {
+              id: membership.id,
+            },
+          },
+
+          amount: membership.price,
+
+          paymentReference,
+          paymentStatus:
+            PaymentStatus.PENDING,
+        },
+      });
+
+    const payment =
+      await paymentService.initializeTransaction({
+        email: booking.email,
+        amount: booking.amount,
+        reference: paymentReference,
+      });
+
+    return {
+      booking,
+      authorizationUrl:
+        payment.data.authorization_url,
+    };
   }
 
-  // Create the booking/payment record.
-  // Class, schedule and booking date will be selected AFTER payment.
-  const booking = await prisma.booking.create({
-    data: {
-      fullName: data.fullName,
-      email: data.email,
-      phone: data.phone,
-
-      classId: null,
-      scheduleId: null,
-      bookingDate: null,
-
-      membership: {
-        connect: {
-          id: membership.id,
-        },
-      },
-
-      amount: membership.price,
-
-      paymentReference,
-      paymentStatus: PaymentStatus.PENDING,
-    },
-  });
-
-  // Initialize payment with Paymish
-  const payment = await paymentService.initializeTransaction({
-    email: booking.email,
-    amount: booking.amount,
-    reference: paymentReference,
-  });
-
-  return {
-    booking,
-    authorizationUrl: payment.data.authorization_url,
-  };
-}
   async getBookingById(id: string) {
     return await prisma.booking.findUnique({
       where: {
@@ -67,6 +71,7 @@ async createBooking(
       },
       include: {
         membership: true,
+        user: true,
       },
     });
   }
@@ -77,7 +82,8 @@ async createBooking(
         paymentReference: reference,
       },
       data: {
-        paymentStatus: PaymentStatus.PAID,
+        paymentStatus:
+          PaymentStatus.PAID,
       },
     });
   }
@@ -86,6 +92,7 @@ async createBooking(
     return await prisma.booking.findMany({
       include: {
         membership: true,
+        user: true,
       },
       orderBy: {
         createdAt: "desc",
@@ -93,40 +100,64 @@ async createBooking(
     });
   }
 
-async getBookingConfirmation(reference: string) {
-  // Find booking
-  const booking = await prisma.booking.findUnique({
-    where: {
-      paymentReference: reference,
-    },
-    include: {
-      membership: true,
-    },
-  });
+  async getBookingConfirmation(
+    reference: string
+  ) {
+    const booking =
+      await prisma.booking.findUnique({
+        where: {
+          paymentReference: reference,
+        },
+        include: {
+          membership: true,
+          user: true,
+        },
+      });
 
-  if (!booking) {
-    throw new Error("Booking not found.");
+    if (!booking) {
+      throw new Error(
+        "Booking not found."
+      );
+    }
+
+    if (
+      booking.paymentStatus ===
+      PaymentStatus.PENDING
+    ) {
+      await prisma.booking.update({
+        where: {
+          paymentReference: reference,
+        },
+        data: {
+          paymentStatus:
+            PaymentStatus.PAID,
+        },
+      });
+
+      booking.paymentStatus =
+        PaymentStatus.PAID;
+    }
+
+    return booking;
   }
 
-  // TEMPORARY
-  // Paymish Verify endpoint is currently returning
-  // "Transaction not found" even after successful payment.
-  // Mark booking as PAID after successful redirect.
-  if (booking.paymentStatus === PaymentStatus.PENDING) {
-    await prisma.booking.update({
+  /**
+   * Get all bookings belonging
+   * to the currently authenticated user.
+   */
+  async getMyBookings(userId: string) {
+    return await prisma.booking.findMany({
       where: {
-        paymentReference: reference,
+        userId,
       },
-      data: {
-        paymentStatus: PaymentStatus.PAID,
+      include: {
+        membership: true,
+      },
+      orderBy: {
+        createdAt: "desc",
       },
     });
-
-    booking.paymentStatus = PaymentStatus.PAID;
   }
-
-  return booking;
-}
 }
 
 export default new BookingService();

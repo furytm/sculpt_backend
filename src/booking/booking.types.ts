@@ -12,10 +12,9 @@ export interface CreateBookingDto {
   email: string;
   phone: string;
   membershipId: string;
-  // classId: string;
-  // scheduleId: string;
-
-  // bookingDate: Date;
+  classId?: string;
+  scheduleId?: string;
+  bookingDate?: Date;
 }
 
 export interface BookingResponse {

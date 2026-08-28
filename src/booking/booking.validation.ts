@@ -3,13 +3,25 @@ import Joi from "joi";
 export const createBookingSchema = Joi.object({
   fullName: Joi.string().trim().required(),
 
-  email: Joi.string().email().required(),
+  email: Joi.string()
+    .email()
+    .required(),
 
-  phone: Joi.string().required(),
+  phone: Joi.string()
+    .trim()
+    .required(),
 
-  classId: Joi.string().required(),
+  membershipId: Joi.string()
+    .required(),
 
-  scheduleId: Joi.string().required(),
+  classId: Joi.string()
+    .required(),
 
-  bookingDate: Joi.date().required(),
+  scheduleId: Joi.string()
+    .allow(null, "")
+    .optional(),
+
+  bookingDate: Joi.date()
+    .allow(null)
+    .optional(),
 });
