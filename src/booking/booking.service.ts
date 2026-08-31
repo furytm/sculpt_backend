@@ -3,8 +3,9 @@ import paymentService from "../payment/payment.service.js";
 import {
   BookingResponse,
   CreateBookingDto,
-  PaymentStatus,
+  PaymentStatus,UpdateBookingPreferencesDto,
 } from "./booking.types.js";
+
 
 class BookingService {
   async createBooking(
@@ -158,6 +159,66 @@ class BookingService {
       },
     });
   }
+
+  async updateBookingPreferences(
+  bookingId: string,
+  userId: string,
+  data: UpdateBookingPreferencesDto
+) {
+  const booking =
+    await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
+
+  if (
+    booking.paymentStatus !== PaymentStatus.PAID
+  ) {
+    throw new Error(
+      "Your membership payment has not been completed."
+    );
+  }
+
+  const preferredStartDate =
+    new Date(data.preferredStartDate);
+
+  if (
+    Number.isNaN(
+      preferredStartDate.getTime()
+    )
+  ) {
+    throw new Error(
+      "Invalid preferred start date."
+    );
+  }
+
+  const updatedBooking =
+    await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+      data: {
+        preferredStartDate,
+        availableDays:
+          data.availableDays,
+        preferredTimes:
+          data.preferredTimes,
+      },
+      include: {
+        membership: true,
+      },
+    });
+
+  return updatedBooking;
+}
 }
 
 export default new BookingService();

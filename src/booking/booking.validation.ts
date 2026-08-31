@@ -25,3 +25,38 @@ export const createBookingSchema = Joi.object({
     .allow(null)
     .optional(),
 });
+
+
+
+export const updateBookingPreferencesSchema =
+  Joi.object({
+    preferredStartDate: Joi.string()
+      .isoDate()
+      .required(),
+
+    availableDays: Joi.array()
+      .items(
+        Joi.string().valid(
+          "MONDAY",
+          "TUESDAY",
+          "WEDNESDAY",
+          "THURSDAY",
+          "FRIDAY",
+          "SATURDAY",
+          "SUNDAY"
+        )
+      )
+      .min(1)
+      .required(),
+
+    preferredTimes: Joi.array()
+      .items(
+        Joi.string().valid(
+          "MORNING",
+          "AFTERNOON",
+          "EVENING"
+        )
+      )
+      .min(1)
+      .required(),
+  });

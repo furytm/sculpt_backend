@@ -1,5 +1,12 @@
 import { Request, Response } from "express";
 import bookingService from "./booking.service.js";
+import {
+  UpdateBookingPreferencesDto,
+} from "./booking.types.js";
+
+import {
+  updateBookingPreferencesSchema,
+} from "./booking.validation.js";
 
 interface ConfirmationParams {
   reference: string;
@@ -123,6 +130,71 @@ async getMyBookings(
       message:
         error?.message ||
         "Failed to retrieve your bookings.",
+    });
+  }
+}
+
+async updateBookingPreferences(
+  req: Request<
+    { bookingId: string },
+    {},
+    UpdateBookingPreferencesDto
+  >,
+  res: Response
+) {
+  try {
+    const userId =
+      (req as any).user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
+
+    const {
+      error,
+      value,
+    } =
+      updateBookingPreferencesSchema.validate(
+        req.body
+      );
+
+    if (error) {
+      return res.status(400).json({
+        success: false,
+        message:
+          error.details[0].message,
+      });
+    }
+
+    const booking =
+      await bookingService.updateBookingPreferences(
+        req.params.bookingId,
+        userId,
+        value
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Booking preferences saved successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Update Booking Preferences Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to save booking preferences.",
     });
   }
 }

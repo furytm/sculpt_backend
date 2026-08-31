@@ -9,6 +9,12 @@ router.post(
   bookingController.createBooking
 );
 
+router.patch(
+  "/:bookingId/preferences",
+  authenticate,
+  bookingController.updateBookingPreferences
+);
+
 router.get(
   "/confirmation/:reference",
   bookingController.getBookingConfirmation
