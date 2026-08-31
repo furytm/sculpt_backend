@@ -1,8 +1,4 @@
-import {
-  AuthProvider,
-  UserRole,
-} from "@prisma/client";
-
+import { PrismaClient, AuthProvider, UserRole, PaymentStatus } from "@prisma/client";
 import prisma from "../config/prisma.js";
 
 import {
