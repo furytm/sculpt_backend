@@ -160,18 +160,17 @@ class BookingService {
     });
   }
 
-  async updateBookingPreferences(
+async updateBookingPreferences(
   bookingId: string,
   userId: string,
   data: UpdateBookingPreferencesDto
 ) {
-  const booking =
-    await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-    });
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  });
 
   if (!booking) {
     throw new Error(
@@ -179,22 +178,20 @@ class BookingService {
     );
   }
 
-  if (
-    booking.paymentStatus !== PaymentStatus.PAID
-  ) {
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
     throw new Error(
       "Your membership payment has not been completed."
     );
   }
 
+  if (!data.classId) {
+    throw new Error("Please select a class.");
+  }
+
   const preferredStartDate =
     new Date(data.preferredStartDate);
 
-  if (
-    Number.isNaN(
-      preferredStartDate.getTime()
-    )
-  ) {
+  if (Number.isNaN(preferredStartDate.getTime())) {
     throw new Error(
       "Invalid preferred start date."
     );
@@ -206,12 +203,17 @@ class BookingService {
         id: booking.id,
       },
       data: {
+        classId: data.classId,
+
         preferredStartDate,
+
         availableDays:
           data.availableDays,
+
         preferredTimes:
           data.preferredTimes,
       },
+
       include: {
         membership: true,
       },
@@ -245,46 +247,61 @@ async confirmBooking(
     );
   }
 
-  // Member must have paid before confirming.
-  if (booking.paymentStatus !== "PAID") {
+  // Member must have paid
+  if (
+    booking.paymentStatus !==
+    PaymentStatus.PAID
+  ) {
     throw new Error(
       "This booking has not been paid for."
     );
   }
 
-  // A class must have been selected.
+  // A class must have been selected
   if (!booking.classId) {
     throw new Error(
       "Please select a class before confirming your booking."
     );
   }
 
-  // An actual schedule must have been selected.
-  if (!booking.scheduleId) {
-    throw new Error(
-      "Please select a schedule before confirming your booking."
-    );
-  }
-
-  // Prevent confirming an already confirmed booking.
-  if (booking.bookingStatus === "CONFIRMED") {
-    return booking;
-  }
-
-  const confirmedBooking =
-    await prisma.booking.update({
+  // Health & Safety form must be completed
+  const healthSafetyForm =
+    await prisma.healthSafetyForm.findUnique({
       where: {
-        id: booking.id,
-      },
-      data: {
-        bookingStatus: "CONFIRMED",
-      },
-      include: {
-        membership: true,
+        bookingId: booking.id,
       },
     });
 
-  return confirmedBooking;
+  if (!healthSafetyForm) {
+    throw new Error(
+      "Please complete your Health & Safety form before confirming your booking."
+    );
+  }
+
+// Prevent confirming an already confirmed booking
+if (booking.bookingStatus === "CONFIRMED") {
+  return booking;
+}
+
+const confirmedBooking =
+  await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+
+    data: {
+      bookingStatus: "CONFIRMED",
+    },
+
+    include: {
+      membership: true,
+      healthSafetyForm: true,
+    },
+  });
+
+return confirmedBooking;
+
+
 }
 
 async saveHealthSafetyForm(
