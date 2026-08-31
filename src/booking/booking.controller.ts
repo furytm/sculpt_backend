@@ -198,6 +198,63 @@ async updateBookingPreferences(
     });
   }
 }
+
+/**
+ * POST /api/bookings/:bookingId/confirm
+ *
+ * Confirm an existing paid booking.
+ */
+async confirmBooking(
+  req: Request,
+  res: Response
+) {
+  try {
+    const userId = (req as any).user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
+
+const bookingId = String(req.params.bookingId);
+
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: "Booking ID is required.",
+      });
+    }
+
+    const booking =
+      await bookingService.confirmBooking(
+        bookingId,
+        userId
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Booking confirmed successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Confirm Booking Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Unable to confirm booking.",
+    });
+  }
+}
 }
 
 export default new BookingController();

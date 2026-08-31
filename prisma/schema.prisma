@@ -33,6 +33,7 @@ model Booking {
   preferredStartDate DateTime?
   availableDays      String[]
   preferredTimes     String[]
+  bookingStatus BookingStatus @default(PENDING)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -186,4 +187,10 @@ enum UserRole {
 enum AuthProvider {
   LOCAL
   GOOGLE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
 }

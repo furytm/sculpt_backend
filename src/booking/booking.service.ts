@@ -219,6 +219,73 @@ class BookingService {
 
   return updatedBooking;
 }
+
+/**
+ * Confirm an existing paid booking.
+ *
+ * This does NOT create a new booking.
+ * It finalizes the existing booking after
+ * the member has completed the booking flow.
+ */
+async confirmBooking(
+  bookingId: string,
+  userId: string
+) {
+  const booking =
+    await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
+
+  // Member must have paid before confirming.
+  if (booking.paymentStatus !== "PAID") {
+    throw new Error(
+      "This booking has not been paid for."
+    );
+  }
+
+  // A class must have been selected.
+  if (!booking.classId) {
+    throw new Error(
+      "Please select a class before confirming your booking."
+    );
+  }
+
+  // An actual schedule must have been selected.
+  if (!booking.scheduleId) {
+    throw new Error(
+      "Please select a schedule before confirming your booking."
+    );
+  }
+
+  // Prevent confirming an already confirmed booking.
+  if (booking.bookingStatus === "CONFIRMED") {
+    return booking;
+  }
+
+  const confirmedBooking =
+    await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+      data: {
+        bookingStatus: "CONFIRMED",
+      },
+      include: {
+        membership: true,
+      },
+    });
+
+  return confirmedBooking;
+}
 }
 
 export default new BookingService();
