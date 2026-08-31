@@ -30,8 +30,12 @@ export const createBookingSchema = Joi.object({
 
 export const updateBookingPreferencesSchema =
   Joi.object({
-    preferredStartDate: Joi.string()
-      .isoDate()
+    classId: Joi.string()
+      .trim()
+      .required(),
+
+    preferredStartDate: Joi.date()
+      .iso()
       .required(),
 
     availableDays: Joi.array()

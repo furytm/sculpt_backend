@@ -21,6 +21,8 @@ export interface BookingResponse {
   booking: Booking;
   authorizationUrl: string;
 }
+
+
 export interface UpdateBookingPreferencesDto {
   classId: string;
   preferredStartDate: string;
