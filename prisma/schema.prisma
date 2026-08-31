@@ -33,10 +33,54 @@ model Booking {
   preferredStartDate DateTime?
   availableDays      String[]
   preferredTimes     String[]
-  bookingStatus BookingStatus @default(PENDING)
+  bookingStatus      BookingStatus     @default(PENDING)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  healthSafetyForm HealthSafetyForm?
+}
+
+model HealthSafetyForm {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  dateOfBirth DateTime?
+  age         Int?
+
+  emergencyContactName         String?
+  emergencyContactRelationship String?
+  emergencyContactPhone        String?
+
+  pregnancy          String?
+  pregnancyWeeks     Int?
+  dueDate            DateTime?
+  pregnancyClearance String?
+
+  postpartum          String?
+  deliveryDate        DateTime?
+  postpartumClearance String?
+
+  screeningAnswers Json?
+
+  surgery          String?
+  surgeryDetails   String?
+  surgeryClearance String?
+
+  consent Json?
+
+  signature     String?
+
+
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
 }
 
 model User {
@@ -64,6 +108,7 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   memberships             MemberMembership[]
+  healthSafetyForms       HealthSafetyForm[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

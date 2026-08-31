@@ -255,6 +255,54 @@ const bookingId = String(req.params.bookingId);
     });
   }
 }
+
+async saveHealthSafetyForm(
+  req: Request,
+  res: Response
+) {
+  try {
+    const userId =
+      (req as any).user.userId;
+
+    const bookingId =
+      req.params.bookingId;
+
+    if (typeof bookingId !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID.",
+      });
+    }
+
+    const result =
+      await bookingService.saveHealthSafetyForm(
+        bookingId,
+        userId,
+        req.body
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Health & Safety form saved successfully.",
+      data: {
+        healthSafetyForm: result,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Health Safety Form Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to save Health & Safety form.",
+    });
+  }
+}
 }
 
 export default new BookingController();

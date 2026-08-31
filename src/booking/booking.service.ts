@@ -3,7 +3,7 @@ import paymentService from "../payment/payment.service.js";
 import {
   BookingResponse,
   CreateBookingDto,
-  PaymentStatus,UpdateBookingPreferencesDto,
+  PaymentStatus,UpdateBookingPreferencesDto,HealthSafetyFormDto
 } from "./booking.types.js";
 
 
@@ -285,6 +285,187 @@ async confirmBooking(
     });
 
   return confirmedBooking;
+}
+
+async saveHealthSafetyForm(
+  bookingId: string,
+  userId: string,
+  data: HealthSafetyFormDto
+) {
+  // 1. Find booking
+  const booking =
+    await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
+
+  // 2. Check payment
+  if (
+    booking.paymentStatus !== PaymentStatus.PAID
+  ) {
+    throw new Error(
+      "Health & Safety information can only be submitted for a paid booking."
+    );
+  }
+
+  // 3. Create/update health form
+  const healthSafetyForm =
+    await prisma.healthSafetyForm.upsert({
+      where: {
+        bookingId,
+      },
+
+      create: {
+        bookingId,
+        userId,
+
+        dateOfBirth: data.dateOfBirth
+          ? new Date(data.dateOfBirth)
+          : null,
+
+        age: data.age ?? null,
+
+        emergencyContactName:
+          data.emergencyContactName || null,
+
+        emergencyContactRelationship:
+          data.emergencyContactRelationship || null,
+
+        emergencyContactPhone:
+          data.emergencyContactPhone || null,
+
+        pregnancy:
+          data.pregnancy || null,
+
+        pregnancyWeeks:
+          data.pregnancyWeeks ?? null,
+
+        dueDate: data.dueDate
+          ? new Date(data.dueDate)
+          : null,
+
+        pregnancyClearance:
+          data.pregnancyClearance || null,
+
+        postpartum:
+          data.postpartum || null,
+
+        deliveryDate: data.deliveryDate
+          ? new Date(data.deliveryDate)
+          : null,
+
+        postpartumClearance:
+          data.postpartumClearance || null,
+
+        screeningAnswers:
+          data.screeningAnswers || {},
+
+        surgery:
+          data.surgery || null,
+
+        surgeryDetails:
+          data.surgeryDetails || null,
+
+        surgeryClearance:
+          data.surgeryClearance || null,
+
+        consent:
+          data.consent || [],
+
+        signature:
+          data.signature || null,
+
+   
+
+        submittedAt: new Date(),
+      },
+
+      update: {
+        dateOfBirth: data.dateOfBirth
+          ? new Date(data.dateOfBirth)
+          : null,
+
+        age: data.age ?? null,
+
+        emergencyContactName:
+          data.emergencyContactName || null,
+
+        emergencyContactRelationship:
+          data.emergencyContactRelationship || null,
+
+        emergencyContactPhone:
+          data.emergencyContactPhone || null,
+
+        pregnancy:
+          data.pregnancy || null,
+
+        pregnancyWeeks:
+          data.pregnancyWeeks ?? null,
+
+        dueDate: data.dueDate
+          ? new Date(data.dueDate)
+          : null,
+
+        pregnancyClearance:
+          data.pregnancyClearance || null,
+
+        postpartum:
+          data.postpartum || null,
+
+        deliveryDate: data.deliveryDate
+          ? new Date(data.deliveryDate)
+          : null,
+
+        postpartumClearance:
+          data.postpartumClearance || null,
+
+        screeningAnswers:
+          data.screeningAnswers || {},
+
+        surgery:
+          data.surgery || null,
+
+        surgeryDetails:
+          data.surgeryDetails || null,
+
+        surgeryClearance:
+          data.surgeryClearance || null,
+
+        consent:
+          data.consent || [],
+
+        signature:
+          data.signature || null,
+
+
+        submittedAt: new Date(),
+      },
+    });
+
+  // 4. Return the health form WITH current user information
+  return await prisma.healthSafetyForm.findUnique({
+    where: {
+      id: healthSafetyForm.id,
+    },
+    include: {
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
+    },
+  });
 }
 }
 

@@ -15,6 +15,11 @@ router.patch(
   bookingController.updateBookingPreferences
 );
 
+router.patch(
+  "/:bookingId/health-safety",
+  authenticate,
+  bookingController.saveHealthSafetyForm
+);
 router.post(
   "/:bookingId/confirm",
   authenticate,
@@ -25,6 +30,8 @@ router.get(
   "/confirmation/:reference",
   bookingController.getBookingConfirmation
 );
+
+
 
 /**
  * Authenticated member bookings
