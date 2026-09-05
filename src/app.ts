@@ -6,6 +6,7 @@ import membershipRoutes from "./membership/membership.route.js";
 import paymentRoutes from "./payment/payment.routes.js";
 import bookingRoutes from "./booking/booking.routes.js";
 import authRoutes from "./auth/auth.routes.js";
+import scheduleRoutes from "./schedule/schedule.routes.js";
 
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger.js";
@@ -37,5 +38,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/memberships", membershipRoutes);
+app.use("/api/schedules", scheduleRoutes);
 
 export default app;

@@ -303,6 +303,169 @@ async saveHealthSafetyForm(
     });
   }
 }
+
+/**
+ * PATCH /api/bookings/:bookingId/start-date
+ *
+ * Save the member's selected start date.
+ */
+async updateBookingStartDate(
+  req: Request,
+  res: Response
+) {
+  try {
+    const userId =
+      (req as any).user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
+
+    const bookingId =
+      String(req.params.bookingId);
+
+    const { startDate } = req.body;
+
+    if (!startDate) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Start date is required.",
+      });
+    }
+
+    const booking =
+      await bookingService.updateBookingStartDate(
+        bookingId,
+        userId,
+        startDate
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Start date saved successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Update Booking Start Date Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to save start date.",
+    });
+  }
+}
+
+/**
+ * PATCH /api/bookings/:bookingId/schedule
+ *
+ * Save the schedule selected by the member.
+ */
+async updateBookingSchedule(
+  req: Request,
+  res: Response
+) {
+  try {
+    const userId =
+      (req as any).user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized.",
+      });
+    }
+
+    const bookingId =
+      String(req.params.bookingId);
+
+    const { scheduleId } = req.body;
+
+    if (!scheduleId) {
+      return res.status(400).json({
+        success: false,
+        message: "Schedule ID is required.",
+      });
+    }
+
+    const booking =
+      await bookingService.updateBookingSchedule(
+        bookingId,
+        userId,
+        scheduleId
+      );
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Schedule selected successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error: any) {
+    console.error(
+      "Update Booking Schedule Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to select schedule.",
+    });
+  }
+}
+
+async updateBookingClass(req: Request, res: Response) {
+  try {
+    const { bookingId } = req.params;
+    const { classId } = req.body;
+
+    if (typeof bookingId !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID.",
+      });
+    }
+
+  const userId = req.user.userId;
+
+    const booking = await bookingService.updateBookingClass(
+      bookingId,
+      userId,
+      classId
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Class selected successfully.",
+      data: {
+        booking,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to select class.",
+    });
+  }
+}
 }
 
 export default new BookingController();

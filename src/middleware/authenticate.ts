@@ -1,8 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyAccessToken } from "../utils/jwt.js";
 
-
-
 export default function authenticate(
   req: Request,
   res: Response,
@@ -13,10 +11,7 @@ export default function authenticate(
     // Keep Authorization header as a fallback
     const token =
       req.cookies?.accessToken ||
-      req.headers.authorization?.replace(
-        "Bearer ",
-        ""
-      );
+      req.headers.authorization?.replace("Bearer ", "");
 
     if (!token) {
       return res.status(401).json({
@@ -25,18 +20,15 @@ export default function authenticate(
       });
     }
 
-    const payload =
-      verifyAccessToken(token);
+    const payload = verifyAccessToken(token);
 
-    (req as any).user = payload;
+    req.user = payload;
 
     next();
   } catch {
     return res.status(401).json({
       success: false,
-      message:
-        "Invalid or expired token.",
+      message: "Invalid or expired token.",
     });
   }
 }
-

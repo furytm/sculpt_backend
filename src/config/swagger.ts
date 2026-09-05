@@ -32,12 +32,13 @@ const swaggerOptions: swaggerJSDoc.Options = {
     },
   },
 
-  apis: [
-    "./src/auth/*.ts",
-    "./src/membership/*.ts",
-    "./src/booking/*.ts",
-    "./src/payment/*.ts",
-  ],
+apis: [
+  "./src/auth/*.ts",
+  "./src/membership/*.ts",
+  "./src/booking/*.ts",
+  "./src/payment/*.ts",
+  "./src/schedule/*.ts",
+],
 };
 
 const swaggerSpec = swaggerJSDoc(swaggerOptions);

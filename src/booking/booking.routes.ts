@@ -10,6 +10,17 @@ router.post(
 );
 
 router.patch(
+  "/:bookingId/schedule",
+  authenticate,
+  bookingController.updateBookingSchedule
+);
+
+router.patch(
+  "/:bookingId/start-date",
+  authenticate,
+  bookingController.updateBookingStartDate
+);
+router.patch(
   "/:bookingId/preferences",
   authenticate,
   bookingController.updateBookingPreferences

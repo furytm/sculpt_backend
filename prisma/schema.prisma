@@ -16,6 +16,7 @@ model Booking {
 
   classId    String?
   scheduleId String?
+  schedule   Schedule? @relation(fields: [scheduleId], references: [id])
 
   membershipId String
   membership   Membership @relation(fields: [membershipId], references: [id])
@@ -81,6 +82,41 @@ model HealthSafetyForm {
   updatedAt   DateTime  @updatedAt
 
   @@index([userId])
+}
+
+model Schedule {
+  id String @id @default(cuid())
+
+  className String
+  tutorName String
+  code String @unique
+
+  dayOfWeek DayOfWeek
+
+  startTime String
+  endTime   String
+
+  isActive Boolean @default(true)
+
+  bookings Booking[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([dayOfWeek])
+  @@index([tutorName])
+  @@index([className])
+  @@index([isActive])
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
 }
 
 model User {

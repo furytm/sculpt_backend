@@ -23,6 +23,15 @@ export interface BookingResponse {
 }
 
 
+export interface UpdateBookingScheduleDto {
+  scheduleId: string;
+}
+export class UpdateBookingClassDto {
+  classId!: string;
+}
+export interface UpdateBookingStartDateDto {
+  startDate: string;
+}
 export interface UpdateBookingPreferencesDto {
   classId: string;
   preferredStartDate: string;

@@ -24,32 +24,24 @@ class BookingService {
       throw new Error("Membership not found.");
     }
 
-    const booking =
-      await prisma.booking.create({
-        data: {
-          fullName: data.fullName,
-          email: data.email,
-          phone: data.phone,
+  const booking = await prisma.booking.create({
+  data: {
+    fullName: data.fullName,
+    email: data.email,
+    phone: data.phone,
 
-          classId: data.classId,
-          scheduleId:
-            data.scheduleId ?? null,
-          bookingDate:
-            data.bookingDate ?? null,
+    classId: data.classId,
+    scheduleId: data.scheduleId ?? null,
+    bookingDate: data.bookingDate ?? null,
 
-          membership: {
-            connect: {
-              id: membership.id,
-            },
-          },
+    membershipId: membership.id,
 
-          amount: membership.price,
+    amount: membership.price,
 
-          paymentReference,
-          paymentStatus:
-            PaymentStatus.PENDING,
-        },
-      });
+    paymentReference,
+    paymentStatus: PaymentStatus.PENDING,
+  },
+});
 
     const payment =
       await paymentService.initializeTransaction({
@@ -151,14 +143,58 @@ class BookingService {
       where: {
         userId,
       },
-      include: {
-        membership: true,
-      },
+   include: {
+  membership: true,
+  schedule: true,
+},
       orderBy: {
         createdAt: "desc",
       },
     });
   }
+
+  async updateBookingClass(
+  bookingId: string,
+  userId: string,
+  classId: string
+) {
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  });
+
+  if (!booking) {
+    throw new Error("Booking not found or does not belong to you.");
+  }
+
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error("Your membership payment has not been completed.");
+  }
+
+  if (!classId) {
+    throw new Error("Please select a class.");
+  }
+
+  const updatedBooking = await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+    data: {
+      classId,
+      // Reset schedule if the member changes class
+      scheduleId: null,
+      bookingDate: null,
+    },
+    include: {
+      membership: true,
+      schedule: true,
+    },
+  });
+
+  return updatedBooking;
+}
 
 async updateBookingPreferences(
   bookingId: string,
@@ -239,6 +275,9 @@ async confirmBooking(
         id: bookingId,
         userId,
       },
+      include: {
+        schedule: true,
+      },
     });
 
   if (!booking) {
@@ -264,6 +303,20 @@ async confirmBooking(
     );
   }
 
+  // A schedule must have been selected
+  if (!booking.scheduleId) {
+    throw new Error(
+      "Please select a schedule before confirming your booking."
+    );
+  }
+
+  // A start date must have been selected
+  if (!booking.bookingDate) {
+    throw new Error(
+      "Please select a start date before confirming your booking."
+    );
+  }
+
   // Health & Safety form must be completed
   const healthSafetyForm =
     await prisma.healthSafetyForm.findUnique({
@@ -278,30 +331,29 @@ async confirmBooking(
     );
   }
 
-// Prevent confirming an already confirmed booking
-if (booking.bookingStatus === "CONFIRMED") {
-  return booking;
-}
+  // Prevent confirming an already confirmed booking
+  if (booking.bookingStatus === "CONFIRMED") {
+    return booking;
+  }
 
-const confirmedBooking =
-  await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
+  const confirmedBooking =
+    await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
 
-    data: {
-      bookingStatus: "CONFIRMED",
-    },
+      data: {
+        bookingStatus: "CONFIRMED",
+      },
 
-    include: {
-      membership: true,
-      healthSafetyForm: true,
-    },
-  });
+      include: {
+        membership: true,
+        schedule: true,
+        healthSafetyForm: true,
+      },
+    });
 
-return confirmedBooking;
-
-
+  return confirmedBooking;
 }
 
 async saveHealthSafetyForm(
@@ -483,6 +535,203 @@ async saveHealthSafetyForm(
       },
     },
   });
+}
+
+/**
+ * Save the selected schedule for an existing booking.
+ *
+ * The member must:
+ * - own the booking
+ * - have paid
+ * - have selected a class
+ * - select an active schedule
+ * - select a schedule belonging to their selected class
+ */
+async updateBookingSchedule(
+  bookingId: string,
+  userId: string,
+  scheduleId: string
+) {
+  // 1. Find the member's booking
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
+
+  // 2. Payment must be completed
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error(
+      "Your membership payment has not been completed."
+    );
+  }
+
+  // 3. Member must have selected a class
+  if (!booking.classId) {
+    throw new Error(
+      "Please select a class before selecting a schedule."
+    );
+  }
+
+  // 4. Find the selected schedule
+  const schedule = await prisma.schedule.findFirst({
+    where: {
+      id: scheduleId,
+      isActive: true,
+    },
+  });
+
+  if (!schedule) {
+    throw new Error(
+      "Selected schedule was not found or is no longer available."
+    );
+  }
+
+  // 5. Make sure the schedule belongs to the selected class
+  if (
+    schedule.className.toLowerCase() !==
+    booking.classId.toLowerCase()
+  ) {
+    throw new Error(
+      "The selected schedule does not belong to your selected class."
+    );
+  }
+
+  // 6. Save the schedule
+  const updatedBooking = await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+    data: {
+      scheduleId: schedule.id,
+    },
+    include: {
+      membership: true,
+      schedule: true,
+    },
+  });
+
+  return updatedBooking;
+}
+
+/**
+ * Save the member's start date.
+ *
+ * The selected date must match the day of the
+ * schedule the member previously selected.
+ *
+ * Example:
+ * Schedule = TUESDAY 7:00 AM
+ * Start date = Tuesday, September 15
+ *
+ * A Wednesday start date would be rejected.
+ */
+async updateBookingStartDate(
+  bookingId: string,
+  userId: string,
+  startDate: string
+) {
+  // 1. Find the member's booking
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+    include: {
+      schedule: true,
+    },
+  });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
+
+  // 2. Payment must be completed
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error(
+      "Your membership payment has not been completed."
+    );
+  }
+
+  // 3. A schedule must be selected first
+  if (!booking.schedule) {
+    throw new Error(
+      "Please select a schedule before choosing your start date."
+    );
+  }
+
+  // 4. Parse the date
+  const selectedDate = new Date(startDate);
+
+  if (Number.isNaN(selectedDate.getTime())) {
+    throw new Error(
+      "Invalid start date."
+    );
+  }
+
+  // 5. Prevent selecting a date in the past
+  const today = new Date();
+
+  today.setHours(0, 0, 0, 0);
+
+  const dateToCompare = new Date(selectedDate);
+
+  dateToCompare.setHours(0, 0, 0, 0);
+
+  if (dateToCompare < today) {
+    throw new Error(
+      "Start date cannot be in the past."
+    );
+  }
+
+  // 6. Make sure the date matches the schedule's day
+  const dayNames = [
+    "SUNDAY",
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+  ];
+
+  const selectedDay =
+    dayNames[selectedDate.getDay()];
+
+  if (
+    selectedDay !==
+    booking.schedule.dayOfWeek
+  ) {
+    throw new Error(
+      `Your selected schedule is on ${booking.schedule.dayOfWeek}. Please choose a ${booking.schedule.dayOfWeek.toLowerCase()} start date.`
+    );
+  }
+
+  // 7. Save the actual booking date
+  const updatedBooking =
+    await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+      data: {
+        bookingDate: selectedDate,
+      },
+      include: {
+        membership: true,
+        schedule: true,
+      },
+    });
+
+  return updatedBooking;
 }
 }
 
