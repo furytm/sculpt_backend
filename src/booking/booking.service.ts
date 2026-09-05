@@ -8,54 +8,56 @@ import {
 
 
 class BookingService {
-  async createBooking(
-    data: CreateBookingDto
-  ): Promise<BookingResponse> {
-    const paymentReference = `SL-${Date.now()}`;
+async createBooking(
+  data: CreateBookingDto,
+  userId: string
+): Promise<BookingResponse> {
+  const paymentReference = `SL-${Date.now()}`;
 
-    const membership =
-      await prisma.membership.findUnique({
-        where: {
-          id: data.membershipId,
-        },
-      });
+  const membership = await prisma.membership.findUnique({
+    where: {
+      id: data.membershipId,
+    },
+  });
 
-    if (!membership) {
-      throw new Error("Membership not found.");
-    }
+  if (!membership) {
+    throw new Error("Membership not found.");
+  }
 
   const booking = await prisma.booking.create({
-  data: {
-    fullName: data.fullName,
-    email: data.email,
-    phone: data.phone,
+    data: {
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone,
 
-    classId: data.classId,
-    scheduleId: data.scheduleId ?? null,
-    bookingDate: data.bookingDate ?? null,
+    userId: null,
 
-    membershipId: membership.id,
+      // These are selected AFTER payment
+      classId: null,
+      scheduleId: null,
+      bookingDate: null,
 
-    amount: membership.price,
+      membershipId: membership.id,
 
-    paymentReference,
-    paymentStatus: PaymentStatus.PENDING,
-  },
-});
+      // Always use the membership price from the database
+      amount: membership.price,
 
-    const payment =
-      await paymentService.initializeTransaction({
-        email: booking.email,
-        amount: booking.amount,
-        reference: paymentReference,
-      });
+      paymentReference,
+      paymentStatus: PaymentStatus.PENDING,
+    },
+  });
 
-    return {
-      booking,
-      authorizationUrl:
-        payment.data.authorization_url,
-    };
-  }
+  const payment = await paymentService.initializeTransaction({
+    email: booking.email,
+    amount: booking.amount,
+    reference: paymentReference,
+  });
+
+  return {
+    booking,
+    authorizationUrl: payment.data.authorization_url,
+  };
+}
 
   async getBookingById(id: string) {
     return await prisma.booking.findUnique({

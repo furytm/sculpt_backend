@@ -15,26 +15,31 @@ interface ConfirmationParams {
 class BookingController {
 
   
-  async createBooking(req: Request, res: Response) {
-    try {
-      const result = await bookingService.createBooking(req.body);
+async createBooking(req: Request, res: Response) {
+  try {
+const userId = req.user.userId;
 
-      return res.status(201).json({
-        success: true,
-        message: "Booking created. Redirect the user to Paymish to complete payment.",
-        data: result,
-      });
-    } catch (error: any) {
-      console.error("Create Booking Error:", error);
+const result = await bookingService.createBooking(
+  req.body,
+  userId
+);
 
-      return res.status(400).json({
-        success: false,
-        message: error?.message || "Failed to create booking.",
-        error,
-      });
-    }
+    return res.status(201).json({
+      success: true,
+      message:
+        "Booking created. Redirect the user to Paymish to complete payment.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error("Create Booking Error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message: error?.message || "Failed to create booking.",
+      error,
+    });
   }
-
+}
  
 
 async getBooking(
