@@ -9,9 +9,8 @@ import {
 
 class BookingService {
 async createBooking(
-  data: CreateBookingDto,
-  userId: string
-): Promise<BookingResponse> {
+  data: CreateBookingDto
+): Promise<BookingResponse>  {
   const paymentReference = `SL-${Date.now()}`;
 
   const membership = await prisma.membership.findUnique({

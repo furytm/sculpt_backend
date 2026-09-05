@@ -17,12 +17,7 @@ class BookingController {
   
 async createBooking(req: Request, res: Response) {
   try {
-const userId = req.user.userId;
-
-const result = await bookingService.createBooking(
-  req.body,
-  userId
-);
+    const result = await bookingService.createBooking(req.body);
 
     return res.status(201).json({
       success: true,
