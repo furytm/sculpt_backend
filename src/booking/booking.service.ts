@@ -24,28 +24,31 @@ async createBooking(
     throw new Error("Membership not found.");
   }
 
-  const booking = await prisma.booking.create({
-    data: {
-      fullName: data.fullName,
-      email: data.email,
-      phone: data.phone,
+console.log("🔥 CURRENT CREATE BOOKING SERVICE");
+console.log("bookingDate:", data.bookingDate);
+console.log("classId:", data.classId);
+console.log("scheduleId:", data.scheduleId);
+
+const booking = await prisma.booking.create({
+  data: {
+    fullName: data.fullName,
+    email: data.email,
+    phone: data.phone,
 
     userId: null,
 
-      // These are selected AFTER payment
-      classId: null,
-      scheduleId: null,
-      bookingDate: null,
+    classId: null,
+    scheduleId: null,
+    bookingDate: null,
 
-      membershipId: membership.id,
+    membershipId: membership.id,
 
-      // Always use the membership price from the database
-      amount: membership.price,
+    amount: membership.price,
 
-      paymentReference,
-      paymentStatus: PaymentStatus.PENDING,
-    },
-  });
+    paymentReference,
+    paymentStatus: PaymentStatus.PENDING,
+  },
+});
 
   const payment = await paymentService.initializeTransaction({
     email: booking.email,
