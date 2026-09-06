@@ -7,6 +7,10 @@ export enum PaymentStatus {
   FAILED = "FAILED",
 }
 
+export type PaymentMethod =
+  | "PAYMISH"
+  | "OFFLINE";
+
 export interface CreateBookingDto {
   fullName: string;
   email: string;
@@ -14,12 +18,15 @@ export interface CreateBookingDto {
   membershipId: string;
   classId?: string;
   scheduleId?: string;
-  bookingDate?: Date;
+  bookingDate?: string;
+  paymentMethod: PaymentMethod;
 }
 
+
 export interface BookingResponse {
-  booking: Booking;
-  authorizationUrl: string;
+  booking: any;
+  paymentMethod: "PAYMISH" | "OFFLINE";
+  authorizationUrl: string | null;
 }
 
 

@@ -1,10 +1,17 @@
 import Joi from "joi";
 
+
+
 export const createBookingSchema = Joi.object({
-  fullName: Joi.string().trim().required(),
+  fullName: Joi.string()
+    .trim()
+    .min(3)
+    .max(100)
+    .required(),
 
   email: Joi.string()
     .email()
+    .lowercase()
     .required(),
 
   phone: Joi.string()
@@ -12,20 +19,28 @@ export const createBookingSchema = Joi.object({
     .required(),
 
   membershipId: Joi.string()
+    .trim()
     .required(),
 
   classId: Joi.string()
-    .required(),
+    .trim()
+    .optional()
+    .allow("", null),
 
   scheduleId: Joi.string()
-    .allow(null, "")
-    .optional(),
+    .trim()
+    .optional()
+    .allow("", null),
 
-  bookingDate: Joi.date()
-    .allow(null)
-    .optional(),
+  bookingDate: Joi.string()
+    .isoDate()
+    .optional()
+    .allow(null),
+
+  paymentMethod: Joi.string()
+    .valid("PAYMISH", "OFFLINE")
+    .required(),
 });
-
 
 
 export const updateBookingPreferencesSchema =

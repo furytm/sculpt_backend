@@ -15,23 +15,33 @@ interface ConfirmationParams {
 class BookingController {
 
   
-async createBooking(req: Request, res: Response) {
+async createBooking(
+  req: Request,
+  res: Response
+) {
   try {
-    const result = await bookingService.createBooking(req.body);
+    const booking =
+      await bookingService.createBooking(req.body);
 
     return res.status(201).json({
       success: true,
       message:
-        "Booking created. Redirect the user to Paymish to complete payment.",
-      data: result,
+        req.body.paymentMethod === "OFFLINE"
+          ? "Offline booking created successfully."
+          : "Booking created and payment initialized successfully.",
+      data: booking,
     });
   } catch (error: any) {
-    console.error("Create Booking Error:", error);
+    console.error(
+      "Create Booking Error:",
+      error
+    );
 
     return res.status(400).json({
       success: false,
-      message: error?.message || "Failed to create booking.",
-      error,
+      message:
+        error?.message ||
+        "Failed to create booking.",
     });
   }
 }
@@ -198,6 +208,7 @@ async updateBookingPreferences(
     });
   }
 }
+
 
 /**
  * POST /api/bookings/:bookingId/confirm
@@ -465,25 +476,42 @@ async updateBookingSchedule(
   }
 }
 
-async updateBookingClass(req: Request, res: Response) {
+async updateBookingClass(
+  req: Request,
+  res: Response
+) {
   try {
     const { bookingId } = req.params;
     const { classId } = req.body;
 
-    if (typeof bookingId !== "string") {
+    if (
+      typeof bookingId !== "string" ||
+      !bookingId.trim()
+    ) {
       return res.status(400).json({
         success: false,
         message: "Invalid booking ID.",
       });
     }
 
-  const userId = req.user.userId;
+    if (
+      typeof classId !== "string" ||
+      !classId.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please select a class.",
+      });
+    }
 
-    const booking = await bookingService.updateBookingClass(
-      bookingId,
-      userId,
-      classId
-    );
+    const userId = req.user.userId;
+
+    const booking =
+      await bookingService.updateBookingClass(
+        bookingId,
+        userId,
+        classId
+      );
 
     return res.status(200).json({
       success: true,
@@ -492,13 +520,17 @@ async updateBookingClass(req: Request, res: Response) {
         booking,
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error(
+      "Update Booking Class Error:",
+      error
+    );
+
     return res.status(400).json({
       success: false,
       message:
-        error instanceof Error
-          ? error.message
-          : "Unable to select class.",
+        error?.message ||
+        "Failed to save selected class.",
     });
   }
 }

@@ -36,7 +36,7 @@ model Booking {
   preferredTimes     String[]
   bookingStatus      BookingStatus     @default(PENDING)
   memberSchedules    MemberSchedule[]
-
+  paymentMethod    PaymentMethod @default(PAYMISH)
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   healthSafetyForm HealthSafetyForm?
@@ -307,4 +307,9 @@ enum BookingStatus {
   PENDING
   CONFIRMED
   CANCELLED
+}
+
+enum PaymentMethod {
+  PAYMISH
+  OFFLINE
 }

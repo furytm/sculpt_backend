@@ -48,7 +48,11 @@ router.get(
   bookingController.getBookingConfirmation
 );
 
-
+router.patch(
+  "/:bookingId/class",
+  authenticate,
+  bookingController.updateBookingClass
+);
 
 /**
  * Authenticated member bookings

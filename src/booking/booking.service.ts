@@ -1,64 +1,93 @@
 import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
 import {
+  PaymentMethod,
+  PaymentStatus,
+} from "@prisma/client";
+
+import {
   BookingResponse,
   CreateBookingDto,
-  PaymentStatus,
   UpdateBookingPreferencesDto,
   HealthSafetyFormDto,
 } from "./booking.types.js";
 
 class BookingService {
-  async createBooking(data: CreateBookingDto): Promise<BookingResponse> {
-    const paymentReference = `SL-${Date.now()}`;
+async createBooking(
+  data: CreateBookingDto
+): Promise<BookingResponse> {
+  const paymentReference = `SL-${Date.now()}`;
 
-    const membership = await prisma.membership.findUnique({
-      where: {
-        id: data.membershipId,
-      },
-    });
+  const membership = await prisma.membership.findUnique({
+    where: {
+      id: data.membershipId,
+    },
+  });
 
-    if (!membership) {
-      throw new Error("Membership not found.");
-    }
+  if (!membership) {
+    throw new Error("Membership not found.");
+  }
 
-    console.log("🔥 CURRENT CREATE BOOKING SERVICE");
-    console.log("bookingDate:", data.bookingDate);
-    console.log("classId:", data.classId);
-    console.log("scheduleId:", data.scheduleId);
+  const booking = await prisma.booking.create({
+    data: {
+      fullName: data.fullName,
+      email: data.email,
+      phone: data.phone,
 
-    const booking = await prisma.booking.create({
-      data: {
-        fullName: data.fullName,
-        email: data.email,
-        phone: data.phone,
+      userId: null,
 
-        userId: null,
+      classId: data.classId ?? null,
+      scheduleId: null,
+      bookingDate: null,
 
-  classId: data.classId ?? null,
-        scheduleId: null,
-        bookingDate: null,
+      membershipId: membership.id,
 
-        membershipId: membership.id,
+      amount: membership.price,
 
-        amount: membership.price,
+      paymentMethod:
+        data.paymentMethod === "OFFLINE"
+          ? PaymentMethod.OFFLINE
+          : PaymentMethod.PAYMISH,
 
-        paymentReference,
-        paymentStatus: PaymentStatus.PENDING,
-      },
-    });
+      paymentReference,
 
-    const payment = await paymentService.initializeTransaction({
+      paymentStatus: PaymentStatus.PENDING,
+    },
+  });
+
+  /*
+   * OFFLINE PAYMENT
+   *
+   * Do not initialize Paymish.
+   * The booking remains PENDING until
+   * an admin verifies the bank transfer.
+   */
+  if (data.paymentMethod === "OFFLINE") {
+    return {
+      booking,
+      paymentMethod: PaymentMethod.OFFLINE,
+      authorizationUrl: null,
+    };
+  }
+
+  /*
+   * PAYMISH PAYMENT
+   *
+   * Keep the existing Paymish initialization.
+   */
+  const payment =
+    await paymentService.initializeTransaction({
       email: booking.email,
       amount: booking.amount,
       reference: paymentReference,
     });
 
-    return {
-      booking,
-      authorizationUrl: payment.data.authorization_url,
-    };
-  }
+  return {
+    booking,
+    paymentMethod: PaymentMethod.PAYMISH,
+    authorizationUrl: payment.data.authorization_url,
+  };
+}
 
   async getBookingById(id: string) {
     return await prisma.booking.findUnique({
@@ -245,44 +274,43 @@ class BookingService {
     });
   }
 
-  async updateBookingClass(bookingId: string, userId: string, classId: string) {
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-    });
+async updateBookingClass(bookingId: string, userId: string, classId: string) {
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  });
 
-    if (!booking) {
-      throw new Error("Booking not found or does not belong to you.");
-    }
-
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error("Your membership payment has not been completed.");
-    }
-
-    if (!classId) {
-      throw new Error("Please select a class.");
-    }
-
-    const updatedBooking = await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-      data: {
-        classId,
-        // Reset schedule if the member changes class
-        scheduleId: null,
-        bookingDate: null,
-      },
-      include: {
-        membership: true,
-        schedule: true,
-      },
-    });
-
-    return updatedBooking;
+  if (!booking) {
+    throw new Error("Booking not found or does not belong to you.");
   }
+
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error("Your membership payment has not been completed.");
+  }
+
+  if (!classId) {
+    throw new Error("Please select a class.");
+  }
+
+  const updatedBooking = await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+    data: {
+      classId,
+      scheduleId: null,
+      bookingDate: null,
+    },
+    include: {
+      membership: true,
+      schedule: true,
+    },
+  });
+
+  return updatedBooking;
+}
 
   async updateBookingPreferences(
     bookingId: string,
@@ -335,6 +363,8 @@ class BookingService {
 
     return updatedBooking;
   }
+
+  
 
   /**
    * Confirm an existing paid booking.
