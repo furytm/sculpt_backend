@@ -3,63 +3,62 @@ import paymentService from "../payment/payment.service.js";
 import {
   BookingResponse,
   CreateBookingDto,
-  PaymentStatus,UpdateBookingPreferencesDto,HealthSafetyFormDto
+  PaymentStatus,
+  UpdateBookingPreferencesDto,
+  HealthSafetyFormDto,
 } from "./booking.types.js";
 
-
 class BookingService {
-async createBooking(
-  data: CreateBookingDto
-): Promise<BookingResponse>  {
-  const paymentReference = `SL-${Date.now()}`;
+  async createBooking(data: CreateBookingDto): Promise<BookingResponse> {
+    const paymentReference = `SL-${Date.now()}`;
 
-  const membership = await prisma.membership.findUnique({
-    where: {
-      id: data.membershipId,
-    },
-  });
+    const membership = await prisma.membership.findUnique({
+      where: {
+        id: data.membershipId,
+      },
+    });
 
-  if (!membership) {
-    throw new Error("Membership not found.");
+    if (!membership) {
+      throw new Error("Membership not found.");
+    }
+
+    console.log("🔥 CURRENT CREATE BOOKING SERVICE");
+    console.log("bookingDate:", data.bookingDate);
+    console.log("classId:", data.classId);
+    console.log("scheduleId:", data.scheduleId);
+
+    const booking = await prisma.booking.create({
+      data: {
+        fullName: data.fullName,
+        email: data.email,
+        phone: data.phone,
+
+        userId: null,
+
+        classId: null,
+        scheduleId: null,
+        bookingDate: null,
+
+        membershipId: membership.id,
+
+        amount: membership.price,
+
+        paymentReference,
+        paymentStatus: PaymentStatus.PENDING,
+      },
+    });
+
+    const payment = await paymentService.initializeTransaction({
+      email: booking.email,
+      amount: booking.amount,
+      reference: paymentReference,
+    });
+
+    return {
+      booking,
+      authorizationUrl: payment.data.authorization_url,
+    };
   }
-
-console.log("🔥 CURRENT CREATE BOOKING SERVICE");
-console.log("bookingDate:", data.bookingDate);
-console.log("classId:", data.classId);
-console.log("scheduleId:", data.scheduleId);
-
-const booking = await prisma.booking.create({
-  data: {
-    fullName: data.fullName,
-    email: data.email,
-    phone: data.phone,
-
-    userId: null,
-
-    classId: null,
-    scheduleId: null,
-    bookingDate: null,
-
-    membershipId: membership.id,
-
-    amount: membership.price,
-
-    paymentReference,
-    paymentStatus: PaymentStatus.PENDING,
-  },
-});
-
-  const payment = await paymentService.initializeTransaction({
-    email: booking.email,
-    amount: booking.amount,
-    reference: paymentReference,
-  });
-
-  return {
-    booking,
-    authorizationUrl: payment.data.authorization_url,
-  };
-}
 
   async getBookingById(id: string) {
     return await prisma.booking.findUnique({
@@ -79,8 +78,7 @@ const booking = await prisma.booking.create({
         paymentReference: reference,
       },
       data: {
-        paymentStatus:
-          PaymentStatus.PAID,
+        paymentStatus: PaymentStatus.PAID,
       },
     });
   }
@@ -97,122 +95,127 @@ const booking = await prisma.booking.create({
     });
   }
 
-  async assignSchedules(
-  bookingId: string,
-  userId: string
-) {
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-  })
-
-  if (!booking) {
-    throw new Error("Booking not found.")
-  }
-
-  if (!booking.classId) {
-    throw new Error("No class has been selected for this booking.")
-  }
-
-  // Find ALL active schedules for the selected class
-  const schedules = await prisma.schedule.findMany({
-    where: {
-      className: booking.classId,
-      isActive: true,
-    },
-    orderBy: [
-      {
-        dayOfWeek: "asc",
+  async assignSchedules(bookingId: string, userId: string) {
+    const booking = await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
       },
-      {
-        startTime: "asc",
-      },
-    ],
-  })
-
-  if (schedules.length === 0) {
-    throw new Error(
-      `No active schedules found for ${booking.classId}.`
-    )
-  }
-
-  // Remove any previous assignments for this booking
-  await prisma.memberSchedule.deleteMany({
-    where: {
-      bookingId,
-    },
-  })
-
-  // Assign ALL schedules belonging to the selected class
-  await prisma.memberSchedule.createMany({
-    data: schedules.map((schedule) => ({
-      userId,
-      bookingId,
-      scheduleId: schedule.id,
-      classId: booking.classId!,
-      startDate: booking.preferredStartDate ?? null,
-      isActive: true,
-    })),
-  })
-
-  // Return the newly assigned schedules
-  return prisma.memberSchedule.findMany({
-    where: {
-      bookingId,
-      isActive: true,
-    },
-    include: {
-      schedule: true,
-    },
-    orderBy: {
-      createdAt: "asc",
-    },
-  })
-}
-
-  async getBookingConfirmation(
-    reference: string
-  ) {
-    const booking =
-      await prisma.booking.findUnique({
-        where: {
-          paymentReference: reference,
-        },
-        include: {
-          membership: true,
-          user: true,
-        },
-      });
+    });
 
     if (!booking) {
-      throw new Error(
-        "Booking not found."
-      );
+      throw new Error("Booking not found.");
     }
 
-    if (
-      booking.paymentStatus ===
-      PaymentStatus.PENDING
-    ) {
-      await prisma.booking.update({
-        where: {
-          paymentReference: reference,
-        },
-        data: {
-          paymentStatus:
-            PaymentStatus.PAID,
-        },
-      });
-
-      booking.paymentStatus =
-        PaymentStatus.PAID;
+    if (!booking.classId) {
+      throw new Error("No class has been selected for this booking.");
     }
 
-    return booking;
+    // Find ALL active schedules for the selected class
+    const schedules = await prisma.schedule.findMany({
+      where: {
+        className: booking.classId,
+        isActive: true,
+      },
+      orderBy: [
+        {
+          dayOfWeek: "asc",
+        },
+        {
+          startTime: "asc",
+        },
+      ],
+    });
+
+    if (schedules.length === 0) {
+      throw new Error(`No active schedules found for ${booking.classId}.`);
+    }
+
+    // Remove any previous assignments for this booking
+    await prisma.memberSchedule.deleteMany({
+      where: {
+        bookingId,
+      },
+    });
+
+    // Assign ALL schedules belonging to the selected class
+    await prisma.memberSchedule.createMany({
+      data: schedules.map((schedule) => ({
+        userId,
+        bookingId,
+        scheduleId: schedule.id,
+        classId: booking.classId!,
+        startDate: booking.preferredStartDate ?? null,
+        isActive: true,
+      })),
+    });
+
+    // Return the newly assigned schedules
+    return prisma.memberSchedule.findMany({
+      where: {
+        bookingId,
+        isActive: true,
+      },
+      include: {
+        schedule: true,
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+    });
   }
 
+ async getBookingConfirmation(
+  reference: string
+) {
+  const booking =
+    await prisma.booking.findUnique({
+      where: {
+        paymentReference: reference,
+      },
+      include: {
+        membership: true,
+        user: true,
+
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
+
+        healthSafetyForm: true,
+      },
+    });
+
+  if (!booking) {
+    throw new Error(
+      "Booking not found."
+    );
+  }
+
+  if (
+    booking.paymentStatus ===
+    PaymentStatus.PENDING
+  ) {
+    await prisma.booking.update({
+      where: {
+        paymentReference: reference,
+      },
+      data: {
+        paymentStatus:
+          PaymentStatus.PAID,
+      },
+    });
+
+    booking.paymentStatus =
+      PaymentStatus.PAID;
+  }
+
+  return booking;
+}
   /**
    * Get all bookings belonging
    * to the currently authenticated user.
@@ -222,98 +225,96 @@ const booking = await prisma.booking.create({
       where: {
         userId,
       },
-   include: {
-  membership: true,
-  schedule: true,
-},
+      include: {
+        membership: true,
+
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
+
+        healthSafetyForm: true,
+      },
       orderBy: {
         createdAt: "desc",
       },
     });
   }
 
-  async updateBookingClass(
-  bookingId: string,
-  userId: string,
-  classId: string
-) {
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-  });
+  async updateBookingClass(bookingId: string, userId: string, classId: string) {
+    const booking = await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
 
-  if (!booking) {
-    throw new Error("Booking not found or does not belong to you.");
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
+
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("Your membership payment has not been completed.");
+    }
+
+    if (!classId) {
+      throw new Error("Please select a class.");
+    }
+
+    const updatedBooking = await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+      data: {
+        classId,
+        // Reset schedule if the member changes class
+        scheduleId: null,
+        bookingDate: null,
+      },
+      include: {
+        membership: true,
+        schedule: true,
+      },
+    });
+
+    return updatedBooking;
   }
 
-  if (booking.paymentStatus !== PaymentStatus.PAID) {
-    throw new Error("Your membership payment has not been completed.");
-  }
+  async updateBookingPreferences(
+    bookingId: string,
+    userId: string,
+    data: UpdateBookingPreferencesDto,
+  ) {
+    const booking = await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
 
-  if (!classId) {
-    throw new Error("Please select a class.");
-  }
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
 
-  const updatedBooking = await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
-    data: {
-      classId,
-      // Reset schedule if the member changes class
-      scheduleId: null,
-      bookingDate: null,
-    },
-    include: {
-      membership: true,
-      schedule: true,
-    },
-  });
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("Your membership payment has not been completed.");
+    }
 
-  return updatedBooking;
-}
+    if (!data.classId) {
+      throw new Error("Please select a class.");
+    }
 
-async updateBookingPreferences(
-  bookingId: string,
-  userId: string,
-  data: UpdateBookingPreferencesDto
-) {
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-  });
+    const preferredStartDate = new Date(data.preferredStartDate);
 
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
-    );
-  }
+    if (Number.isNaN(preferredStartDate.getTime())) {
+      throw new Error("Invalid preferred start date.");
+    }
 
-  if (booking.paymentStatus !== PaymentStatus.PAID) {
-    throw new Error(
-      "Your membership payment has not been completed."
-    );
-  }
-
-  if (!data.classId) {
-    throw new Error("Please select a class.");
-  }
-
-  const preferredStartDate =
-    new Date(data.preferredStartDate);
-
-  if (Number.isNaN(preferredStartDate.getTime())) {
-    throw new Error(
-      "Invalid preferred start date."
-    );
-  }
-
-  const updatedBooking =
-    await prisma.booking.update({
+    const updatedBooking = await prisma.booking.update({
       where: {
         id: booking.id,
       },
@@ -322,11 +323,9 @@ async updateBookingPreferences(
 
         preferredStartDate,
 
-        availableDays:
-          data.availableDays,
+        availableDays: data.availableDays,
 
-        preferredTimes:
-          data.preferredTimes,
+        preferredTimes: data.preferredTimes,
       },
 
       include: {
@@ -334,89 +333,77 @@ async updateBookingPreferences(
       },
     });
 
-  return updatedBooking;
-}
+    return updatedBooking;
+  }
 
-/**
- * Confirm an existing paid booking.
- *
- * This does NOT create a new booking.
- * It finalizes the existing booking after
- * the member has completed the booking flow.
- */
-async confirmBooking(
-  bookingId: string,
-  userId: string
-) {
-  const booking =
-    await prisma.booking.findFirst({
+  /**
+   * Confirm an existing paid booking.
+   *
+   * This does NOT create a new booking.
+   * It finalizes the existing booking after
+   * the member has completed the booking flow.
+   */
+  async confirmBooking(bookingId: string, userId: string) {
+    const booking = await prisma.booking.findFirst({
       where: {
         id: bookingId,
         userId,
       },
       include: {
-        schedule: true,
+        membership: true,
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
+        healthSafetyForm: true,
       },
     });
 
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
-    );
-  }
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
 
-  // Member must have paid
-  if (
-    booking.paymentStatus !==
-    PaymentStatus.PAID
-  ) {
-    throw new Error(
-      "This booking has not been paid for."
-    );
-  }
+    // Member must have paid
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("This booking has not been paid for.");
+    }
 
-  // A class must have been selected
-  if (!booking.classId) {
-    throw new Error(
-      "Please select a class before confirming your booking."
-    );
-  }
+    // A class must have been selected
+    if (!booking.classId) {
+      throw new Error("Please select a class before confirming your booking.");
+    }
 
-  // A schedule must have been selected
-  if (!booking.scheduleId) {
-    throw new Error(
-      "Please select a schedule before confirming your booking."
-    );
-  }
+    // At least one recurring schedule must have been assigned
+    if (booking.memberSchedules.length === 0) {
+      throw new Error(
+        "No recurring schedules have been assigned to this booking.",
+      );
+    }
 
-  // A start date must have been selected
-  if (!booking.bookingDate) {
-    throw new Error(
-      "Please select a start date before confirming your booking."
-    );
-  }
+    // A start date must have been selected
+    if (!booking.preferredStartDate) {
+      throw new Error(
+        "Please select a start date before confirming your booking.",
+      );
+    }
 
-  // Health & Safety form must be completed
-  const healthSafetyForm =
-    await prisma.healthSafetyForm.findUnique({
-      where: {
-        bookingId: booking.id,
-      },
-    });
+    // Health & Safety form must be completed
+    if (!booking.healthSafetyForm) {
+      throw new Error(
+        "Please complete your Health & Safety form before confirming your booking.",
+      );
+    }
 
-  if (!healthSafetyForm) {
-    throw new Error(
-      "Please complete your Health & Safety form before confirming your booking."
-    );
-  }
+    // Prevent confirming an already confirmed booking
+    if (booking.bookingStatus === "CONFIRMED") {
+      return booking;
+    }
 
-  // Prevent confirming an already confirmed booking
-  if (booking.bookingStatus === "CONFIRMED") {
-    return booking;
-  }
-
-  const confirmedBooking =
-    await prisma.booking.update({
+    const confirmedBooking = await prisma.booking.update({
       where: {
         id: booking.id,
       },
@@ -427,46 +414,46 @@ async confirmBooking(
 
       include: {
         membership: true,
-        schedule: true,
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
         healthSafetyForm: true,
       },
     });
 
-  return confirmedBooking;
-}
-
-async saveHealthSafetyForm(
-  bookingId: string,
-  userId: string,
-  data: HealthSafetyFormDto
-) {
-  // 1. Find booking
-  const booking =
-    await prisma.booking.findFirst({
+    return confirmedBooking;
+  }
+  async saveHealthSafetyForm(
+    bookingId: string,
+    userId: string,
+    data: HealthSafetyFormDto,
+  ) {
+    // 1. Find booking
+    const booking = await prisma.booking.findFirst({
       where: {
         id: bookingId,
         userId,
       },
     });
 
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
-    );
-  }
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
 
-  // 2. Check payment
-  if (
-    booking.paymentStatus !== PaymentStatus.PAID
-  ) {
-    throw new Error(
-      "Health & Safety information can only be submitted for a paid booking."
-    );
-  }
+    // 2. Check payment
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error(
+        "Health & Safety information can only be submitted for a paid booking.",
+      );
+    }
 
-  // 3. Create/update health form
-  const healthSafetyForm =
-    await prisma.healthSafetyForm.upsert({
+    // 3. Create/update health form
+    const healthSafetyForm = await prisma.healthSafetyForm.upsert({
       where: {
         bookingId,
       },
@@ -475,334 +462,169 @@ async saveHealthSafetyForm(
         bookingId,
         userId,
 
-        dateOfBirth: data.dateOfBirth
-          ? new Date(data.dateOfBirth)
-          : null,
+        dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
 
         age: data.age ?? null,
 
-        emergencyContactName:
-          data.emergencyContactName || null,
+        emergencyContactName: data.emergencyContactName || null,
 
-        emergencyContactRelationship:
-          data.emergencyContactRelationship || null,
+        emergencyContactRelationship: data.emergencyContactRelationship || null,
 
-        emergencyContactPhone:
-          data.emergencyContactPhone || null,
+        emergencyContactPhone: data.emergencyContactPhone || null,
 
-        pregnancy:
-          data.pregnancy || null,
+        pregnancy: data.pregnancy || null,
 
-        pregnancyWeeks:
-          data.pregnancyWeeks ?? null,
+        pregnancyWeeks: data.pregnancyWeeks ?? null,
 
-        dueDate: data.dueDate
-          ? new Date(data.dueDate)
-          : null,
+        dueDate: data.dueDate ? new Date(data.dueDate) : null,
 
-        pregnancyClearance:
-          data.pregnancyClearance || null,
+        pregnancyClearance: data.pregnancyClearance || null,
 
-        postpartum:
-          data.postpartum || null,
+        postpartum: data.postpartum || null,
 
-        deliveryDate: data.deliveryDate
-          ? new Date(data.deliveryDate)
-          : null,
+        deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
 
-        postpartumClearance:
-          data.postpartumClearance || null,
+        postpartumClearance: data.postpartumClearance || null,
 
-        screeningAnswers:
-          data.screeningAnswers || {},
+        screeningAnswers: data.screeningAnswers || {},
 
-        surgery:
-          data.surgery || null,
+        surgery: data.surgery || null,
 
-        surgeryDetails:
-          data.surgeryDetails || null,
+        surgeryDetails: data.surgeryDetails || null,
 
-        surgeryClearance:
-          data.surgeryClearance || null,
+        surgeryClearance: data.surgeryClearance || null,
 
-        consent:
-          data.consent || [],
+        consent: data.consent || [],
 
-        signature:
-          data.signature || null,
-
-   
+        signature: data.signature || null,
 
         submittedAt: new Date(),
       },
 
       update: {
-        dateOfBirth: data.dateOfBirth
-          ? new Date(data.dateOfBirth)
-          : null,
+        dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
 
         age: data.age ?? null,
 
-        emergencyContactName:
-          data.emergencyContactName || null,
+        emergencyContactName: data.emergencyContactName || null,
 
-        emergencyContactRelationship:
-          data.emergencyContactRelationship || null,
+        emergencyContactRelationship: data.emergencyContactRelationship || null,
 
-        emergencyContactPhone:
-          data.emergencyContactPhone || null,
+        emergencyContactPhone: data.emergencyContactPhone || null,
 
-        pregnancy:
-          data.pregnancy || null,
+        pregnancy: data.pregnancy || null,
 
-        pregnancyWeeks:
-          data.pregnancyWeeks ?? null,
+        pregnancyWeeks: data.pregnancyWeeks ?? null,
 
-        dueDate: data.dueDate
-          ? new Date(data.dueDate)
-          : null,
+        dueDate: data.dueDate ? new Date(data.dueDate) : null,
 
-        pregnancyClearance:
-          data.pregnancyClearance || null,
+        pregnancyClearance: data.pregnancyClearance || null,
 
-        postpartum:
-          data.postpartum || null,
+        postpartum: data.postpartum || null,
 
-        deliveryDate: data.deliveryDate
-          ? new Date(data.deliveryDate)
-          : null,
+        deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
 
-        postpartumClearance:
-          data.postpartumClearance || null,
+        postpartumClearance: data.postpartumClearance || null,
 
-        screeningAnswers:
-          data.screeningAnswers || {},
+        screeningAnswers: data.screeningAnswers || {},
 
-        surgery:
-          data.surgery || null,
+        surgery: data.surgery || null,
 
-        surgeryDetails:
-          data.surgeryDetails || null,
+        surgeryDetails: data.surgeryDetails || null,
 
-        surgeryClearance:
-          data.surgeryClearance || null,
+        surgeryClearance: data.surgeryClearance || null,
 
-        consent:
-          data.consent || [],
+        consent: data.consent || [],
 
-        signature:
-          data.signature || null,
-
+        signature: data.signature || null,
 
         submittedAt: new Date(),
       },
     });
 
-  // 4. Return the health form WITH current user information
-  return await prisma.healthSafetyForm.findUnique({
-    where: {
-      id: healthSafetyForm.id,
-    },
-    include: {
-      user: {
-        select: {
-          id: true,
-          fullName: true,
-          email: true,
-          phone: true,
+    // 4. Return the health form WITH current user information
+    return await prisma.healthSafetyForm.findUnique({
+      where: {
+        id: healthSafetyForm.id,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+          },
         },
       },
-    },
-  });
-}
-
-/**
- * Save the selected schedule for an existing booking.
- *
- * The member must:
- * - own the booking
- * - have paid
- * - have selected a class
- * - select an active schedule
- * - select a schedule belonging to their selected class
- */
-async updateBookingSchedule(
-  bookingId: string,
-  userId: string,
-  scheduleId: string
-) {
-  // 1. Find the member's booking
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-  });
-
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
-    );
+    });
   }
 
-  // 2. Payment must be completed
-  if (booking.paymentStatus !== PaymentStatus.PAID) {
-    throw new Error(
-      "Your membership payment has not been completed."
-    );
-  }
-
-  // 3. Member must have selected a class
-  if (!booking.classId) {
-    throw new Error(
-      "Please select a class before selecting a schedule."
-    );
-  }
-
-  // 4. Find the selected schedule
-  const schedule = await prisma.schedule.findFirst({
-    where: {
-      id: scheduleId,
-      isActive: true,
-    },
-  });
-
-  if (!schedule) {
-    throw new Error(
-      "Selected schedule was not found or is no longer available."
-    );
-  }
-
-  // 5. Make sure the schedule belongs to the selected class
-  if (
-    schedule.className.toLowerCase() !==
-    booking.classId.toLowerCase()
+  /**
+   * Save the selected schedule for an existing booking.
+   *
+   * The member must:
+   * - own the booking
+   * - have paid
+   * - have selected a class
+   * - select an active schedule
+   * - select a schedule belonging to their selected class
+   */
+  async updateBookingSchedule(
+    bookingId: string,
+    userId: string,
+    scheduleId: string,
   ) {
-    throw new Error(
-      "The selected schedule does not belong to your selected class."
-    );
-  }
+    // 1. Find the member's booking
+    const booking = await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
 
-  // 6. Save the schedule
-  const updatedBooking = await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
-    data: {
-      scheduleId: schedule.id,
-    },
-    include: {
-      membership: true,
-      schedule: true,
-    },
-  });
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
 
-  return updatedBooking;
-}
+    // 2. Payment must be completed
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("Your membership payment has not been completed.");
+    }
 
-/**
- * Save the member's start date.
- *
- * The selected date must match the day of the
- * schedule the member previously selected.
- *
- * Example:
- * Schedule = TUESDAY 7:00 AM
- * Start date = Tuesday, September 15
- *
- * A Wednesday start date would be rejected.
- */
-async updateBookingStartDate(
-  bookingId: string,
-  userId: string,
-  startDate: string
-) {
-  // 1. Find the member's booking
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-    include: {
-      schedule: true,
-    },
-  });
+    // 3. Member must have selected a class
+    if (!booking.classId) {
+      throw new Error("Please select a class before selecting a schedule.");
+    }
 
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
-    );
-  }
+    // 4. Find the selected schedule
+    const schedule = await prisma.schedule.findFirst({
+      where: {
+        id: scheduleId,
+        isActive: true,
+      },
+    });
 
-  // 2. Payment must be completed
-  if (booking.paymentStatus !== PaymentStatus.PAID) {
-    throw new Error(
-      "Your membership payment has not been completed."
-    );
-  }
+    if (!schedule) {
+      throw new Error(
+        "Selected schedule was not found or is no longer available.",
+      );
+    }
 
-  // 3. A schedule must be selected first
-  if (!booking.schedule) {
-    throw new Error(
-      "Please select a schedule before choosing your start date."
-    );
-  }
+    // 5. Make sure the schedule belongs to the selected class
+    if (schedule.className.toLowerCase() !== booking.classId.toLowerCase()) {
+      throw new Error(
+        "The selected schedule does not belong to your selected class.",
+      );
+    }
 
-  // 4. Parse the date
-  const selectedDate = new Date(startDate);
-
-  if (Number.isNaN(selectedDate.getTime())) {
-    throw new Error(
-      "Invalid start date."
-    );
-  }
-
-  // 5. Prevent selecting a date in the past
-  const today = new Date();
-
-  today.setHours(0, 0, 0, 0);
-
-  const dateToCompare = new Date(selectedDate);
-
-  dateToCompare.setHours(0, 0, 0, 0);
-
-  if (dateToCompare < today) {
-    throw new Error(
-      "Start date cannot be in the past."
-    );
-  }
-
-  // 6. Make sure the date matches the schedule's day
-  const dayNames = [
-    "SUNDAY",
-    "MONDAY",
-    "TUESDAY",
-    "WEDNESDAY",
-    "THURSDAY",
-    "FRIDAY",
-    "SATURDAY",
-  ];
-
-  const selectedDay =
-    dayNames[selectedDate.getDay()];
-
-  if (
-    selectedDay !==
-    booking.schedule.dayOfWeek
-  ) {
-    throw new Error(
-      `Your selected schedule is on ${booking.schedule.dayOfWeek}. Please choose a ${booking.schedule.dayOfWeek.toLowerCase()} start date.`
-    );
-  }
-
-  // 7. Save the actual booking date
-  const updatedBooking =
-    await prisma.booking.update({
+    // 6. Save the schedule
+    const updatedBooking = await prisma.booking.update({
       where: {
         id: booking.id,
       },
       data: {
-        bookingDate: selectedDate,
+        scheduleId: schedule.id,
       },
       include: {
         membership: true,
@@ -810,8 +632,83 @@ async updateBookingStartDate(
       },
     });
 
-  return updatedBooking;
-}
+    return updatedBooking;
+  }
+
+  /**
+   * Save the member's start date.
+   *
+   * The selected date must match the day of the
+   * schedule the member previously selected.
+   *
+   * Example:
+   * Schedule = TUESDAY 7:00 AM
+   * Start date = Tuesday, September 15
+   *
+   * A Wednesday start date would be rejected.
+   */
+  async updateBookingStartDate(
+    bookingId: string,
+    userId: string,
+    startDate: string,
+  ) {
+    // 1. Find the member's booking
+    const booking = await prisma.booking.findFirst({
+      where: {
+        id: bookingId,
+        userId,
+      },
+    });
+
+    if (!booking) {
+      throw new Error("Booking not found or does not belong to you.");
+    }
+
+    // 2. Payment must be completed
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("Your membership payment has not been completed.");
+    }
+
+    // 3. A class must be selected before choosing a start date
+    if (!booking.classId) {
+      throw new Error("Please select a class before choosing your start date.");
+    }
+
+    // 4. Parse the date
+    const selectedDate = new Date(startDate);
+
+    if (Number.isNaN(selectedDate.getTime())) {
+      throw new Error("Invalid start date.");
+    }
+
+    // 5. Prevent selecting a date in the past
+    const today = new Date();
+
+    today.setHours(0, 0, 0, 0);
+
+    const dateToCompare = new Date(selectedDate);
+
+    dateToCompare.setHours(0, 0, 0, 0);
+
+    if (dateToCompare < today) {
+      throw new Error("Start date cannot be in the past.");
+    }
+
+    // 6. Save the preferred start date
+    const updatedBooking = await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+      data: {
+        preferredStartDate: selectedDate,
+      },
+      include: {
+        membership: true,
+      },
+    });
+
+    return updatedBooking;
+  }
 }
 
 export default new BookingService();
