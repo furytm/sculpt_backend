@@ -35,7 +35,7 @@ class BookingService {
 
         userId: null,
 
-        classId: null,
+  classId: data.classId ?? null,
         scheduleId: null,
         bookingDate: null,
 
