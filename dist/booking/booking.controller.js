@@ -162,6 +162,13 @@ class BookingController {
     async assignSchedules(req, res) {
         try {
             const { bookingId } = req.params;
+            // Make sure bookingId is a single string
+            if (typeof bookingId !== "string" || !bookingId.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid booking ID.",
+                });
+            }
             const userId = req.user.userId;
             const schedules = await bookingService.assignSchedules(bookingId, userId);
             return res.status(200).json({

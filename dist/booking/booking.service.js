@@ -1,6 +1,6 @@
 import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
-import { PaymentStatus } from "./booking.types.js";
+import { PaymentStatus, } from "./booking.types.js";
 class BookingService {
     async createBooking(data) {
         const paymentReference = `SL-${Date.now()}`;
@@ -143,6 +143,15 @@ class BookingService {
             include: {
                 membership: true,
                 user: true,
+                memberSchedules: {
+                    where: {
+                        isActive: true,
+                    },
+                    include: {
+                        schedule: true,
+                    },
+                },
+                healthSafetyForm: true,
             },
         });
         if (!booking) {
@@ -174,7 +183,15 @@ class BookingService {
             },
             include: {
                 membership: true,
-                schedule: true,
+                memberSchedules: {
+                    where: {
+                        isActive: true,
+                    },
+                    include: {
+                        schedule: true,
+                    },
+                },
+                healthSafetyForm: true,
             },
             orderBy: {
                 createdAt: "desc",
@@ -264,36 +281,39 @@ class BookingService {
                 userId,
             },
             include: {
-                schedule: true,
+                membership: true,
+                memberSchedules: {
+                    where: {
+                        isActive: true,
+                    },
+                    include: {
+                        schedule: true,
+                    },
+                },
+                healthSafetyForm: true,
             },
         });
         if (!booking) {
             throw new Error("Booking not found or does not belong to you.");
         }
         // Member must have paid
-        if (booking.paymentStatus !==
-            PaymentStatus.PAID) {
+        if (booking.paymentStatus !== PaymentStatus.PAID) {
             throw new Error("This booking has not been paid for.");
         }
         // A class must have been selected
         if (!booking.classId) {
             throw new Error("Please select a class before confirming your booking.");
         }
-        // A schedule must have been selected
-        if (!booking.scheduleId) {
-            throw new Error("Please select a schedule before confirming your booking.");
+        // At least one recurring schedule must have been assigned
+        if (booking.memberSchedules.length === 0) {
+            throw new Error("No recurring schedules have been assigned to this booking.");
         }
         // A start date must have been selected
-        if (!booking.bookingDate) {
+        if (!booking.preferredStartDate) {
             throw new Error("Please select a start date before confirming your booking.");
         }
         // Health & Safety form must be completed
-        const healthSafetyForm = await prisma.healthSafetyForm.findUnique({
-            where: {
-                bookingId: booking.id,
-            },
-        });
-        if (!healthSafetyForm) {
+        if (!booking.healthSafetyForm) {
             throw new Error("Please complete your Health & Safety form before confirming your booking.");
         }
         // Prevent confirming an already confirmed booking
@@ -309,7 +329,14 @@ class BookingService {
             },
             include: {
                 membership: true,
-                schedule: true,
+                memberSchedules: {
+                    where: {
+                        isActive: true,
+                    },
+                    include: {
+                        schedule: true,
+                    },
+                },
                 healthSafetyForm: true,
             },
         });
@@ -338,23 +365,17 @@ class BookingService {
             create: {
                 bookingId,
                 userId,
-                dateOfBirth: data.dateOfBirth
-                    ? new Date(data.dateOfBirth)
-                    : null,
+                dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
                 age: data.age ?? null,
                 emergencyContactName: data.emergencyContactName || null,
                 emergencyContactRelationship: data.emergencyContactRelationship || null,
                 emergencyContactPhone: data.emergencyContactPhone || null,
                 pregnancy: data.pregnancy || null,
                 pregnancyWeeks: data.pregnancyWeeks ?? null,
-                dueDate: data.dueDate
-                    ? new Date(data.dueDate)
-                    : null,
+                dueDate: data.dueDate ? new Date(data.dueDate) : null,
                 pregnancyClearance: data.pregnancyClearance || null,
                 postpartum: data.postpartum || null,
-                deliveryDate: data.deliveryDate
-                    ? new Date(data.deliveryDate)
-                    : null,
+                deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
                 postpartumClearance: data.postpartumClearance || null,
                 screeningAnswers: data.screeningAnswers || {},
                 surgery: data.surgery || null,
@@ -365,23 +386,17 @@ class BookingService {
                 submittedAt: new Date(),
             },
             update: {
-                dateOfBirth: data.dateOfBirth
-                    ? new Date(data.dateOfBirth)
-                    : null,
+                dateOfBirth: data.dateOfBirth ? new Date(data.dateOfBirth) : null,
                 age: data.age ?? null,
                 emergencyContactName: data.emergencyContactName || null,
                 emergencyContactRelationship: data.emergencyContactRelationship || null,
                 emergencyContactPhone: data.emergencyContactPhone || null,
                 pregnancy: data.pregnancy || null,
                 pregnancyWeeks: data.pregnancyWeeks ?? null,
-                dueDate: data.dueDate
-                    ? new Date(data.dueDate)
-                    : null,
+                dueDate: data.dueDate ? new Date(data.dueDate) : null,
                 pregnancyClearance: data.pregnancyClearance || null,
                 postpartum: data.postpartum || null,
-                deliveryDate: data.deliveryDate
-                    ? new Date(data.deliveryDate)
-                    : null,
+                deliveryDate: data.deliveryDate ? new Date(data.deliveryDate) : null,
                 postpartumClearance: data.postpartumClearance || null,
                 screeningAnswers: data.screeningAnswers || {},
                 surgery: data.surgery || null,
@@ -449,8 +464,7 @@ class BookingService {
             throw new Error("Selected schedule was not found or is no longer available.");
         }
         // 5. Make sure the schedule belongs to the selected class
-        if (schedule.className.toLowerCase() !==
-            booking.classId.toLowerCase()) {
+        if (schedule.className.toLowerCase() !== booking.classId.toLowerCase()) {
             throw new Error("The selected schedule does not belong to your selected class.");
         }
         // 6. Save the schedule
@@ -487,9 +501,6 @@ class BookingService {
                 id: bookingId,
                 userId,
             },
-            include: {
-                schedule: true,
-            },
         });
         if (!booking) {
             throw new Error("Booking not found or does not belong to you.");
@@ -498,9 +509,9 @@ class BookingService {
         if (booking.paymentStatus !== PaymentStatus.PAID) {
             throw new Error("Your membership payment has not been completed.");
         }
-        // 3. A schedule must be selected first
-        if (!booking.schedule) {
-            throw new Error("Please select a schedule before choosing your start date.");
+        // 3. A class must be selected before choosing a start date
+        if (!booking.classId) {
+            throw new Error("Please select a class before choosing your start date.");
         }
         // 4. Parse the date
         const selectedDate = new Date(startDate);
@@ -515,32 +526,16 @@ class BookingService {
         if (dateToCompare < today) {
             throw new Error("Start date cannot be in the past.");
         }
-        // 6. Make sure the date matches the schedule's day
-        const dayNames = [
-            "SUNDAY",
-            "MONDAY",
-            "TUESDAY",
-            "WEDNESDAY",
-            "THURSDAY",
-            "FRIDAY",
-            "SATURDAY",
-        ];
-        const selectedDay = dayNames[selectedDate.getDay()];
-        if (selectedDay !==
-            booking.schedule.dayOfWeek) {
-            throw new Error(`Your selected schedule is on ${booking.schedule.dayOfWeek}. Please choose a ${booking.schedule.dayOfWeek.toLowerCase()} start date.`);
-        }
-        // 7. Save the actual booking date
+        // 6. Save the preferred start date
         const updatedBooking = await prisma.booking.update({
             where: {
                 id: booking.id,
             },
             data: {
-                bookingDate: selectedDate,
+                preferredStartDate: selectedDate,
             },
             include: {
                 membership: true,
-                schedule: true,
             },
         });
         return updatedBooking;
