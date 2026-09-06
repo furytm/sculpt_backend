@@ -256,31 +256,39 @@ const bookingId = String(req.params.bookingId);
   }
 }
 
-
 async assignSchedules(req: Request, res: Response) {
   try {
-    const { bookingId } = req.params
-    const userId = req.user.userId
+    const { bookingId } = req.params;
+
+    // Make sure bookingId is a single string
+    if (typeof bookingId !== "string" || !bookingId.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid booking ID.",
+      });
+    }
+
+    const userId = req.user.userId;
 
     const schedules = await bookingService.assignSchedules(
       bookingId,
       userId
-    )
+    );
 
     return res.status(200).json({
       success: true,
       message: "Schedules assigned successfully.",
       data: schedules,
-    })
+    });
   } catch (error: any) {
-    console.error("Assign Schedules Error:", error)
+    console.error("Assign Schedules Error:", error);
 
     return res.status(400).json({
       success: false,
       message:
         error?.message ||
         "Failed to assign schedules.",
-    })
+    });
   }
 }
 
