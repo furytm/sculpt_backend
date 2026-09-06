@@ -37,6 +37,12 @@ router.post(
   bookingController.confirmBooking
 );
 
+router.post(
+  "/:bookingId/assign-schedules",
+  authenticate,
+  bookingController.assignSchedules
+)
+
 router.get(
   "/confirmation/:reference",
   bookingController.getBookingConfirmation

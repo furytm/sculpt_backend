@@ -256,6 +256,34 @@ const bookingId = String(req.params.bookingId);
   }
 }
 
+
+async assignSchedules(req: Request, res: Response) {
+  try {
+    const { bookingId } = req.params
+    const userId = req.user.userId
+
+    const schedules = await bookingService.assignSchedules(
+      bookingId,
+      userId
+    )
+
+    return res.status(200).json({
+      success: true,
+      message: "Schedules assigned successfully.",
+      data: schedules,
+    })
+  } catch (error: any) {
+    console.error("Assign Schedules Error:", error)
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to assign schedules.",
+    })
+  }
+}
+
 async saveHealthSafetyForm(
   req: Request,
   res: Response

@@ -97,6 +97,81 @@ const booking = await prisma.booking.create({
     });
   }
 
+  async assignSchedules(
+  bookingId: string,
+  userId: string
+) {
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  })
+
+  if (!booking) {
+    throw new Error("Booking not found.")
+  }
+
+  if (!booking.classId) {
+    throw new Error("No class has been selected for this booking.")
+  }
+
+  // Find ALL active schedules for the selected class
+  const schedules = await prisma.schedule.findMany({
+    where: {
+      className: booking.classId,
+      isActive: true,
+    },
+    orderBy: [
+      {
+        dayOfWeek: "asc",
+      },
+      {
+        startTime: "asc",
+      },
+    ],
+  })
+
+  if (schedules.length === 0) {
+    throw new Error(
+      `No active schedules found for ${booking.classId}.`
+    )
+  }
+
+  // Remove any previous assignments for this booking
+  await prisma.memberSchedule.deleteMany({
+    where: {
+      bookingId,
+    },
+  })
+
+  // Assign ALL schedules belonging to the selected class
+  await prisma.memberSchedule.createMany({
+    data: schedules.map((schedule) => ({
+      userId,
+      bookingId,
+      scheduleId: schedule.id,
+      classId: booking.classId!,
+      startDate: booking.preferredStartDate ?? null,
+      isActive: true,
+    })),
+  })
+
+  // Return the newly assigned schedules
+  return prisma.memberSchedule.findMany({
+    where: {
+      bookingId,
+      isActive: true,
+    },
+    include: {
+      schedule: true,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  })
+}
+
   async getBookingConfirmation(
     reference: string
   ) {

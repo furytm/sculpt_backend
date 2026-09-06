@@ -35,6 +35,7 @@ model Booking {
   availableDays      String[]
   preferredTimes     String[]
   bookingStatus      BookingStatus     @default(PENDING)
+  memberSchedules    MemberSchedule[]
 
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
@@ -74,8 +75,7 @@ model HealthSafetyForm {
 
   consent Json?
 
-  signature     String?
-
+  signature String?
 
   submittedAt DateTime?
   createdAt   DateTime  @default(now())
@@ -89,7 +89,7 @@ model Schedule {
 
   className String
   tutorName String
-  code String @unique
+  code      String @unique
 
   dayOfWeek DayOfWeek
 
@@ -100,12 +100,43 @@ model Schedule {
 
   bookings Booking[]
 
+  memberSchedules MemberSchedule[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([dayOfWeek])
   @@index([tutorName])
   @@index([className])
+  @@index([isActive])
+}
+
+model MemberSchedule {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bookingId String
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  scheduleId String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  classId String
+
+  startDate DateTime?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([bookingId, scheduleId])
+  @@index([userId])
+  @@index([bookingId])
+  @@index([scheduleId])
+  @@index([classId])
   @@index([isActive])
 }
 
@@ -143,8 +174,10 @@ model User {
 
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
-  memberships             MemberMembership[]
-  healthSafetyForms       HealthSafetyForm[]
+
+  memberSchedules   MemberSchedule[]
+  memberships       MemberMembership[]
+  healthSafetyForms HealthSafetyForm[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
