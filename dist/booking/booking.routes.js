@@ -10,6 +10,7 @@ router.patch("/:bookingId/health-safety", authenticate, bookingController.saveHe
 router.post("/:bookingId/confirm", authenticate, bookingController.confirmBooking);
 router.post("/:bookingId/assign-schedules", authenticate, bookingController.assignSchedules);
 router.get("/confirmation/:reference", bookingController.getBookingConfirmation);
+router.patch("/:bookingId/class", authenticate, bookingController.updateBookingClass);
 /**
  * Authenticated member bookings
  *

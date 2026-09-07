@@ -1,6 +1,6 @@
 import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
-import { PaymentStatus, } from "./booking.types.js";
+import { PaymentMethod, PaymentStatus, } from "@prisma/client";
 class BookingService {
     async createBooking(data) {
         const paymentReference = `SL-${Date.now()}`;
@@ -12,25 +12,43 @@ class BookingService {
         if (!membership) {
             throw new Error("Membership not found.");
         }
-        console.log("🔥 CURRENT CREATE BOOKING SERVICE");
-        console.log("bookingDate:", data.bookingDate);
-        console.log("classId:", data.classId);
-        console.log("scheduleId:", data.scheduleId);
         const booking = await prisma.booking.create({
             data: {
                 fullName: data.fullName,
                 email: data.email,
                 phone: data.phone,
                 userId: null,
-                classId: null,
+                classId: data.classId ?? null,
                 scheduleId: null,
                 bookingDate: null,
                 membershipId: membership.id,
                 amount: membership.price,
+                paymentMethod: data.paymentMethod === "OFFLINE"
+                    ? PaymentMethod.OFFLINE
+                    : PaymentMethod.PAYMISH,
                 paymentReference,
                 paymentStatus: PaymentStatus.PENDING,
             },
         });
+        /*
+         * OFFLINE PAYMENT
+         *
+         * Do not initialize Paymish.
+         * The booking remains PENDING until
+         * an admin verifies the bank transfer.
+         */
+        if (data.paymentMethod === "OFFLINE") {
+            return {
+                booking,
+                paymentMethod: PaymentMethod.OFFLINE,
+                authorizationUrl: null,
+            };
+        }
+        /*
+         * PAYMISH PAYMENT
+         *
+         * Keep the existing Paymish initialization.
+         */
         const payment = await paymentService.initializeTransaction({
             email: booking.email,
             amount: booking.amount,
@@ -38,6 +56,7 @@ class BookingService {
         });
         return {
             booking,
+            paymentMethod: PaymentMethod.PAYMISH,
             authorizationUrl: payment.data.authorization_url,
         };
     }
@@ -157,19 +176,6 @@ class BookingService {
         if (!booking) {
             throw new Error("Booking not found.");
         }
-        if (booking.paymentStatus ===
-            PaymentStatus.PENDING) {
-            await prisma.booking.update({
-                where: {
-                    paymentReference: reference,
-                },
-                data: {
-                    paymentStatus: PaymentStatus.PAID,
-                },
-            });
-            booking.paymentStatus =
-                PaymentStatus.PAID;
-        }
         return booking;
     }
     /**
@@ -220,7 +226,6 @@ class BookingService {
             },
             data: {
                 classId,
-                // Reset schedule if the member changes class
                 scheduleId: null,
                 bookingDate: null,
             },

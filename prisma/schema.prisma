@@ -24,7 +24,8 @@ model Booking {
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
 
-  bookingDate DateTime?
+  membershipActivation MembershipActivation?
+  bookingDate          DateTime?
 
   amount Int
 
@@ -36,10 +37,10 @@ model Booking {
   preferredTimes     String[]
   bookingStatus      BookingStatus     @default(PENDING)
   memberSchedules    MemberSchedule[]
-  paymentMethod    PaymentMethod @default(PAYMISH)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  healthSafetyForm HealthSafetyForm?
+  paymentMethod      PaymentMethod     @default(PAYMISH)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  healthSafetyForm   HealthSafetyForm?
 }
 
 model HealthSafetyForm {
@@ -115,7 +116,7 @@ model MemberSchedule {
   id String @id @default(cuid())
 
   userId String
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   bookingId String
   booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
@@ -183,6 +184,28 @@ model User {
   updatedAt DateTime @updatedAt
 }
 
+model MembershipActivation {
+  id String @id @default(cuid())
+
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  memberMembershipId String           @unique
+  memberMembership   MemberMembership @relation(fields: [memberMembershipId], references: [id], onDelete: Cascade)
+
+  membershipNumber String @unique
+
+  tokenHash String @unique
+
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
 model RefreshToken {
   id String @id @default(cuid())
 
@@ -230,6 +253,32 @@ model Membership {
   updatedAt DateTime @updatedAt
 }
 
+model MemberMembership {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
+
+  bookingId String?  @unique
+  booking   Booking? @relation(fields: [bookingId], references: [id])
+
+  status     MembershipStatus @default(ACTIVE)
+  startDate  DateTime?
+  expiryDate DateTime?
+
+  activation MembershipActivation?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiryDate])
+}
+
 model EmailVerificationToken {
   id        String @id @default(cuid())
   tokenHash String @unique
@@ -260,31 +309,6 @@ enum MembershipStatus {
   ACTIVE
   EXPIRED
   CANCELLED
-}
-
-model MemberMembership {
-  id String @id @default(cuid())
-
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  membershipId String
-  membership   Membership @relation(fields: [membershipId], references: [id])
-
-  bookingId String?  @unique
-  booking   Booking? @relation(fields: [bookingId], references: [id])
-
-  status MembershipStatus @default(ACTIVE)
-
-  startDate  DateTime?
-  expiryDate DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([userId])
-  @@index([status])
-  @@index([expiryDate])
 }
 
 enum PaymentStatus {

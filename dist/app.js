@@ -7,6 +7,8 @@ import paymentRoutes from "./payment/payment.routes.js";
 import bookingRoutes from "./booking/booking.routes.js";
 import authRoutes from "./auth/auth.routes.js";
 import scheduleRoutes from "./schedule/schedule.routes.js";
+import adminRoutes from "./admin/admin.route.js";
+import membershipActivationRoutes from "./membership-activation/membership-activation.route.js";
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger.js";
 dotenv.config();
@@ -26,5 +28,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/memberships", membershipRoutes);
 app.use("/api/schedules", scheduleRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/membership-activation", membershipActivationRoutes);
 export default app;
 //# sourceMappingURL=app.js.map

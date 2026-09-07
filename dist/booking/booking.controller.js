@@ -3,19 +3,21 @@ import { updateBookingPreferencesSchema, } from "./booking.validation.js";
 class BookingController {
     async createBooking(req, res) {
         try {
-            const result = await bookingService.createBooking(req.body);
+            const booking = await bookingService.createBooking(req.body);
             return res.status(201).json({
                 success: true,
-                message: "Booking created. Redirect the user to Paymish to complete payment.",
-                data: result,
+                message: req.body.paymentMethod === "OFFLINE"
+                    ? "Offline booking created successfully."
+                    : "Booking created and payment initialized successfully.",
+                data: booking,
             });
         }
         catch (error) {
             console.error("Create Booking Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message || "Failed to create booking.",
-                error,
+                message: error?.message ||
+                    "Failed to create booking.",
             });
         }
     }
@@ -298,10 +300,18 @@ class BookingController {
         try {
             const { bookingId } = req.params;
             const { classId } = req.body;
-            if (typeof bookingId !== "string") {
+            if (typeof bookingId !== "string" ||
+                !bookingId.trim()) {
                 return res.status(400).json({
                     success: false,
                     message: "Invalid booking ID.",
+                });
+            }
+            if (typeof classId !== "string" ||
+                !classId.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please select a class.",
                 });
             }
             const userId = req.user.userId;
@@ -315,11 +325,11 @@ class BookingController {
             });
         }
         catch (error) {
+            console.error("Update Booking Class Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error instanceof Error
-                    ? error.message
-                    : "Unable to select class.",
+                message: error?.message ||
+                    "Failed to save selected class.",
             });
         }
     }

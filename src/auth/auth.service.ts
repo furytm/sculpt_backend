@@ -300,6 +300,52 @@ try {
     };
   }
 
+  async updateProfile(
+  userId: string,
+  data: {
+    fullName?: string;
+    phone?: string;
+  }
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+  });
+
+  if (!user) {
+    throw new Error("User not found.");
+  }
+
+  const updatedUser = await prisma.user.update({
+    where: {
+      id: userId,
+    },
+    data: {
+      ...(data.fullName !== undefined && {
+        fullName: data.fullName.trim(),
+      }),
+
+      ...(data.phone !== undefined && {
+        phone: data.phone.trim(),
+      }),
+    },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+      phone: true,
+      role: true,
+      status: true,
+      provider: true,
+      emailVerified: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return updatedUser;
+}
   /**
    * Refresh Access Token
    */

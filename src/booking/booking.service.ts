@@ -225,23 +225,6 @@ async createBooking(
     );
   }
 
-  if (
-    booking.paymentStatus ===
-    PaymentStatus.PENDING
-  ) {
-    await prisma.booking.update({
-      where: {
-        paymentReference: reference,
-      },
-      data: {
-        paymentStatus:
-          PaymentStatus.PAID,
-      },
-    });
-
-    booking.paymentStatus =
-      PaymentStatus.PAID;
-  }
 
   return booking;
 }
