@@ -386,6 +386,10 @@ async confirmBooking(
   bookingId: string,
   userId: string
 ) {
+  // ---------------------------------------------------------
+  // GET BOOKING
+  // ---------------------------------------------------------
+
   const booking = await prisma.booking.findFirst({
     where: {
       id: bookingId,
@@ -440,49 +444,12 @@ async confirmBooking(
   }
 
   // ---------------------------------------------------------
-  // RECURRING SCHEDULES
-  // ---------------------------------------------------------
-
-  if (
-    booking.memberSchedules.length === 0
-  ) {
-    throw new Error(
-      "No recurring schedules have been assigned to this booking."
-    );
-  }
-
-  // ---------------------------------------------------------
   // START DATE
   // ---------------------------------------------------------
 
   if (!booking.preferredStartDate) {
     throw new Error(
       "Please select a start date before confirming your booking."
-    );
-  }
-
-  // ---------------------------------------------------------
-  // START DATE MUST MATCH ONE OF THE SELECTED DAYS
-  // ---------------------------------------------------------
-
-  const startDayOfWeek =
-    booking.preferredStartDate
-      .toLocaleDateString("en-US", {
-        weekday: "long",
-        timeZone: "Africa/Lagos",
-      })
-      .toUpperCase();
-
-  const hasMatchingStartDay =
-    booking.memberSchedules.some(
-      (memberSchedule) =>
-        memberSchedule.schedule.dayOfWeek ===
-        startDayOfWeek
-    );
-
-  if (!hasMatchingStartDay) {
-    throw new Error(
-      "Your start date must fall on one of your selected class days."
     );
   }
 
@@ -508,13 +475,86 @@ async confirmBooking(
   }
 
   // ---------------------------------------------------------
+  // ASSIGN ALL ACTIVE SCHEDULES FOR THE CLASS
+  // ---------------------------------------------------------
+  //
+  // The member does NOT select schedules.
+  //
+  // We automatically assign every active schedule
+  // belonging to the selected class.
+  //
+  // Example:
+  //
+  // Beginner Pilates:
+  // Monday 9am
+  // Monday 5pm
+  // Tuesday 10am
+  // Friday 9am
+  //
+  // All of them are assigned to this booking.
+  // ---------------------------------------------------------
+
+  await this.assignSchedules(
+    booking.id,
+    userId
+  );
+
+  // ---------------------------------------------------------
+  // RELOAD BOOKING WITH ASSIGNED SCHEDULES
+  // ---------------------------------------------------------
+
+  const bookingWithSchedules =
+    await prisma.booking.findFirst({
+      where: {
+        id: booking.id,
+        userId,
+      },
+
+      include: {
+        membership: true,
+
+        memberMembership: true,
+
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+
+          include: {
+            schedule: true,
+          },
+        },
+
+        healthSafetyForm: true,
+      },
+    });
+
+  if (!bookingWithSchedules) {
+    throw new Error(
+      "Unable to load booking schedules."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // MAKE SURE SCHEDULES EXIST
+  // ---------------------------------------------------------
+
+  if (
+    bookingWithSchedules.memberSchedules.length === 0
+  ) {
+    throw new Error(
+      "No active schedules are available for this class."
+    );
+  }
+
+  // ---------------------------------------------------------
   // CONFIRM BOOKING
   // ---------------------------------------------------------
 
   const confirmedBooking =
     await prisma.booking.update({
       where: {
-        id: booking.id,
+        id: bookingWithSchedules.id,
       },
 
       data: {
@@ -545,18 +585,15 @@ async confirmBooking(
   // GOOGLE CALENDAR
   // ---------------------------------------------------------
   //
-  // One class can have multiple selected recurring days.
+  // Create one recurring event for EACH active schedule.
   //
   // Example:
   //
-  // Monday
-  // Wednesday
-  // Friday
+  // Monday 9am
+  // Tuesday 10am
+  // Friday 5pm
   //
-  // We create one weekly recurring Google Calendar
-  // event for EACH selected day.
-  //
-  // Each event stops at the membership expiry date.
+  // → 3 recurring Google Calendar events.
   // ---------------------------------------------------------
 
   try {
@@ -619,7 +656,7 @@ async confirmBooking(
     }
 
     // -------------------------------------------------------
-    // SAVE ALL GOOGLE CALENDAR EVENT IDS / URLS
+    // SAVE GOOGLE CALENDAR EVENT IDS / URLS
     // -------------------------------------------------------
 
     const eventIds =
@@ -628,7 +665,9 @@ async confirmBooking(
           (event) => event.eventId
         )
         .filter(
-          (eventId): eventId is string =>
+          (
+            eventId
+          ): eventId is string =>
             Boolean(eventId)
         );
 
@@ -638,7 +677,9 @@ async confirmBooking(
           (event) => event.eventUrl
         )
         .filter(
-          (eventUrl): eventUrl is string =>
+          (
+            eventUrl
+          ): eventUrl is string =>
             Boolean(eventUrl)
         );
 
@@ -673,10 +714,7 @@ async confirmBooking(
       calendarError
     );
 
-    // The booking remains CONFIRMED.
-    //
-    // Google Calendar is a secondary integration and
-    // should not cause a valid booking confirmation to fail.
+    // Booking remains CONFIRMED even if Google Calendar fails.
   }
 
   return confirmedBooking;
@@ -900,68 +938,42 @@ async confirmBooking(
    *
    * A Wednesday start date would be rejected.
    */
-  async updateBookingStartDate(
-    bookingId: string,
-    userId: string,
-    startDate: string,
-  ) {
-    // 1. Find the member's booking
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-    });
+async updateBookingStartDate(
+  bookingId: string,
+  userId: string,
+  startDate: string
+) {
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+  });
 
-    if (!booking) {
-      throw new Error("Booking not found or does not belong to you.");
-    }
-
-    // 2. Payment must be completed
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error("Your membership payment has not been completed.");
-    }
-
-    // 3. A class must be selected before choosing a start date
-    if (!booking.classId) {
-      throw new Error("Please select a class before choosing your start date.");
-    }
-
-    // 4. Parse the date
-    const selectedDate = new Date(startDate);
-
-    if (Number.isNaN(selectedDate.getTime())) {
-      throw new Error("Invalid start date.");
-    }
-
-    // 5. Prevent selecting a date in the past
-    const today = new Date();
-
-    today.setHours(0, 0, 0, 0);
-
-    const dateToCompare = new Date(selectedDate);
-
-    dateToCompare.setHours(0, 0, 0, 0);
-
-    if (dateToCompare < today) {
-      throw new Error("Start date cannot be in the past.");
-    }
-
-    // 6. Save the preferred start date
-    const updatedBooking = await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-      data: {
-        preferredStartDate: selectedDate,
-      },
-      include: {
-        membership: true,
-      },
-    });
-
-    return updatedBooking;
+  if (!booking) {
+    throw new Error("Booking not found or does not belong to you.");
   }
+
+  const selectedDate = new Date(startDate);
+
+  if (Number.isNaN(selectedDate.getTime())) {
+    throw new Error("Invalid start date.");
+  }
+
+  const updatedBooking = await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+    data: {
+      preferredStartDate: selectedDate,
+    },
+    include: {
+      membership: true,
+    },
+  });
+
+  return updatedBooking;
+}
 }
 
 export default new BookingService();

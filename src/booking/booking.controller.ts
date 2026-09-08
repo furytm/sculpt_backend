@@ -381,8 +381,7 @@ async updateBookingStartDate(
     if (!startDate) {
       return res.status(400).json({
         success: false,
-        message:
-          "Start date is required.",
+        message: "Start date is required.",
       });
     }
 
@@ -395,8 +394,7 @@ async updateBookingStartDate(
 
     return res.status(200).json({
       success: true,
-      message:
-        "Start date saved successfully.",
+      message: "Start date saved successfully.",
       data: {
         booking,
       },

@@ -61,16 +61,17 @@ async verifyPayment(
     await bookingService.markBookingPaid(reference);
 
     return res.redirect(
-      `https://sculpt-labs.vercel.app/confirmation?reference=${encodeURIComponent(
-        reference
-      )}`
+  `https://www.sculptlab.com.ng/confirmation?reference=${encodeURIComponent(
+    reference
+  )}`
+
     );
   } catch (error) {
     console.error("Payment Callback Error:", error);
 
-    return res.redirect(
-      "https://sculpt-labs.vercel.app/confirmation?payment=failed"
-    );
+return res.redirect(
+  "https://www.sculptlab.com.ng/confirmation?payment=failed"
+);
   }
 }
 }
