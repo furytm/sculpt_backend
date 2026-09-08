@@ -1,6 +1,7 @@
 import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
-import { PaymentMethod, PaymentStatus, } from "@prisma/client";
+import { PaymentMethod, PaymentStatus, BookingStatus, } from "@prisma/client";
+import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
 class BookingService {
     async createBooking(data) {
         const paymentReference = `SL-${Date.now()}`;
@@ -279,6 +280,13 @@ class BookingService {
      * It finalizes the existing booking after
      * the member has completed the booking flow.
      */
+    /**
+    * Confirm an existing paid booking.
+    *
+    * This does NOT create a new booking.
+    * It finalizes the existing booking after
+    * the member has completed the booking flow.
+    */
     async confirmBooking(bookingId, userId) {
         const booking = await prisma.booking.findFirst({
             where: {
@@ -322,15 +330,22 @@ class BookingService {
             throw new Error("Please complete your Health & Safety form before confirming your booking.");
         }
         // Prevent confirming an already confirmed booking
-        if (booking.bookingStatus === "CONFIRMED") {
+        if (booking.bookingStatus === BookingStatus.CONFIRMED) {
             return booking;
         }
+        // Get the schedule that will be placed on Google Calendar.
+        // We use the first active recurring schedule for this booking.
+        const selectedSchedule = booking.memberSchedules[0]?.schedule;
+        if (!selectedSchedule) {
+            throw new Error("No valid schedule was found for this booking.");
+        }
+        // First confirm the booking in our database.
         const confirmedBooking = await prisma.booking.update({
             where: {
                 id: booking.id,
             },
             data: {
-                bookingStatus: "CONFIRMED",
+                bookingStatus: BookingStatus.CONFIRMED,
             },
             include: {
                 membership: true,
@@ -345,6 +360,56 @@ class BookingService {
                 healthSafetyForm: true,
             },
         });
+        // ---------------------------------------------------------
+        // Google Calendar
+        // ---------------------------------------------------------
+        //
+        // Calendar creation is intentionally AFTER the booking has
+        // been confirmed.
+        //
+        // If Google Calendar fails, the Sculpt LAB booking remains
+        // CONFIRMED. We log the error instead of breaking the booking.
+        // ---------------------------------------------------------
+        try {
+            const calendarEvent = await googleCalendarService.createBookingEvent({
+                bookingId: confirmedBooking.id,
+                bookingReference: confirmedBooking.paymentReference,
+                memberName: confirmedBooking.fullName,
+                memberEmail: confirmedBooking.email,
+                className: selectedSchedule.className,
+                tutorName: selectedSchedule.tutorName,
+                bookingDate: confirmedBooking.preferredStartDate,
+                startTime: selectedSchedule.startTime,
+                endTime: selectedSchedule.endTime,
+            });
+            // Save the Google Calendar event information
+            // back onto the booking.
+            if (calendarEvent.eventId) {
+                await prisma.booking.update({
+                    where: {
+                        id: confirmedBooking.id,
+                    },
+                    data: {
+                        calendarEventId: calendarEvent.eventId,
+                        calendarEventUrl: calendarEvent.eventUrl,
+                    },
+                });
+                // Keep the returned object up to date
+                confirmedBooking.calendarEventId =
+                    calendarEvent.eventId;
+                confirmedBooking.calendarEventUrl =
+                    calendarEvent.eventUrl;
+            }
+            console.log(`✅ Google Calendar event created for booking ${confirmedBooking.id}`);
+        }
+        catch (calendarError) {
+            console.error(`⚠️ Google Calendar event creation failed for booking ${confirmedBooking.id}:`, calendarError);
+            // IMPORTANT:
+            // Do NOT undo the booking confirmation.
+            //
+            // The booking remains CONFIRMED even if Google Calendar
+            // temporarily fails.
+        }
         return confirmedBooking;
     }
     async saveHealthSafetyForm(bookingId, userId, data) {

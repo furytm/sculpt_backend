@@ -336,9 +336,9 @@ try {
       email: true,
       phone: true,
       role: true,
-      status: true,
+     
       provider: true,
-      emailVerified: true,
+    isEmailVerified: true,
       createdAt: true,
       updatedAt: true,
     },

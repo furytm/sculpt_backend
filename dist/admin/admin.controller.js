@@ -128,6 +128,23 @@ class AdminController {
             });
         }
     }
+    async getDashboard(req, res) {
+        try {
+            const dashboard = await adminService.getDashboard();
+            return res.status(200).json({
+                success: true,
+                message: "Admin dashboard retrieved successfully.",
+                data: dashboard,
+            });
+        }
+        catch (error) {
+            console.error("Get Admin Dashboard Error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Failed to retrieve admin dashboard.",
+            });
+        }
+    }
 }
 export const adminController = new AdminController();
 //# sourceMappingURL=admin.controller.js.map

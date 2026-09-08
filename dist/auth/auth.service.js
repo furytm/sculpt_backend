@@ -189,6 +189,41 @@ class AuthService {
             refreshToken,
         };
     }
+    async updateProfile(userId, data) {
+        const user = await prisma.user.findUnique({
+            where: {
+                id: userId,
+            },
+        });
+        if (!user) {
+            throw new Error("User not found.");
+        }
+        const updatedUser = await prisma.user.update({
+            where: {
+                id: userId,
+            },
+            data: {
+                ...(data.fullName !== undefined && {
+                    fullName: data.fullName.trim(),
+                }),
+                ...(data.phone !== undefined && {
+                    phone: data.phone.trim(),
+                }),
+            },
+            select: {
+                id: true,
+                fullName: true,
+                email: true,
+                phone: true,
+                role: true,
+                provider: true,
+                isEmailVerified: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+        return updatedUser;
+    }
     /**
      * Refresh Access Token
      */

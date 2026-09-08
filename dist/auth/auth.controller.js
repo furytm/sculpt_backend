@@ -149,6 +149,31 @@ class AuthController {
             });
         }
     }
+    async updateProfile(req, res) {
+        try {
+            if (!req.user) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Unauthorized.",
+                });
+            }
+            const user = await authService.updateProfile(req.user.userId, req.body);
+            return res.status(200).json({
+                success: true,
+                message: "Profile updated successfully.",
+                data: {
+                    user,
+                },
+            });
+        }
+        catch (error) {
+            console.error("Update Profile Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error.message || "Failed to update profile.",
+            });
+        }
+    }
     /**
      * GET /api/auth/google
      */

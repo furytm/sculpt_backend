@@ -1,6 +1,7 @@
-import { PaymentMethod, PaymentStatus, } from "@prisma/client";
+import { BookingStatus, PaymentMethod, PaymentStatus, UserRole, MembershipStatus, } from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
+console.log("🔥 ACTIVATION SERVICE IMPORT:", membershipActivationService);
 class AdminService {
     async getPendingOfflinePayments() {
         return prisma.booking.findMany({
@@ -25,6 +26,109 @@ class AdminService {
                 createdAt: "desc",
             },
         });
+    }
+    async getDashboard() {
+        const [totalMembers, activeMemberships, pendingBookings, confirmedBookings, paidBookings, pendingPayments, offlinePayments, recentBookings, upcomingSchedule,] = await Promise.all([
+            // Total registered members
+            prisma.user.count({
+                where: {
+                    role: UserRole.MEMBER,
+                },
+            }),
+            // Active member memberships
+            prisma.memberMembership.count({
+                where: {
+                    status: MembershipStatus.ACTIVE,
+                },
+            }),
+            // Pending bookings
+            prisma.booking.count({
+                where: {
+                    bookingStatus: BookingStatus.PENDING,
+                },
+            }),
+            // Confirmed bookings
+            prisma.booking.count({
+                where: {
+                    bookingStatus: BookingStatus.CONFIRMED,
+                },
+            }),
+            // Paid bookings
+            prisma.booking.count({
+                where: {
+                    paymentStatus: PaymentStatus.PAID,
+                },
+            }),
+            // Payments still awaiting payment
+            prisma.booking.count({
+                where: {
+                    paymentStatus: PaymentStatus.PENDING,
+                },
+            }),
+            // All offline-payment bookings
+            prisma.booking.count({
+                where: {
+                    paymentMethod: PaymentMethod.OFFLINE,
+                },
+            }),
+            // Latest 5 bookings
+            prisma.booking.findMany({
+                take: 5,
+                orderBy: {
+                    createdAt: "desc",
+                },
+                include: {
+                    membership: true,
+                    user: true,
+                    schedule: true,
+                },
+            }),
+            // Active schedules.
+            // Schedule has no actual calendar date in your schema,
+            // so these are the currently active schedules.
+            prisma.schedule.findMany({
+                where: {
+                    isActive: true,
+                },
+                include: {
+                    _count: {
+                        select: {
+                            bookings: true,
+                        },
+                    },
+                },
+            }),
+        ]);
+        // Prisma enum ordering is alphabetical, so sort the days manually.
+        const dayOrder = {
+            MONDAY: 1,
+            TUESDAY: 2,
+            WEDNESDAY: 3,
+            THURSDAY: 4,
+            FRIDAY: 5,
+            SATURDAY: 6,
+            SUNDAY: 7,
+        };
+        upcomingSchedule.sort((a, b) => {
+            const dayDifference = dayOrder[a.dayOfWeek] - dayOrder[b.dayOfWeek];
+            if (dayDifference !== 0) {
+                return dayDifference;
+            }
+            return a.startTime.localeCompare(b.startTime);
+        });
+        return {
+            stats: {
+                totalMembers,
+                activeMemberships,
+                pendingBookings,
+                confirmedBookings,
+                paidBookings,
+                pendingPayments,
+                offlinePayments,
+            },
+            recentBookings,
+            upcomingSchedule: upcomingSchedule.slice(0, 10),
+        };
     }
     async confirmOfflinePayment(bookingId) {
         const booking = await prisma.booking.findUnique({

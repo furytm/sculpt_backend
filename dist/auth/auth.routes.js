@@ -88,6 +88,7 @@ router.post("/login", authController.login);
  *         description: Invalid or expired refresh token.
  */
 router.post("/refresh", authController.refreshToken);
+router.patch("/profile", authenticate, authController.updateProfile);
 /**
  * @openapi
  * /api/auth/logout:

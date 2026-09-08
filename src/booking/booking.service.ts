@@ -3,8 +3,10 @@ import paymentService from "../payment/payment.service.js";
 import {
   PaymentMethod,
   PaymentStatus,
+   BookingStatus,
 } from "@prisma/client";
 
+import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
 import {
   BookingResponse,
   CreateBookingDto,
@@ -356,91 +358,329 @@ async updateBookingClass(bookingId: string, userId: string, classId: string) {
    * It finalizes the existing booking after
    * the member has completed the booking flow.
    */
-  async confirmBooking(bookingId: string, userId: string) {
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-      include: {
-        membership: true,
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-          include: {
-            schedule: true,
-          },
+ /**
+ * Confirm an existing paid booking.
+ *
+ * This does NOT create a new booking.
+ * It finalizes the existing booking after
+ * the member has completed the booking flow.
+ */
+/**
+ * Confirm an existing paid booking.
+ *
+ * This does NOT create a new booking.
+ * It finalizes the existing booking after
+ * the member has completed the booking flow.
+ *
+ * One booking can contain:
+ * - one selected class
+ * - multiple recurring schedule days
+ *
+ * Example:
+ * Monday + Wednesday + Friday
+ *
+ * Each selected day gets its own recurring
+ * Google Calendar event.
+ */
+async confirmBooking(
+  bookingId: string,
+  userId: string
+) {
+  const booking = await prisma.booking.findFirst({
+    where: {
+      id: bookingId,
+      userId,
+    },
+
+    include: {
+      membership: true,
+
+      memberMembership: true,
+
+      memberSchedules: {
+        where: {
+          isActive: true,
         },
-        healthSafetyForm: true,
+
+        include: {
+          schedule: true,
+        },
       },
-    });
 
-    if (!booking) {
-      throw new Error("Booking not found or does not belong to you.");
-    }
+      healthSafetyForm: true,
+    },
+  });
 
-    // Member must have paid
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error("This booking has not been paid for.");
-    }
+  if (!booking) {
+    throw new Error(
+      "Booking not found or does not belong to you."
+    );
+  }
 
-    // A class must have been selected
-    if (!booking.classId) {
-      throw new Error("Please select a class before confirming your booking.");
-    }
+  // ---------------------------------------------------------
+  // PAYMENT
+  // ---------------------------------------------------------
 
-    // At least one recurring schedule must have been assigned
-    if (booking.memberSchedules.length === 0) {
-      throw new Error(
-        "No recurring schedules have been assigned to this booking.",
-      );
-    }
+  if (
+    booking.paymentStatus !== PaymentStatus.PAID
+  ) {
+    throw new Error(
+      "This booking has not been paid for."
+    );
+  }
 
-    // A start date must have been selected
-    if (!booking.preferredStartDate) {
-      throw new Error(
-        "Please select a start date before confirming your booking.",
-      );
-    }
+  // ---------------------------------------------------------
+  // CLASS
+  // ---------------------------------------------------------
 
-    // Health & Safety form must be completed
-    if (!booking.healthSafetyForm) {
-      throw new Error(
-        "Please complete your Health & Safety form before confirming your booking.",
-      );
-    }
+  if (!booking.classId) {
+    throw new Error(
+      "Please select a class before confirming your booking."
+    );
+  }
 
-    // Prevent confirming an already confirmed booking
-    if (booking.bookingStatus === "CONFIRMED") {
-      return booking;
-    }
+  // ---------------------------------------------------------
+  // RECURRING SCHEDULES
+  // ---------------------------------------------------------
 
-    const confirmedBooking = await prisma.booking.update({
+  if (
+    booking.memberSchedules.length === 0
+  ) {
+    throw new Error(
+      "No recurring schedules have been assigned to this booking."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // START DATE
+  // ---------------------------------------------------------
+
+  if (!booking.preferredStartDate) {
+    throw new Error(
+      "Please select a start date before confirming your booking."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // START DATE MUST MATCH ONE OF THE SELECTED DAYS
+  // ---------------------------------------------------------
+
+  const startDayOfWeek =
+    booking.preferredStartDate
+      .toLocaleDateString("en-US", {
+        weekday: "long",
+        timeZone: "Africa/Lagos",
+      })
+      .toUpperCase();
+
+  const hasMatchingStartDay =
+    booking.memberSchedules.some(
+      (memberSchedule) =>
+        memberSchedule.schedule.dayOfWeek ===
+        startDayOfWeek
+    );
+
+  if (!hasMatchingStartDay) {
+    throw new Error(
+      "Your start date must fall on one of your selected class days."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // HEALTH & SAFETY
+  // ---------------------------------------------------------
+
+  if (!booking.healthSafetyForm) {
+    throw new Error(
+      "Please complete your Health & Safety form before confirming your booking."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // ALREADY CONFIRMED
+  // ---------------------------------------------------------
+
+  if (
+    booking.bookingStatus ===
+    BookingStatus.CONFIRMED
+  ) {
+    return booking;
+  }
+
+  // ---------------------------------------------------------
+  // CONFIRM BOOKING
+  // ---------------------------------------------------------
+
+  const confirmedBooking =
+    await prisma.booking.update({
       where: {
         id: booking.id,
       },
 
       data: {
-        bookingStatus: "CONFIRMED",
+        bookingStatus:
+          BookingStatus.CONFIRMED,
       },
 
       include: {
         membership: true,
+
+        memberMembership: true,
+
         memberSchedules: {
           where: {
             isActive: true,
           },
+
           include: {
             schedule: true,
           },
         },
+
         healthSafetyForm: true,
       },
     });
 
-    return confirmedBooking;
+  // ---------------------------------------------------------
+  // GOOGLE CALENDAR
+  // ---------------------------------------------------------
+  //
+  // One class can have multiple selected recurring days.
+  //
+  // Example:
+  //
+  // Monday
+  // Wednesday
+  // Friday
+  //
+  // We create one weekly recurring Google Calendar
+  // event for EACH selected day.
+  //
+  // Each event stops at the membership expiry date.
+  // ---------------------------------------------------------
+
+  try {
+    const calendarEvents = [];
+
+    for (
+      const memberSchedule
+      of confirmedBooking.memberSchedules
+    ) {
+      const schedule =
+        memberSchedule.schedule;
+
+      if (!schedule) {
+        continue;
+      }
+
+      const calendarEvent =
+        await googleCalendarService
+          .createRecurringBookingEvent({
+            bookingId:
+              confirmedBooking.id,
+
+            bookingReference:
+              confirmedBooking.paymentReference,
+
+            memberName:
+              confirmedBooking.fullName,
+
+            memberEmail:
+              confirmedBooking.email,
+
+            className:
+              schedule.className,
+
+            tutorName:
+              schedule.tutorName,
+
+            bookingDate:
+              confirmedBooking
+                .preferredStartDate!,
+
+            expiryDate:
+              confirmedBooking
+                .memberMembership
+                ?.expiryDate ?? null,
+
+            dayOfWeek:
+              schedule.dayOfWeek,
+
+            startTime:
+              schedule.startTime,
+
+            endTime:
+              schedule.endTime,
+          });
+
+      calendarEvents.push(
+        calendarEvent
+      );
+    }
+
+    // -------------------------------------------------------
+    // SAVE ALL GOOGLE CALENDAR EVENT IDS / URLS
+    // -------------------------------------------------------
+
+    const eventIds =
+      calendarEvents
+        .map(
+          (event) => event.eventId
+        )
+        .filter(
+          (eventId): eventId is string =>
+            Boolean(eventId)
+        );
+
+    const eventUrls =
+      calendarEvents
+        .map(
+          (event) => event.eventUrl
+        )
+        .filter(
+          (eventUrl): eventUrl is string =>
+            Boolean(eventUrl)
+        );
+
+    if (eventIds.length > 0) {
+      await prisma.booking.update({
+        where: {
+          id: confirmedBooking.id,
+        },
+
+        data: {
+          calendarEventId:
+            JSON.stringify(eventIds),
+
+          calendarEventUrl:
+            JSON.stringify(eventUrls),
+        },
+      });
+
+      confirmedBooking.calendarEventId =
+        JSON.stringify(eventIds);
+
+      confirmedBooking.calendarEventUrl =
+        JSON.stringify(eventUrls);
+    }
+
+    console.log(
+      `✅ ${calendarEvents.length} Google Calendar event(s) created for booking ${confirmedBooking.id}`
+    );
+  } catch (calendarError) {
+    console.error(
+      `⚠️ Google Calendar event creation failed for booking ${confirmedBooking.id}:`,
+      calendarError
+    );
+
+    // The booking remains CONFIRMED.
+    //
+    // Google Calendar is a secondary integration and
+    // should not cause a valid booking confirmation to fail.
   }
+
+  return confirmedBooking;
+}
   async saveHealthSafetyForm(
     bookingId: string,
     userId: string,

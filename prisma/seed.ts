@@ -98,7 +98,7 @@ const memberships = [
     slug: "monthly-10",
     name: "10 Classes/Month",
     description: "Best for regular practitioners",
-    price: 165000,
+    price: 150000,
     period: "/month",
     classLimit: 10,
     duration: "Monthly",

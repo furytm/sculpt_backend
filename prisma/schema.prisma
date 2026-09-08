@@ -26,6 +26,8 @@ model Booking {
 
   membershipActivation MembershipActivation?
   bookingDate          DateTime?
+  calendarEventId  String?
+calendarEventUrl String?
 
   amount Int
 
