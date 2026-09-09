@@ -55,7 +55,7 @@ const memberships = [
     slug: "single-class",
     name: "Single Class Pass",
     description: "Try a class whenever you want",
-    price: 10,
+    price: 24999,
     period: "per class",
     classLimit: 1,
     duration: "Single",

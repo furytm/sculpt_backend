@@ -51,75 +51,134 @@ async getDashboard() {
     recentBookings,
     upcomingSchedule,
   ] = await Promise.all([
-    // Total registered members
+    // -------------------------------------------------------
+    // TOTAL MEMBERS
+    // -------------------------------------------------------
+
     prisma.user.count({
       where: {
         role: UserRole.MEMBER,
       },
     }),
 
-    // Active member memberships
+    // -------------------------------------------------------
+    // ACTIVE MEMBERSHIPS
+    // -------------------------------------------------------
+
     prisma.memberMembership.count({
       where: {
         status: MembershipStatus.ACTIVE,
       },
     }),
 
-    // Pending bookings
+    // -------------------------------------------------------
+    // PENDING BOOKINGS
+    // -------------------------------------------------------
+
     prisma.booking.count({
       where: {
         bookingStatus: BookingStatus.PENDING,
       },
     }),
 
-    // Confirmed bookings
+    // -------------------------------------------------------
+    // CONFIRMED BOOKINGS
+    // -------------------------------------------------------
+
     prisma.booking.count({
       where: {
         bookingStatus: BookingStatus.CONFIRMED,
       },
     }),
 
-    // Paid bookings
+    // -------------------------------------------------------
+    // PAID BOOKINGS
+    // -------------------------------------------------------
+
     prisma.booking.count({
       where: {
         paymentStatus: PaymentStatus.PAID,
       },
     }),
 
-    // Payments still awaiting payment
+    // -------------------------------------------------------
+    // PENDING PAYMENTS
+    // -------------------------------------------------------
+
     prisma.booking.count({
       where: {
         paymentStatus: PaymentStatus.PENDING,
       },
     }),
 
-    // All offline-payment bookings
+    // -------------------------------------------------------
+    // OFFLINE PAYMENTS
+    // -------------------------------------------------------
+    //
+    // This counts offline bookings specifically.
+    // The admin can then click Payments to see
+    // which ones are pending/paid.
+    //
+
     prisma.booking.count({
       where: {
         paymentMethod: PaymentMethod.OFFLINE,
       },
     }),
 
-    // Latest 5 bookings
+    // -------------------------------------------------------
+    // RECENT BOOKINGS
+    // -------------------------------------------------------
+    //
+    // Get the latest 5 bookings with enough information
+    // for the admin dashboard.
+    //
+
     prisma.booking.findMany({
       take: 5,
+
       orderBy: {
         createdAt: "desc",
       },
+
       include: {
         membership: true,
+
         user: true,
-        schedule: true,
+
+        memberMembership: true,
+
+        healthSafetyForm: true,
+
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+
+          include: {
+            schedule: true,
+          },
+
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
       },
     }),
 
-    // Active schedules.
-    // Schedule has no actual calendar date in your schema,
-    // so these are the currently active schedules.
+    // -------------------------------------------------------
+    // UPCOMING / ACTIVE SCHEDULES
+    // -------------------------------------------------------
+    //
+    // Schedule does not contain a calendar date.
+    // Therefore we return the active weekly schedule.
+    //
+
     prisma.schedule.findMany({
       where: {
         isActive: true,
       },
+
       include: {
         _count: {
           select: {
@@ -127,10 +186,22 @@ async getDashboard() {
           },
         },
       },
+
+      orderBy: [
+        {
+          dayOfWeek: "asc",
+        },
+        {
+          startTime: "asc",
+        },
+      ],
     }),
   ]);
 
-  // Prisma enum ordering is alphabetical, so sort the days manually.
+  // ---------------------------------------------------------
+  // WEEKDAY ORDER
+  // ---------------------------------------------------------
+
   const dayOrder: Record<string, number> = {
     MONDAY: 1,
     TUESDAY: 2,
@@ -143,14 +214,21 @@ async getDashboard() {
 
   upcomingSchedule.sort((a, b) => {
     const dayDifference =
-      dayOrder[a.dayOfWeek] - dayOrder[b.dayOfWeek];
+      dayOrder[a.dayOfWeek] -
+      dayOrder[b.dayOfWeek];
 
     if (dayDifference !== 0) {
       return dayDifference;
     }
 
-    return a.startTime.localeCompare(b.startTime);
+    return a.startTime.localeCompare(
+      b.startTime
+    );
   });
+
+  // ---------------------------------------------------------
+  // RETURN DASHBOARD DATA
+  // ---------------------------------------------------------
 
   return {
     stats: {
@@ -165,7 +243,8 @@ async getDashboard() {
 
     recentBookings,
 
-    upcomingSchedule: upcomingSchedule.slice(0, 10),
+    upcomingSchedule:
+      upcomingSchedule.slice(0, 10),
   };
 }
 async confirmOfflinePayment(bookingId: string) {
