@@ -89,6 +89,35 @@ async confirmOfflinePayment(req: Request, res: Response) {
   }
 }
 
+
+async getAllBookings(
+  req: Request,
+  res: Response
+) {
+  try {
+    const bookings =
+      await adminService.getAllBookings();
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "All bookings retrieved successfully.",
+      data: bookings,
+    });
+  } catch (error: any) {
+    console.error(
+      "Get All Admin Bookings Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to retrieve bookings.",
+    });
+  }
+}
 async rejectOfflinePayment(req: Request, res: Response) {
   try {
     const bookingId = Array.isArray(req.params.bookingId)

@@ -43,6 +43,13 @@ router.get(
   adminController.getPendingOfflinePayments
 );
 
+
+router.get(
+  "/bookings",
+  authenticate,
+  requireAdmin,
+  adminController.getAllBookings
+);
 // =====================================================
 // PAYMENT DETAILS
 // =====================================================

@@ -247,6 +247,40 @@ async getDashboard() {
       upcomingSchedule.slice(0, 10),
   };
 }
+
+async getAllBookings() {
+  const bookings = await prisma.booking.findMany({
+    orderBy: {
+      createdAt: "desc",
+    },
+
+    include: {
+      membership: true,
+
+      user: true,
+
+      memberMembership: true,
+
+      healthSafetyForm: true,
+
+      memberSchedules: {
+        where: {
+          isActive: true,
+        },
+
+        include: {
+          schedule: true,
+        },
+
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+    },
+  });
+
+  return bookings;
+}
 async confirmOfflinePayment(bookingId: string) {
   const booking = await prisma.booking.findUnique({
     where: {
