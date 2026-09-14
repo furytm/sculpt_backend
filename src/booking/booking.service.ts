@@ -312,6 +312,135 @@ class BookingService {
     return booking;
   }
 
+
+    // =========================================================
+  // CONTINUE GUEST BOOKING
+  // =========================================================
+  //
+  // Creates a fresh booking continuation token when the
+  // customer returns from Paymish using the payment reference.
+  //
+  // The raw token is returned to the frontend.
+  // Only the SHA-256 hash is stored in PostgreSQL.
+  //
+  // This allows the booking flow to continue even when the
+  // customer returns on a different frontend origin, such as
+  // a published V0 app or the production Sculpt LAB website.
+  //
+  // =========================================================
+
+  async continueGuestBooking(reference: string) {
+    if (!reference || typeof reference !== "string") {
+      throw new Error("Payment reference is required.");
+    }
+
+    const booking = await prisma.booking.findUnique({
+      where: {
+        paymentReference: reference,
+      },
+      include: {
+        membership: true,
+        user: true,
+        schedule: true,
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
+        healthSafetyForm: true,
+      },
+    });
+
+    if (!booking) {
+      throw new Error("Booking not found.");
+    }
+
+    // ---------------------------------------------------------
+    // Payment must be completed
+    // ---------------------------------------------------------
+
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error(
+        "Payment has not been completed for this booking."
+      );
+    }
+
+    // ---------------------------------------------------------
+    // Booking must still be pending
+    // ---------------------------------------------------------
+
+    if (booking.bookingStatus !== BookingStatus.PENDING) {
+      if (booking.bookingStatus === BookingStatus.CONFIRMED) {
+        throw new Error(
+          "This booking has already been confirmed."
+        );
+      }
+
+      throw new Error(
+        "This booking is no longer available to continue."
+      );
+    }
+
+    // ---------------------------------------------------------
+    // If the booking is already attached to an account,
+    // do not create another guest continuation session.
+    // ---------------------------------------------------------
+
+    if (booking.userId) {
+      throw new Error(
+        "This booking is already attached to an account."
+      );
+    }
+
+    // ---------------------------------------------------------
+    // Generate a fresh secure continuation token
+    // ---------------------------------------------------------
+
+    const {
+      token: bookingFlowToken,
+      tokenHash,
+    } = this.generateBookingFlowToken();
+
+    // ---------------------------------------------------------
+    // Rotate the stored token hash
+    //
+    // This invalidates the previous guest continuation token.
+    // ---------------------------------------------------------
+
+    const updatedBooking = await prisma.booking.update({
+      where: {
+        id: booking.id,
+      },
+
+      data: {
+        bookingFlowTokenHash: tokenHash,
+      },
+
+      include: {
+        membership: true,
+        user: true,
+        schedule: true,
+        memberSchedules: {
+          where: {
+            isActive: true,
+          },
+          include: {
+            schedule: true,
+          },
+        },
+        healthSafetyForm: true,
+      },
+    });
+
+    return {
+      booking: updatedBooking,
+      bookingFlowToken,
+    };
+  }
+
   // =========================================================
   // GET MY BOOKINGS
   // =========================================================

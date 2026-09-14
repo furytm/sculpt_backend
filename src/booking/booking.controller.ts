@@ -166,6 +166,96 @@ class BookingController {
   // GET MY BOOKINGS
   // =========================================================
 
+    // =========================================================
+  // CONTINUE GUEST BOOKING
+  // =========================================================
+  //
+  // PUBLIC
+  //
+  // Used when the customer returns from Paymish with only
+  // the payment reference.
+  //
+  // Generates a fresh bookingFlowToken so the customer can
+  // continue Health Declaration, schedule and start-date
+  // selection before creating an account.
+  //
+  // =========================================================
+
+  async continueGuestBooking(
+    req: Request<ConfirmationParams>,
+    res: Response
+  ) {
+    try {
+      const { reference } = req.params;
+
+      if (
+        !reference ||
+        typeof reference !== "string"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment reference is required.",
+        });
+      }
+
+      const result =
+        await bookingService.continueGuestBooking(
+          reference
+        );
+
+      return res.status(200).json({
+        success: true,
+        message:
+          "Booking continuation session created successfully.",
+        data: result,
+      });
+    } catch (error: any) {
+      console.error(
+        "Continue Guest Booking Error:",
+        error
+      );
+
+      const message =
+        error?.message ||
+        "Unable to continue this booking.";
+
+      if (
+        message ===
+        "Booking not found."
+      ) {
+        return res.status(404).json({
+          success: false,
+          message,
+        });
+      }
+
+      if (
+        message ===
+        "Payment has not been completed for this booking."
+      ) {
+        return res.status(400).json({
+          success: false,
+          message,
+        });
+      }
+
+      if (
+        message ===
+        "This booking has already been confirmed."
+      ) {
+        return res.status(409).json({
+          success: false,
+          message,
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message,
+      });
+    }
+  }
+  
   async getMyBookings(
     req: Request,
     res: Response

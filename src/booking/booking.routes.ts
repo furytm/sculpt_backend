@@ -337,6 +337,21 @@ router.get(
   bookingController.getBookingConfirmation
 );
 
+
+/**
+ * =========================================================
+ * CONTINUE GUEST BOOKING
+ * =========================================================
+ *
+ * Public endpoint used after Paymish redirects the customer
+ * back to Sculpt LAB with the payment reference.
+ *
+ * Creates a fresh booking continuation token.
+ */
+router.get(
+  "/confirmation/:reference/continue",
+  bookingController.continueGuestBooking
+);
 /**
  * Get a single booking.
  *
