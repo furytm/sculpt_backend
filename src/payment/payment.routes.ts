@@ -3,14 +3,28 @@ import paymentController from "./payment.controller.js";
 
 const router = Router();
 
-// Initialize a new transaction
-router.post("/initialize", paymentController.initializePayment);
+// Initialize Paystack transaction
+router.post(
+  "/initialize",
+  paymentController.initializePayment
+);
 
-// Verify a transaction
-router.get("/verify/:reference", paymentController.verifyPayment);
-router.get("/callback", paymentController.callback);
+// Verify Paystack transaction
+router.get(
+  "/verify/:reference",
+  paymentController.verifyPayment
+);
 
-// Receive Paymish webhook events
-router.post("/webhook", paymentController.webhook);
+// Paystack callback
+router.get(
+  "/callback",
+  paymentController.callback
+);
+
+// Paystack webhook
+router.post(
+  "/webhook",
+  paymentController.webhook
+);
 
 export default router;

@@ -18,29 +18,30 @@ model Booking {
   scheduleId String?
   schedule   Schedule? @relation(fields: [scheduleId], references: [id])
 
-  membershipId String
-  membership   Membership @relation(fields: [membershipId], references: [id])
-  bookingFlowTokenHash String? @unique
+  membershipId         String
+  membership           Membership @relation(fields: [membershipId], references: [id])
+  bookingFlowTokenHash String?    @unique
 
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
 
   membershipActivation MembershipActivation?
   bookingDate          DateTime?
-  calendarEventId  String?
-calendarEventUrl String?
+  calendarEventId      String?
+  calendarEventUrl     String?
 
   amount Int
 
-  paymentReference   String            @unique
-  paymentStatus      PaymentStatus     @default(PENDING)
-  memberMembership   MemberMembership?
+  paymentReference String            @unique
+  paymentStatus    PaymentStatus     @default(PENDING)
+  memberMembership MemberMembership?
+  memberSchedules  MemberSchedule[]
+
   preferredStartDate DateTime?
   availableDays      String[]
   preferredTimes     String[]
   bookingStatus      BookingStatus     @default(PENDING)
-  memberSchedules    MemberSchedule[]
-  paymentMethod      PaymentMethod     @default(PAYMISH)
+paymentMethod PaymentMethod @default(PAYSTACK)
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
   healthSafetyForm   HealthSafetyForm?
@@ -49,12 +50,12 @@ calendarEventUrl String?
 model HealthSafetyForm {
   id String @id @default(cuid())
 
-userId String?
-user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
   bookingId String  @unique
   booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
-  accepted           Boolean  @default(false)
+  accepted           Boolean   @default(false)
   declarationVersion String?
   notes              String?
   acceptedAt         DateTime?
@@ -82,12 +83,12 @@ user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
   surgeryDetails   String?
   surgeryClearance String?
 
-  consent Json?
+  consent   Json?
   signature String?
 
   submittedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   @@index([userId])
 }
@@ -105,7 +106,7 @@ model Schedule {
   endTime   String
 
   isActive Boolean @default(true)
-  capacity Int @default(5)
+  capacity Int     @default(5)
 
   bookings Booking[]
 
@@ -343,5 +344,6 @@ enum BookingStatus {
 
 enum PaymentMethod {
   PAYMISH
+  PAYSTACK
   OFFLINE
 }

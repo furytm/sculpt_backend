@@ -147,10 +147,10 @@ class BookingService {
 
         amount: membership.price,
 
-        paymentMethod:
-          data.paymentMethod === "OFFLINE"
-            ? PaymentMethod.OFFLINE
-            : PaymentMethod.PAYMISH,
+     paymentMethod:
+  data.paymentMethod === "OFFLINE"
+    ? PaymentMethod.OFFLINE
+    : PaymentMethod.PAYSTACK,
 
         paymentReference,
 
@@ -180,19 +180,23 @@ class BookingService {
     // PAYMISH PAYMENT
     // ========================================================
 
-    const payment =
-      await paymentService.initializeTransaction({
-        email: booking.email,
-        amount: booking.amount,
-        reference: paymentReference,
-      });
+  // ========================================================
+// PAYSTACK PAYMENT
+// ========================================================
 
-    return {
-      booking,
-      paymentMethod: PaymentMethod.PAYMISH,
-      authorizationUrl: payment.data.authorization_url,
-      bookingFlowToken,
-    };
+const payment =
+  await paymentService.initializeTransaction({
+    email: booking.email,
+    amount: booking.amount,
+    reference: paymentReference,
+  });
+
+return {
+  booking,
+  paymentMethod: PaymentMethod.PAYSTACK,
+  authorizationUrl: payment.data.authorization_url,
+  bookingFlowToken,
+};
   }
 
   // =========================================================
@@ -312,6 +316,33 @@ class BookingService {
     return booking;
   }
 
+  async getBookingByReference(reference: string) {
+  const booking = await prisma.booking.findUnique({
+    where: {
+      paymentReference: reference,
+    },
+    include: {
+      membership: true,
+      user: true,
+      schedule: true,
+      memberSchedules: {
+        where: {
+          isActive: true,
+        },
+        include: {
+          schedule: true,
+        },
+      },
+      healthSafetyForm: true,
+    },
+  });
+
+  if (!booking) {
+    throw new Error("Booking not found.");
+  }
+
+  return booking;
+}
 
     // =========================================================
   // CONTINUE GUEST BOOKING
