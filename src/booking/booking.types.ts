@@ -6,7 +6,7 @@ export enum PaymentStatus {
   FAILED = "FAILED",
 }
 
-export type PaymentMethod = "PAYMISH" | "OFFLINE";
+export type PaymentMethod = "PAYMISH" | "PAYSTACK" | "OFFLINE";
 
 export interface CreateBookingDto {
   fullName: string;
