@@ -20,6 +20,7 @@ model Booking {
 
   membershipId String
   membership   Membership @relation(fields: [membershipId], references: [id])
+  bookingFlowTokenHash String? @unique
 
   userId String?
   user   User?   @relation(fields: [userId], references: [id])
@@ -48,12 +49,17 @@ calendarEventUrl String?
 model HealthSafetyForm {
   id String @id @default(cuid())
 
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+userId String?
+user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
   bookingId String  @unique
   booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
+  accepted           Boolean  @default(false)
+  declarationVersion String?
+  notes              String?
+  acceptedAt         DateTime?
+
+  // Keep your existing legacy fields for now.
   dateOfBirth DateTime?
   age         Int?
 
@@ -77,12 +83,11 @@ model HealthSafetyForm {
   surgeryClearance String?
 
   consent Json?
-
   signature String?
 
   submittedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([userId])
 }
@@ -100,6 +105,7 @@ model Schedule {
   endTime   String
 
   isActive Boolean @default(true)
+  capacity Int @default(5)
 
   bookings Booking[]
 

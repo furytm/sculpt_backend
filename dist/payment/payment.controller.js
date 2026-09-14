@@ -41,11 +41,11 @@ class PaymentController {
             // even after a successful checkout.
             // Temporarily mark the matching booking as paid.
             await bookingService.markBookingPaid(reference);
-            return res.redirect(`https://sculpt-labs.vercel.app/confirmation?reference=${encodeURIComponent(reference)}`);
+            return res.redirect(`http://localhost:3000/confirmation?reference=${encodeURIComponent(reference)}`);
         }
         catch (error) {
             console.error("Payment Callback Error:", error);
-            return res.redirect("https://sculpt-labs.vercel.app/confirmation?payment=failed");
+            return res.redirect("http://localhost:3000/confirmation?payment=failed");
         }
     }
 }

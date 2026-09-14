@@ -1,5 +1,6 @@
-import { PrismaClient, AuthProvider, UserRole, PaymentStatus } from "@prisma/client";
+import { PrismaClient, AuthProvider, UserRole, PaymentStatus ,BookingStatus} from "@prisma/client";
 import prisma from "../config/prisma.js";
+import bookingService from "../booking/booking.service.js";
 
 import {
   RegisterDto,
@@ -49,7 +50,10 @@ async register(data: RegisterDto) {
   const normalizedEmail =
     email.toLowerCase().trim();
 
+  // ---------------------------------------------------------
   // Check existing account
+  // ---------------------------------------------------------
+
   const existingUser =
     await prisma.user.findUnique({
       where: {
@@ -63,11 +67,17 @@ async register(data: RegisterDto) {
     );
   }
 
+  // ---------------------------------------------------------
   // Hash password
+  // ---------------------------------------------------------
+
   const hashedPassword =
     await hashPassword(password);
 
+  // ---------------------------------------------------------
   // Create user
+  // ---------------------------------------------------------
+
   const user =
     await prisma.user.create({
       data: {
@@ -80,52 +90,42 @@ async register(data: RegisterDto) {
       },
     });
 
-// Link previous guest bookings using the same email
-await prisma.booking.updateMany({
-  where: {
-    email: normalizedEmail,
-    userId: null,
-  },
-  data: {
-    userId: user.id,
-  },
-});
+  // ---------------------------------------------------------
+  // Attach guest bookings using the same email
+  // ---------------------------------------------------------
 
-// ==========================================
-// CREATE ACTIVE MEMBERSHIP FROM PAID BOOKING
-// ==========================================
-
-const paidBooking = await prisma.booking.findFirst({
-  where: {
-    email: normalizedEmail,
-    userId: user.id,
-    paymentStatus: PaymentStatus.PAID,
-  },
-  include: {
-    membership: true,
-  },
-  orderBy: {
-    createdAt: "desc",
-  },
-});
-
-if (paidBooking) {
-  await prisma.memberMembership.create({
+  await prisma.booking.updateMany({
+    where: {
+      email: normalizedEmail,
+      userId: null,
+    },
     data: {
       userId: user.id,
-      membershipId: paidBooking.membershipId,
-      bookingId: paidBooking.id,
-      status: "ACTIVE",
-      startDate: null,
-      expiryDate: null,
     },
   });
-}
 
-  
-  // ==========================================
-  // CREATE EMAIL VERIFICATION TOKEN
-  // ==========================================
+  // ---------------------------------------------------------
+  // Find the latest paid pending booking
+  // ---------------------------------------------------------
+
+  const paidBooking =
+    await prisma.booking.findFirst({
+      where: {
+        email: normalizedEmail,
+        userId: user.id,
+        paymentStatus:
+          PaymentStatus.PAID,
+        bookingStatus:
+          BookingStatus.PENDING,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+  // ---------------------------------------------------------
+  // Create email verification token
+  // ---------------------------------------------------------
 
   const verificationToken =
     generateSecureToken();
@@ -135,11 +135,14 @@ if (paidBooking) {
 
   await prisma.emailVerificationToken.create({
     data: {
-      tokenHash: verificationTokenHash,
+      tokenHash:
+        verificationTokenHash,
       userId: user.id,
       expiresAt: new Date(
         Date.now() +
-          60 * 60 * 1000
+          60 *
+            60 *
+            1000
       ),
     },
   });
@@ -147,24 +150,25 @@ if (paidBooking) {
   const verificationUrl =
     `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
 
-try {
-  await sendVerificationEmail(
-    user.email,
-    user.fullName,
-    verificationUrl
-  );
-} catch (emailError) {
-  console.error(
-    "Verification email could not be sent:",
-    emailError
-  );
+  try {
+    await sendVerificationEmail(
+      user.email,
+      user.fullName,
+      verificationUrl
+    );
+  } catch (emailError) {
+    console.error(
+      "Verification email could not be sent:",
+      emailError
+    );
 
-  // Do not fail registration if email delivery fails.
-};
+    // Do not fail registration
+    // if email delivery fails.
+  }
 
-  // ==========================================
-  // GENERATE JWT TOKENS
-  // ==========================================
+  // ---------------------------------------------------------
+  // Generate JWT tokens
+  // ---------------------------------------------------------
 
   const payload: JwtPayload = {
     userId: user.id,
@@ -178,7 +182,10 @@ try {
   const refreshToken =
     generateRefreshToken(payload);
 
+  // ---------------------------------------------------------
   // Save refresh token
+  // ---------------------------------------------------------
+
   await prisma.refreshToken.create({
     data: {
       token: refreshToken,
@@ -193,6 +200,31 @@ try {
       ),
     },
   });
+
+  // ---------------------------------------------------------
+  // COMPLETE PAID BOOKING
+  // ---------------------------------------------------------
+  //
+  // The customer has already:
+  // - paid
+  // - completed Health Declaration
+  // - selected schedule (GROUP)
+  // - selected start date
+  //
+  // confirmBooking() now activates the membership
+  // and completes the booking.
+  // ---------------------------------------------------------
+
+  if (paidBooking) {
+    await bookingService.confirmBooking(
+      paidBooking.id,
+      user.id
+    );
+  }
+
+  // ---------------------------------------------------------
+  // Return
+  // ---------------------------------------------------------
 
   return {
     user: {
@@ -212,93 +244,157 @@ try {
   /**
    * Login
    */
-  async login(data: LoginDto) {
-    const normalizedEmail =
-      data.email.toLowerCase().trim();
+ async login(data: LoginDto) {
+  const normalizedEmail =
+    data.email.toLowerCase().trim();
 
-    const user =
-      await prisma.user.findUnique({
-        where: {
-          email: normalizedEmail,
-        },
-      });
-
-    if (!user) {
-      throw new Error(
-        "Invalid email or password."
-      );
-    }
-
-    // Google account cannot use password login
-    if (
-      user.provider === AuthProvider.GOOGLE &&
-      !user.password
-    ) {
-      throw new Error(
-        "This account was created with Google. Please continue with Google."
-      );
-    }
-
-    if (!user.password) {
-      throw new Error(
-        "Invalid email or password."
-      );
-    }
-
-    const passwordMatches =
-      await comparePassword(
-        data.password,
-        user.password
-      );
-
-    if (!passwordMatches) {
-      throw new Error(
-        "Invalid email or password."
-      );
-    }
-
-    const payload: JwtPayload = {
-      userId: user.id,
-      email: user.email,
-      role: user.role,
-    };
-
-    const accessToken =
-      generateAccessToken(payload);
-
-    const refreshToken =
-      generateRefreshToken(payload);
-
-    await prisma.refreshToken.create({
-      data: {
-        token: refreshToken,
-        userId: user.id,
-        expiresAt: new Date(
-          Date.now() +
-            1000 *
-              60 *
-              60 *
-              24 *
-              30
-        ),
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        email: normalizedEmail,
       },
     });
 
-    return {
-      user: {
-        id: user.id,
-        fullName: user.fullName,
-        email: user.email,
-        phone: user.phone,
-        provider: user.provider,
-        role: user.role,
-        isEmailVerified:
-          user.isEmailVerified,
-      },
-      accessToken,
-      refreshToken,
-    };
+  if (!user) {
+    throw new Error(
+      "Invalid email or password."
+    );
   }
+
+  // ---------------------------------------------------------
+  // Google account cannot use password login
+  // ---------------------------------------------------------
+
+  if (
+    user.provider === AuthProvider.GOOGLE &&
+    !user.password
+  ) {
+    throw new Error(
+      "This account was created with Google. Please continue with Google."
+    );
+  }
+
+  if (!user.password) {
+    throw new Error(
+      "Invalid email or password."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // Check password
+  // ---------------------------------------------------------
+
+  const passwordMatches =
+    await comparePassword(
+      data.password,
+      user.password
+    );
+
+  if (!passwordMatches) {
+    throw new Error(
+      "Invalid email or password."
+    );
+  }
+
+  // ---------------------------------------------------------
+  // Attach guest bookings using the same email
+  // ---------------------------------------------------------
+
+  await prisma.booking.updateMany({
+    where: {
+      email: normalizedEmail,
+      userId: null,
+    },
+    data: {
+      userId: user.id,
+    },
+  });
+
+  // ---------------------------------------------------------
+  // Find latest paid pending booking
+  // ---------------------------------------------------------
+
+  const paidBooking =
+    await prisma.booking.findFirst({
+      where: {
+        email: normalizedEmail,
+        userId: user.id,
+        paymentStatus:
+          PaymentStatus.PAID,
+        bookingStatus:
+          BookingStatus.PENDING,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+  // ---------------------------------------------------------
+  // Generate JWT tokens
+  // ---------------------------------------------------------
+
+  const payload: JwtPayload = {
+    userId: user.id,
+    email: user.email,
+    role: user.role,
+  };
+
+  const accessToken =
+    generateAccessToken(payload);
+
+  const refreshToken =
+    generateRefreshToken(payload);
+
+  // ---------------------------------------------------------
+  // Save refresh token
+  // ---------------------------------------------------------
+
+  await prisma.refreshToken.create({
+    data: {
+      token: refreshToken,
+      userId: user.id,
+      expiresAt: new Date(
+        Date.now() +
+          1000 *
+            60 *
+            60 *
+            24 *
+            30
+      ),
+    },
+  });
+
+  // ---------------------------------------------------------
+  // COMPLETE PAID BOOKING
+  // ---------------------------------------------------------
+
+  if (paidBooking) {
+    await bookingService.confirmBooking(
+      paidBooking.id,
+      user.id
+    );
+  }
+
+  // ---------------------------------------------------------
+  // Return
+  // ---------------------------------------------------------
+
+  return {
+    user: {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      provider: user.provider,
+      role: user.role,
+      isEmailVerified:
+        user.isEmailVerified,
+    },
+    accessToken,
+    refreshToken,
+  };
+}
+
 
   async updateProfile(
   userId: string,
@@ -562,20 +658,16 @@ async googleCallback(code: string) {
   const googleEmail = payload.email;
 
   if (!googleEmail || payload.email_verified !== true) {
-    throw new Error(
-      "Google email could not be verified."
-    );
+    throw new Error("Google email could not be verified.");
   }
 
-  const normalizedEmail =
-    googleEmail.toLowerCase().trim();
+  const normalizedEmail = googleEmail.toLowerCase().trim();
 
-  const existingUser =
-    await prisma.user.findUnique({
-      where: {
-        email: normalizedEmail,
-      },
-    });
+  const existingUser = await prisma.user.findUnique({
+    where: {
+      email: normalizedEmail,
+    },
+  });
 
   let user;
 
@@ -584,12 +676,8 @@ async googleCallback(code: string) {
      * Do not silently convert an existing LOCAL
      * account into a GOOGLE account.
      */
-    if (
-      existingUser.provider === AuthProvider.LOCAL
-    ) {
-      throw new Error(
-        "LOCAL_ACCOUNT_EXISTS"
-      );
+    if (existingUser.provider === AuthProvider.LOCAL) {
+      throw new Error("LOCAL_ACCOUNT_EXISTS");
     }
 
     user = existingUser;
@@ -618,8 +706,8 @@ async googleCallback(code: string) {
   }
 
   /*
-   * Link guest bookings only when the
-   * verified Google email matches.
+   * Link guest bookings when the verified
+   * Google email matches.
    */
   await prisma.booking.updateMany({
     where: {
@@ -630,6 +718,47 @@ async googleCallback(code: string) {
       userId: user.id,
     },
   });
+
+  /*
+   * Find the latest paid booking that is still
+   * waiting for account activation.
+   *
+   * This is the same activation logic used
+   * by normal login/register.
+   */
+  const paidBooking = await prisma.booking.findFirst({
+    where: {
+      userId: user.id,
+      email: normalizedEmail,
+      paymentStatus: PaymentStatus.PAID,
+      bookingStatus: BookingStatus.PENDING,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  /*
+   * Activate the paid booking.
+   *
+   * For GROUP bookings this will:
+   * - activate MemberMembership
+   * - calculate membership expiry
+   * - create MemberSchedule
+   * - confirm the booking
+   * - create the Google Calendar event
+   *
+   * For PRIVATE bookings this will:
+   * - activate MemberMembership
+   * - confirm the booking
+   * - skip group schedule/capacity/calendar logic
+   */
+  if (paidBooking) {
+    await bookingService.confirmBooking(
+      paidBooking.id,
+      user.id
+    );
+  }
 
   const jwtPayload: JwtPayload = {
     userId: user.id,
@@ -666,8 +795,7 @@ async googleCallback(code: string) {
       phone: user.phone,
       provider: user.provider,
       role: user.role,
-      isEmailVerified:
-        user.isEmailVerified,
+      isEmailVerified: user.isEmailVerified,
       avatar: user.avatar,
     },
 

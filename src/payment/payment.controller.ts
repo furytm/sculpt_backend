@@ -61,7 +61,7 @@ async verifyPayment(
     await bookingService.markBookingPaid(reference);
 
     return res.redirect(
-  `https://www.sculptlab.com.ng/confirmation?reference=${encodeURIComponent(
+  `http://localhost:3000/confirmation?reference=${encodeURIComponent(
     reference
   )}`
 
@@ -70,7 +70,7 @@ async verifyPayment(
     console.error("Payment Callback Error:", error);
 
 return res.redirect(
-  "https://www.sculptlab.com.ng/confirmation?payment=failed"
+  "http://localhost:3000/confirmation?payment=failed"
 );
   }
 }

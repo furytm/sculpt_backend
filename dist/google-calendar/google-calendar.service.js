@@ -21,21 +21,38 @@ class GoogleCalendarService {
             auth,
         });
     }
-    async createBookingEvent(data) {
+    /**
+     * Create one weekly recurring Google Calendar event
+     * for one selected schedule day.
+     *
+     * Example:
+     * Monday 10:00–11:00
+     * repeats every Monday until the membership expires.
+     */
+    async createRecurringBookingEvent(data) {
         const calendar = this.getCalendar();
-        const startDateTime = this.combineDateAndTime(data.bookingDate, data.startTime);
-        const endDateTime = this.combineDateAndTime(data.bookingDate, data.endTime);
+        // Find the first occurrence of this particular
+        // schedule day on or after the selected start date.
+        const firstOccurrence = this.getFirstOccurrence(data.bookingDate, data.dayOfWeek);
+        const startDateTime = this.combineDateAndTime(firstOccurrence, data.startTime);
+        const endDateTime = this.combineDateAndTime(firstOccurrence, data.endTime);
+        const recurrenceDay = this.googleRecurrenceDay(data.dayOfWeek);
+        const recurrenceRule = data.expiryDate
+            ? `RRULE:FREQ=WEEKLY;BYDAY=${recurrenceDay};UNTIL=${this.formatUntilDate(data.expiryDate)}`
+            : `RRULE:FREQ=WEEKLY;BYDAY=${recurrenceDay}`;
         const event = await calendar.events.insert({
             calendarId: GOOGLE_CALENDAR_ID,
             sendUpdates: "none",
             requestBody: {
                 summary: `Sculpt LAB — ${data.className}`,
                 description: [
-                    "New Sculpt LAB booking",
+                    "Sculpt LAB recurring booking",
                     "",
                     `Member: ${data.memberName}`,
                     `Email: ${data.memberEmail}`,
                     `Tutor: ${data.tutorName}`,
+                    `Class: ${data.className}`,
+                    `Recurring Day: ${data.dayOfWeek}`,
                     `Booking Reference: ${data.bookingReference}`,
                     `Booking ID: ${data.bookingId}`,
                 ].join("\n"),
@@ -47,10 +64,12 @@ class GoogleCalendarService {
                     dateTime: endDateTime,
                     timeZone: TIMEZONE,
                 },
+                recurrence: [recurrenceRule],
                 extendedProperties: {
                     private: {
                         sculptBookingId: data.bookingId,
                         sculptBookingReference: data.bookingReference,
+                        sculptDayOfWeek: data.dayOfWeek,
                     },
                 },
             },
@@ -58,65 +77,81 @@ class GoogleCalendarService {
         return {
             eventId: event.data.id ?? null,
             eventUrl: event.data.htmlLink ?? null,
+            dayOfWeek: data.dayOfWeek,
         };
     }
-    async deleteEvent(eventId) {
-        const calendar = this.getCalendar();
-        await calendar.events.delete({
-            calendarId: GOOGLE_CALENDAR_ID,
-            eventId,
-        });
-    }
-    async updateEvent(eventId, data) {
-        const calendar = this.getCalendar();
-        const existingEvent = await calendar.events.get({
-            calendarId: GOOGLE_CALENDAR_ID,
-            eventId,
-        });
-        const current = existingEvent.data;
-        const updatedEvent = {
-            ...current,
-            summary: data.className
-                ? `Sculpt LAB — ${data.className}`
-                : current.summary,
-            description: [
-                "Sculpt LAB booking",
-                "",
-                `Member: ${data.memberName ?? ""}`,
-                `Email: ${data.memberEmail ?? ""}`,
-                `Tutor: ${data.tutorName ?? ""}`,
-                `Booking Reference: ${data.bookingReference ?? ""}`,
-                `Booking ID: ${data.bookingId ?? ""}`,
-            ].join("\n"),
+    /**
+     * Find the first selected schedule day on or after
+     * the member's chosen start date.
+     *
+     * Example:
+     *
+     * Start date: Monday
+     * Selected day: Wednesday
+     *
+     * Result: Wednesday of that same week.
+     */
+    getFirstOccurrence(startDate, dayOfWeek) {
+        const targetDays = {
+            SUNDAY: 0,
+            MONDAY: 1,
+            TUESDAY: 2,
+            WEDNESDAY: 3,
+            THURSDAY: 4,
+            FRIDAY: 5,
+            SATURDAY: 6,
         };
-        if (data.bookingDate &&
-            data.startTime &&
-            data.endTime) {
-            updatedEvent.start = {
-                dateTime: this.combineDateAndTime(data.bookingDate, data.startTime),
-                timeZone: TIMEZONE,
-            };
-            updatedEvent.end = {
-                dateTime: this.combineDateAndTime(data.bookingDate, data.endTime),
-                timeZone: TIMEZONE,
-            };
+        const targetDay = targetDays[dayOfWeek];
+        if (targetDay === undefined) {
+            throw new Error(`Invalid day of week: ${dayOfWeek}`);
         }
-        const event = await calendar.events.update({
-            calendarId: GOOGLE_CALENDAR_ID,
-            eventId,
-            requestBody: updatedEvent,
-            sendUpdates: "none",
-        });
-        return {
-            eventId: event.data.id ?? null,
-            eventUrl: event.data.htmlLink ?? null,
-        };
+        const date = new Date(startDate);
+        const currentDay = date.getUTCDay();
+        let difference = targetDay - currentDay;
+        if (difference < 0) {
+            difference += 7;
+        }
+        date.setUTCDate(date.getUTCDate() + difference);
+        return date;
     }
+    /**
+     * Convert Prisma DayOfWeek to Google Calendar BYDAY.
+     */
+    googleRecurrenceDay(dayOfWeek) {
+        const days = {
+            MONDAY: "MO",
+            TUESDAY: "TU",
+            WEDNESDAY: "WE",
+            THURSDAY: "TH",
+            FRIDAY: "FR",
+            SATURDAY: "SA",
+            SUNDAY: "SU",
+        };
+        const day = days[dayOfWeek];
+        if (!day) {
+            throw new Error(`Invalid day of week: ${dayOfWeek}`);
+        }
+        return day;
+    }
+    /**
+     * Google Calendar RRULE UNTIL format.
+     */
+    formatUntilDate(date) {
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+        const day = String(date.getUTCDate()).padStart(2, "0");
+        return `${year}${month}${day}T235959Z`;
+    }
+    /**
+     * Combine a date with a schedule time.
+     */
     combineDateAndTime(date, time) {
         const year = date.getUTCFullYear();
         const month = String(date.getUTCMonth() + 1).padStart(2, "0");
         const day = String(date.getUTCDate()).padStart(2, "0");
-        const normalizedTime = time.length === 5 ? `${time}:00` : time;
+        const normalizedTime = time.length === 5
+            ? `${time}:00`
+            : time;
         return `${year}-${month}-${day}T${normalizedTime}`;
     }
 }

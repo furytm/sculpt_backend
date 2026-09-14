@@ -19,6 +19,7 @@ router.get("/dashboard", authenticate, requireAdmin, adminController.getDashboar
 // PENDING OFFLINE PAYMENTS
 // =====================================================
 router.get("/payments/pending", authenticate, requireAdmin, adminController.getPendingOfflinePayments);
+router.get("/bookings", authenticate, requireAdmin, adminController.getAllBookings);
 // =====================================================
 // PAYMENT DETAILS
 // =====================================================

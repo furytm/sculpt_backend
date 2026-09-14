@@ -62,6 +62,24 @@ class AdminController {
             });
         }
     }
+    async getAllBookings(req, res) {
+        try {
+            const bookings = await adminService.getAllBookings();
+            return res.status(200).json({
+                success: true,
+                message: "All bookings retrieved successfully.",
+                data: bookings,
+            });
+        }
+        catch (error) {
+            console.error("Get All Admin Bookings Error:", error);
+            return res.status(500).json({
+                success: false,
+                message: error?.message ||
+                    "Failed to retrieve bookings.",
+            });
+        }
+    }
     async rejectOfflinePayment(req, res) {
         try {
             const bookingId = Array.isArray(req.params.bookingId)

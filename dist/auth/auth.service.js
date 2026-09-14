@@ -1,5 +1,6 @@
-import { AuthProvider, UserRole, PaymentStatus } from "@prisma/client";
+import { AuthProvider, UserRole, PaymentStatus, BookingStatus } from "@prisma/client";
 import prisma from "../config/prisma.js";
+import bookingService from "../booking/booking.service.js";
 import { hashPassword, comparePassword, } from "../utils/bcrypt.js";
 import googleClient from "../config/google.js";
 import { generateSecureToken, hashToken, } from "../utils/auth-token.js";
@@ -12,7 +13,9 @@ class AuthService {
     async register(data) {
         const { fullName, email, password, phone, } = data;
         const normalizedEmail = email.toLowerCase().trim();
+        // ---------------------------------------------------------
         // Check existing account
+        // ---------------------------------------------------------
         const existingUser = await prisma.user.findUnique({
             where: {
                 email: normalizedEmail,
@@ -21,9 +24,13 @@ class AuthService {
         if (existingUser) {
             throw new Error("An account with this email already exists.");
         }
+        // ---------------------------------------------------------
         // Hash password
+        // ---------------------------------------------------------
         const hashedPassword = await hashPassword(password);
+        // ---------------------------------------------------------
         // Create user
+        // ---------------------------------------------------------
         const user = await prisma.user.create({
             data: {
                 fullName,
@@ -34,7 +41,9 @@ class AuthService {
                 role: UserRole.MEMBER,
             },
         });
-        // Link previous guest bookings using the same email
+        // ---------------------------------------------------------
+        // Attach guest bookings using the same email
+        // ---------------------------------------------------------
         await prisma.booking.updateMany({
             where: {
                 email: normalizedEmail,
@@ -44,37 +53,23 @@ class AuthService {
                 userId: user.id,
             },
         });
-        // ==========================================
-        // CREATE ACTIVE MEMBERSHIP FROM PAID BOOKING
-        // ==========================================
+        // ---------------------------------------------------------
+        // Find the latest paid pending booking
+        // ---------------------------------------------------------
         const paidBooking = await prisma.booking.findFirst({
             where: {
                 email: normalizedEmail,
                 userId: user.id,
                 paymentStatus: PaymentStatus.PAID,
-            },
-            include: {
-                membership: true,
+                bookingStatus: BookingStatus.PENDING,
             },
             orderBy: {
                 createdAt: "desc",
             },
         });
-        if (paidBooking) {
-            await prisma.memberMembership.create({
-                data: {
-                    userId: user.id,
-                    membershipId: paidBooking.membershipId,
-                    bookingId: paidBooking.id,
-                    status: "ACTIVE",
-                    startDate: null,
-                    expiryDate: null,
-                },
-            });
-        }
-        // ==========================================
-        // CREATE EMAIL VERIFICATION TOKEN
-        // ==========================================
+        // ---------------------------------------------------------
+        // Create email verification token
+        // ---------------------------------------------------------
         const verificationToken = generateSecureToken();
         const verificationTokenHash = hashToken(verificationToken);
         await prisma.emailVerificationToken.create({
@@ -82,7 +77,9 @@ class AuthService {
                 tokenHash: verificationTokenHash,
                 userId: user.id,
                 expiresAt: new Date(Date.now() +
-                    60 * 60 * 1000),
+                    60 *
+                        60 *
+                        1000),
             },
         });
         const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
@@ -91,12 +88,12 @@ class AuthService {
         }
         catch (emailError) {
             console.error("Verification email could not be sent:", emailError);
-            // Do not fail registration if email delivery fails.
+            // Do not fail registration
+            // if email delivery fails.
         }
-        ;
-        // ==========================================
-        // GENERATE JWT TOKENS
-        // ==========================================
+        // ---------------------------------------------------------
+        // Generate JWT tokens
+        // ---------------------------------------------------------
         const payload = {
             userId: user.id,
             email: user.email,
@@ -104,7 +101,9 @@ class AuthService {
         };
         const accessToken = generateAccessToken(payload);
         const refreshToken = generateRefreshToken(payload);
+        // ---------------------------------------------------------
         // Save refresh token
+        // ---------------------------------------------------------
         await prisma.refreshToken.create({
             data: {
                 token: refreshToken,
@@ -117,6 +116,25 @@ class AuthService {
                         30),
             },
         });
+        // ---------------------------------------------------------
+        // COMPLETE PAID BOOKING
+        // ---------------------------------------------------------
+        //
+        // The customer has already:
+        // - paid
+        // - completed Health Declaration
+        // - selected schedule (GROUP)
+        // - selected start date
+        //
+        // confirmBooking() now activates the membership
+        // and completes the booking.
+        // ---------------------------------------------------------
+        if (paidBooking) {
+            await bookingService.confirmBooking(paidBooking.id, user.id);
+        }
+        // ---------------------------------------------------------
+        // Return
+        // ---------------------------------------------------------
         return {
             user: {
                 id: user.id,
@@ -144,7 +162,9 @@ class AuthService {
         if (!user) {
             throw new Error("Invalid email or password.");
         }
+        // ---------------------------------------------------------
         // Google account cannot use password login
+        // ---------------------------------------------------------
         if (user.provider === AuthProvider.GOOGLE &&
             !user.password) {
             throw new Error("This account was created with Google. Please continue with Google.");
@@ -152,10 +172,42 @@ class AuthService {
         if (!user.password) {
             throw new Error("Invalid email or password.");
         }
+        // ---------------------------------------------------------
+        // Check password
+        // ---------------------------------------------------------
         const passwordMatches = await comparePassword(data.password, user.password);
         if (!passwordMatches) {
             throw new Error("Invalid email or password.");
         }
+        // ---------------------------------------------------------
+        // Attach guest bookings using the same email
+        // ---------------------------------------------------------
+        await prisma.booking.updateMany({
+            where: {
+                email: normalizedEmail,
+                userId: null,
+            },
+            data: {
+                userId: user.id,
+            },
+        });
+        // ---------------------------------------------------------
+        // Find latest paid pending booking
+        // ---------------------------------------------------------
+        const paidBooking = await prisma.booking.findFirst({
+            where: {
+                email: normalizedEmail,
+                userId: user.id,
+                paymentStatus: PaymentStatus.PAID,
+                bookingStatus: BookingStatus.PENDING,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+        // ---------------------------------------------------------
+        // Generate JWT tokens
+        // ---------------------------------------------------------
         const payload = {
             userId: user.id,
             email: user.email,
@@ -163,6 +215,9 @@ class AuthService {
         };
         const accessToken = generateAccessToken(payload);
         const refreshToken = generateRefreshToken(payload);
+        // ---------------------------------------------------------
+        // Save refresh token
+        // ---------------------------------------------------------
         await prisma.refreshToken.create({
             data: {
                 token: refreshToken,
@@ -175,6 +230,15 @@ class AuthService {
                         30),
             },
         });
+        // ---------------------------------------------------------
+        // COMPLETE PAID BOOKING
+        // ---------------------------------------------------------
+        if (paidBooking) {
+            await bookingService.confirmBooking(paidBooking.id, user.id);
+        }
+        // ---------------------------------------------------------
+        // Return
+        // ---------------------------------------------------------
         return {
             user: {
                 id: user.id,
