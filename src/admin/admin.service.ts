@@ -310,14 +310,15 @@ async confirmOfflinePayment(bookingId: string) {
     throw new Error("Only pending payments can be confirmed.");
   }
 
-  await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
-    data: {
-      paymentStatus: PaymentStatus.PAID,
-    },
-  });
+await prisma.booking.update({
+  where: {
+    id: booking.id,
+  },
+  data: {
+    paymentStatus: PaymentStatus.PAID,
+    bookingStatus: BookingStatus.CONFIRMED,
+  },
+});
 
   try {
     const activation =
@@ -329,14 +330,15 @@ async confirmOfflinePayment(bookingId: string) {
   } catch (error) {
     // If membership/activation/email fails,
     // don't leave the payment incorrectly marked as PAID.
-    await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-      data: {
-        paymentStatus: PaymentStatus.PENDING,
-      },
-    });
+await prisma.booking.update({
+  where: {
+    id: booking.id,
+  },
+  data: {
+    paymentStatus: PaymentStatus.PENDING,
+    bookingStatus: BookingStatus.PENDING,
+  },
+});
 
     throw error;
   }
@@ -367,6 +369,80 @@ async getPaymentDetails(bookingId: string) {
   }
 
   return booking;
+}
+async deleteBooking(bookingId: string) {
+  const booking = await prisma.booking.findUnique({
+    where: {
+      id: bookingId,
+    },
+    include: {
+      memberMembership: true,
+      membershipActivation: true,
+      healthSafetyForm: true,
+      memberSchedules: true,
+    },
+  });
+
+  if (!booking) {
+    throw new Error("Booking not found.");
+  }
+
+  // Delete related records first so we don't violate
+  // foreign-key constraints.
+
+  await prisma.$transaction(async (tx) => {
+    // Remove membership activation linked to this booking
+    if (booking.membershipActivation) {
+      await tx.membershipActivation.delete({
+        where: {
+          id: booking.membershipActivation.id,
+        },
+      });
+    }
+
+    // Remove health/safety form
+    if (booking.healthSafetyForm) {
+      await tx.healthSafetyForm.delete({
+        where: {
+          id: booking.healthSafetyForm.id,
+        },
+      });
+    }
+
+    // Remove member schedules
+    if (booking.memberSchedules.length > 0) {
+      await tx.memberSchedule.deleteMany({
+        where: {
+          bookingId: booking.id,
+        },
+      });
+    }
+
+    // Disconnect the booking from MemberMembership
+    // instead of deleting the actual membership.
+    if (booking.memberMembership) {
+      await tx.memberMembership.update({
+        where: {
+          id: booking.memberMembership.id,
+        },
+        data: {
+          bookingId: null,
+        },
+      });
+    }
+
+    // Finally delete the booking
+    await tx.booking.delete({
+      where: {
+        id: booking.id,
+      },
+    });
+  });
+
+  return {
+    bookingId: booking.id,
+    message: "Booking deleted successfully.",
+  };
 }
 async rejectOfflinePayment(
   bookingId: string,

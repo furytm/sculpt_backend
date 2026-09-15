@@ -50,6 +50,13 @@ router.get(
   requireAdmin,
   adminController.getAllBookings
 );
+
+router.delete(
+  "/bookings/:bookingId",
+  authenticate,
+  requireAdmin,
+  adminController.deleteBooking
+);
 // =====================================================
 // PAYMENT DETAILS
 // =====================================================

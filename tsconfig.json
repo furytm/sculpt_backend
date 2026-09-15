@@ -22,7 +22,7 @@
   },
   "include": [
     "src/**/*.ts"
-  ],
+, "prisma/notepad check-render-db.ts"  ],
   "exclude": [
     "node_modules",
     "dist"
