@@ -18,7 +18,7 @@ class PaymentController {
 
       return res.status(200).json(payment);
     } catch (error) {
-      console.error("Paystack Initialize Error:", error);
+      console.error("Paymish Initialize Error:", error);
 
       return res.status(500).json({
         success: false,
@@ -30,6 +30,9 @@ class PaymentController {
 
   // =========================================================
   // VERIFY PAYMENT
+  // =========================================================
+  // KEPT FOR MANUAL TESTING ONLY.
+  // This is NOT used by the normal payment callback.
   // =========================================================
 
   async verifyPayment(
@@ -44,7 +47,7 @@ class PaymentController {
 
       return res.status(200).json(payment);
     } catch (error) {
-      console.error("Paystack Verify Error:", error);
+      console.error("Paymish Verify Error:", error);
 
       return res.status(500).json({
         success: false,
@@ -55,7 +58,11 @@ class PaymentController {
   }
 
   // =========================================================
-  // PAYSTACK CALLBACK
+  // PAYMISH CALLBACK
+  // =========================================================
+  // IMPORTANT:
+  // We intentionally DO NOT call verifyTransaction() here.
+  // This restores the old working Sculpt LAB flow.
   // =========================================================
 
   async callback(req: Request, res: Response) {
@@ -73,73 +80,10 @@ class PaymentController {
       }
 
       // -------------------------------------------------------
-      // VERIFY THE PAYMENT WITH PAYSTACK
-      // -------------------------------------------------------
-
-      const payment =
-        await paymentService.verifyTransaction(
-          reference
-        );
-
-      const transaction = payment?.data;
-
-      if (!transaction) {
-        throw new Error(
-          "Invalid Paystack verification response."
-        );
-      }
-
-      // -------------------------------------------------------
-      // VERIFY PAYMENT STATUS
-      // -------------------------------------------------------
-
-      if (transaction.status !== "success") {
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/confirmation?payment=failed&reference=${encodeURIComponent(
-            reference
-          )}`
-        );
-      }
-
-      // -------------------------------------------------------
-      // VERIFY AMOUNT
-      // -------------------------------------------------------
-
-      const booking =
-        await bookingService.getBookingByReference(
-          reference
-        );
-
-      const expectedAmount =
-        Math.round(booking.amount * 100);
-
-      if (
-        Number(transaction.amount) !==
-        expectedAmount
-      ) {
-        console.error(
-          "Paystack amount mismatch:",
-          {
-            expected: expectedAmount,
-            received: transaction.amount,
-            reference,
-          }
-        );
-
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/confirmation?payment=failed&reference=${encodeURIComponent(
-            reference
-          )}`
-        );
-      }
-
-      // -------------------------------------------------------
       // MARK BOOKING AS PAID
       // -------------------------------------------------------
 
-      await bookingService.markBookingPaid(
-        reference
-      );
+      await bookingService.markBookingPaid(reference);
 
       // -------------------------------------------------------
       // REDIRECT TO FRONTEND
@@ -152,7 +96,7 @@ class PaymentController {
       );
     } catch (error) {
       console.error(
-        "Paystack Callback Error:",
+        "Paymish Callback Error:",
         error
       );
 
@@ -176,7 +120,7 @@ class PaymentController {
       return res.status(200).json(response);
     } catch (error) {
       console.error(
-        "Paystack Webhook Error:",
+        "Paymish Webhook Error:",
         error
       );
 

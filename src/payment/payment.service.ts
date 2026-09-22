@@ -5,103 +5,117 @@ export interface InitializePaymentDto {
   amount: number;
   reference: string;
   currency?: string;
+  channels?: string[];
+  transaction_charge?: number;
+  split_code?: string;
+  subaccount?: string;
+  bearer?: string;
   callback_url?: string;
 }
-
 class PaymentService {
-  private getHeaders() {
-    return {
-      Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-      "Content-Type": "application/json",
-    };
-  }
+private getHeaders() {
+  return {
+    Authorization: `Bearer ${process.env.PAYMISH_SECRET_KEY}`,
+    "Content-Type": "application/json",
+  };
+}
 
   // =========================================================
   // INITIALIZE PAYSTACK TRANSACTION
   // =========================================================
 
-  async initializeTransaction(data: InitializePaymentDto) {
-    try {
-      const payload = {
-        email: data.email,
+async initializeTransaction(data: InitializePaymentDto) {
+  try {
+    const payload: Record<string, any> = {
+      email: data.email,
 
-        // Paystack expects amount in kobo
-        amount: Math.round(data.amount * 100),
+      // Keep the amount exactly as your old Paymish integration used it.
+      amount: data.amount,
 
-        currency: data.currency ?? "NGN",
+      currency: data.currency ?? "NGN",
 
-        reference: data.reference,
+      channels: data.channels ?? [
+        "card",
+        "ussd",
+        "nqr",
+        "transfer",
+      ],
 
-        callback_url:
-          data.callback_url ??
-          process.env.PAYSTACK_CALLBACK_URL,
-      };
+      callback_url:
+        data.callback_url ??
+        process.env.PAYMISH_CALLBACK_URL,
 
-      const response = await axios.post(
-        "https://api.paystack.co/transaction/initialize",
-        payload,
-        {
-          headers: this.getHeaders(),
-        }
-      );
+      reference: data.reference,
+    };
 
-      console.log("========== PAYSTACK INITIALIZE ==========");
-      console.log(response.data);
-      console.log("==========================================");
-
-      return response.data;
-    } catch (error: any) {
-      if (axios.isAxiosError(error)) {
-        console.error(
-          "========== PAYSTACK INITIALIZE FAILED =========="
-        );
-        console.error("STATUS:", error.response?.status);
-        console.error("DATA:", error.response?.data);
-        console.error("===============================================");
-
-        throw error.response?.data ?? error.message;
+    const response = await axios.post(
+      `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/transaction-initialize`,
+      payload,
+      {
+        headers: this.getHeaders(),
       }
+    );
 
-      throw error;
+    console.log("========== PAYMISH INITIALIZE ==========");
+    console.log(response.data);
+    console.log("=========================================");
+
+    return response.data;
+  } catch (error: any) {
+    if (axios.isAxiosError(error)) {
+      console.error(
+        "========== PAYMISH INITIALIZE FAILED =========="
+      );
+      console.error("STATUS:", error.response?.status);
+      console.error("DATA:", error.response?.data);
+      console.error("===============================================");
+
+      throw error.response?.data ?? error.message;
     }
+
+    throw error;
   }
+}
 
   // =========================================================
   // VERIFY PAYSTACK TRANSACTION
   // =========================================================
 
-  async verifyTransaction(reference: string) {
-    try {
-      const response = await axios.get(
-        `https://api.paystack.co/transaction/verify/${encodeURIComponent(
-          reference
-        )}`,
-        {
-          headers: this.getHeaders(),
-        }
-      );
+ // =========================================================
+// VERIFY PAYMISH TRANSACTION
+// =========================================================
 
-      console.log("========== PAYSTACK VERIFY ==========");
-      console.log(response.data);
-      console.log("======================================");
-
-      return response.data;
-    } catch (error: any) {
-      if (axios.isAxiosError(error)) {
-        console.error(
-          "========== PAYSTACK VERIFY FAILED =========="
-        );
-        console.error("STATUS:", error.response?.status);
-        console.error("DATA:", error.response?.data);
-        console.error("============================================");
-
-        throw error.response?.data ?? error.message;
+async verifyTransaction(reference: string) {
+  try {
+    const response = await axios.get(
+      `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/verify/${encodeURIComponent(
+        reference
+      )}`,
+      {
+        headers: this.getHeaders(),
       }
+    );
 
-      throw error;
+    console.log("========== PAYMISH VERIFY ==========");
+    console.log(response.data);
+    console.log("=====================================");
+
+    return response.data;
+  } catch (error: any) {
+    if (axios.isAxiosError(error)) {
+      console.error(
+        "========== PAYMISH VERIFY FAILED =========="
+      );
+      console.error("STATUS:", error.response?.status);
+      console.error("DATA:", error.response?.data);
+      console.error("============================================");
+
+      throw error.response?.data ?? error.message;
     }
-  }
 
+    throw error;
+  }
+}
   // =========================================================
   // WEBHOOK
   // =========================================================

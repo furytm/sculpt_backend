@@ -147,11 +147,10 @@ class BookingService {
 
         amount: membership.price,
 
-     paymentMethod:
+    paymentMethod:
   data.paymentMethod === "OFFLINE"
     ? PaymentMethod.OFFLINE
-    : PaymentMethod.PAYSTACK,
-
+    : PaymentMethod.PAYMISH,
         paymentReference,
 
         paymentStatus: PaymentStatus.PENDING,
@@ -193,7 +192,7 @@ const payment =
 
 return {
   booking,
-  paymentMethod: PaymentMethod.PAYSTACK,
+  paymentMethod: PaymentMethod.PAYMISH,
   authorizationUrl: payment.data.authorization_url,
   bookingFlowToken,
 };
