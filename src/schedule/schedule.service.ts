@@ -12,7 +12,7 @@ class ScheduleService {
       },
       orderBy: {
         createdAt: "asc",
-      },
+      }, 
     });
   }
 
