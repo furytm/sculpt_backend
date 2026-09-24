@@ -1,2 +1,0 @@
--- AlterTable
-ALTER TABLE "Booking" ALTER COLUMN "paymentMethod" SET DEFAULT 'PAYSTACK';

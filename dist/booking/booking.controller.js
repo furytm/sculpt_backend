@@ -1,5 +1,4 @@
 import bookingService from "./booking.service.js";
-import { updateBookingPreferencesSchema, } from "./booking.validation.js";
 class BookingController {
     // =========================================================
     // CREATE BOOKING
@@ -10,7 +9,7 @@ class BookingController {
             return res.status(201).json({
                 success: true,
                 message: req.body.paymentMethod === "OFFLINE"
-                    ? "Offline booking created successfully."
+                    ? "Booking created successfully."
                     : "Booking created and payment initialized successfully.",
                 data: booking,
             });
@@ -19,8 +18,42 @@ class BookingController {
             console.error("Create Booking Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message ||
-                    "Failed to create booking.",
+                message: error?.message || "Failed to create booking.",
+            });
+        }
+    }
+    // =========================================================
+    // INITIALIZE PAYMENT
+    // =========================================================
+    async initializePayment(req, res) {
+        try {
+            const bookingId = String(req.params.bookingId);
+            if (!bookingId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Booking ID is required.",
+                });
+            }
+            const { bookingFlowToken } = req.body;
+            if (!bookingFlowToken ||
+                typeof bookingFlowToken !== "string") {
+                return res.status(401).json({
+                    success: false,
+                    message: "Booking continuation token is required.",
+                });
+            }
+            const result = await bookingService.initializePayment(bookingId, bookingFlowToken);
+            return res.status(200).json({
+                success: true,
+                message: "Payment initialized successfully.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error("Initialize Payment Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message || "Failed to initialize payment.",
             });
         }
     }
@@ -29,12 +62,11 @@ class BookingController {
     // =========================================================
     async getBooking(req, res) {
         try {
-            const { bookingId } = req.params;
-            if (!bookingId ||
-                typeof bookingId !== "string") {
+            const bookingId = String(req.params.bookingId);
+            if (!bookingId) {
                 return res.status(400).json({
                     success: false,
-                    message: "Invalid booking ID.",
+                    message: "Booking ID is required.",
                 });
             }
             const booking = await bookingService.getBookingById(bookingId);
@@ -53,8 +85,79 @@ class BookingController {
             console.error("Get Booking Error:", error);
             return res.status(500).json({
                 success: false,
-                message: error?.message ||
-                    "Failed to retrieve booking.",
+                message: error?.message || "Failed to retrieve booking.",
+            });
+        }
+    }
+    // =========================================================
+    // GET CLASS AVAILABILITY
+    // =========================================================
+    //
+    // Example:
+    // GET /api/bookings/availability/reformer
+    //
+    // Optional:
+    // ?startDate=2026-09-24&endDate=2026-10-24
+    //
+    // =========================================================
+    async getClassAvailability(req, res) {
+        try {
+            const classId = String(req.params.classId);
+            if (!classId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Class ID is required.",
+                });
+            }
+            const startDate = typeof req.query.startDate === "string"
+                ? req.query.startDate
+                : undefined;
+            const endDate = typeof req.query.endDate === "string"
+                ? req.query.endDate
+                : undefined;
+            const availability = await bookingService.getClassAvailability(classId, startDate, endDate);
+            return res.status(200).json({
+                success: true,
+                data: availability,
+            });
+        }
+        catch (error) {
+            console.error("Get Class Availability Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message || "Failed to retrieve class availability.",
+            });
+        }
+    }
+    // =========================================================
+    // GET SINGLE SESSION AVAILABILITY
+    // =========================================================
+    async getSessionAvailability(req, res) {
+        try {
+            const sessionId = String(req.params.sessionId);
+            if (!sessionId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Session ID is required.",
+                });
+            }
+            const session = await bookingService.getSessionAvailability(sessionId);
+            if (!session) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Class session not found.",
+                });
+            }
+            return res.status(200).json({
+                success: true,
+                data: session,
+            });
+        }
+        catch (error) {
+            console.error("Get Session Availability Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message || "Failed to retrieve session availability.",
             });
         }
     }
@@ -63,9 +166,8 @@ class BookingController {
     // =========================================================
     async getBookingConfirmation(req, res) {
         try {
-            const { reference } = req.params;
-            if (!reference ||
-                typeof reference !== "string") {
+            const reference = String(req.params.reference);
+            if (!reference) {
                 return res.status(400).json({
                     success: false,
                     message: "Payment reference is required.",
@@ -84,8 +186,35 @@ class BookingController {
             console.error("Get Booking Confirmation Error:", error);
             return res.status(404).json({
                 success: false,
+                message: error?.message || "Booking not found.",
+            });
+        }
+    }
+    // =========================================================
+    // CONTINUE GUEST BOOKING
+    // =========================================================
+    async continueGuestBooking(req, res) {
+        try {
+            const reference = String(req.params.reference);
+            if (!reference) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment reference is required.",
+                });
+            }
+            const result = await bookingService.continueGuestBooking(reference);
+            return res.status(200).json({
+                success: true,
+                message: "Booking continuation session created successfully.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error("Continue Guest Booking Error:", error);
+            return res.status(400).json({
+                success: false,
                 message: error?.message ||
-                    "Booking not found.",
+                    "Unable to continue this booking.",
             });
         }
     }
@@ -119,31 +248,15 @@ class BookingController {
         }
     }
     // =========================================================
-    // NEW:
     // SAVE HEALTH DECLARATION
-    // =========================================================
-    //
-    // PUBLIC
-    //
-    // Customer has NOT created an account yet.
-    //
-    // Body:
-    //
-    // {
-    //   "bookingFlowToken": "...",
-    //   "accepted": true,
-    //   "notes": "..."
-    // }
-    //
     // =========================================================
     async saveHealthDeclaration(req, res) {
         try {
             const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
+            if (!bookingId) {
                 return res.status(400).json({
                     success: false,
-                    message: "Invalid booking ID.",
+                    message: "Booking ID is required.",
                 });
             }
             const { bookingFlowToken, accepted, notes, } = req.body;
@@ -184,138 +297,7 @@ class BookingController {
         }
     }
     // =========================================================
-    // NEW:
-    // UPDATE BOOKING SCHEDULE
-    // =========================================================
-    //
-    // PUBLIC
-    //
-    // Customer has not necessarily created an account yet.
-    //
-    // Body:
-    //
-    // {
-    //   "bookingFlowToken": "...",
-    //   "scheduleId": "..."
-    // }
-    //
-    // =========================================================
-    async updateBookingSchedule(req, res) {
-        try {
-            const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid booking ID.",
-                });
-            }
-            const { bookingFlowToken, scheduleId, } = req.body;
-            if (!bookingFlowToken ||
-                typeof bookingFlowToken !== "string") {
-                return res.status(401).json({
-                    success: false,
-                    message: "Booking continuation token is required.",
-                });
-            }
-            if (!scheduleId ||
-                typeof scheduleId !== "string") {
-                return res.status(400).json({
-                    success: false,
-                    message: "Schedule ID is required.",
-                });
-            }
-            const booking = await bookingService.updateBookingSchedule(bookingId, bookingFlowToken, scheduleId);
-            return res.status(200).json({
-                success: true,
-                message: "Schedule selected successfully.",
-                data: {
-                    booking,
-                },
-            });
-        }
-        catch (error) {
-            console.error("Update Booking Schedule Error:", error);
-            return res.status(400).json({
-                success: false,
-                message: error?.message ||
-                    "Failed to select schedule.",
-            });
-        }
-    }
-    // =========================================================
-    // NEW:
-    // UPDATE BOOKING START DATE
-    // =========================================================
-    //
-    // PUBLIC
-    //
-    // Body:
-    //
-    // {
-    //   "bookingFlowToken": "...",
-    //   "startDate": "2026-09-20"
-    // }
-    //
-    // =========================================================
-    async updateBookingStartDate(req, res) {
-        try {
-            const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid booking ID.",
-                });
-            }
-            const { bookingFlowToken, startDate, } = req.body;
-            if (!bookingFlowToken ||
-                typeof bookingFlowToken !== "string") {
-                return res.status(401).json({
-                    success: false,
-                    message: "Booking continuation token is required.",
-                });
-            }
-            if (!startDate ||
-                typeof startDate !== "string") {
-                return res.status(400).json({
-                    success: false,
-                    message: "Start date is required.",
-                });
-            }
-            const booking = await bookingService.updateBookingStartDate(bookingId, bookingFlowToken, startDate);
-            return res.status(200).json({
-                success: true,
-                message: "Start date saved successfully.",
-                data: {
-                    booking,
-                },
-            });
-        }
-        catch (error) {
-            console.error("Update Booking Start Date Error:", error);
-            return res.status(400).json({
-                success: false,
-                message: error?.message ||
-                    "Failed to save start date.",
-            });
-        }
-    }
-    // =========================================================
-    // NEW:
     // ATTACH BOOKING TO ACCOUNT
-    // =========================================================
-    //
-    // AUTHENTICATED
-    //
-    // Called after registration/login.
-    //
-    // Body:
-    //
-    // {
-    //   "bookingFlowToken": "..."
-    // }
-    //
     // =========================================================
     async attachBookingAccount(req, res) {
         try {
@@ -327,14 +309,13 @@ class BookingController {
                 });
             }
             const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
+            if (!bookingId) {
                 return res.status(400).json({
                     success: false,
-                    message: "Invalid booking ID.",
+                    message: "Booking ID is required.",
                 });
             }
-            const { bookingFlowToken, } = req.body;
+            const { bookingFlowToken } = req.body;
             if (!bookingFlowToken ||
                 typeof bookingFlowToken !== "string") {
                 return res.status(401).json({
@@ -361,11 +342,7 @@ class BookingController {
         }
     }
     // =========================================================
-    // FINAL CONFIRMATION
-    // =========================================================
-    //
-    // AUTHENTICATED
-    //
+    // CONFIRM BOOKING
     // =========================================================
     async confirmBooking(req, res) {
         try {
@@ -377,8 +354,7 @@ class BookingController {
                 });
             }
             const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
+            if (!bookingId) {
                 return res.status(400).json({
                     success: false,
                     message: "Booking ID is required.",
@@ -403,23 +379,10 @@ class BookingController {
         }
     }
     // =========================================================
-    // LEGACY:
-    // ASSIGN ALL SCHEDULES
+    // BOOK A SESSION USING EXISTING MEMBERSHIP
     // =========================================================
-    //
-    // DO NOT USE FOR NEW FRONTEND.
-    //
-    // =========================================================
-    async assignSchedules(req, res) {
+    async bookMemberSession(req, res) {
         try {
-            const { bookingId, } = req.params;
-            if (typeof bookingId !== "string" ||
-                !bookingId.trim()) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid booking ID.",
-                });
-            }
             const userId = req.user?.userId;
             if (!userId) {
                 return res.status(401).json({
@@ -427,31 +390,36 @@ class BookingController {
                     message: "Unauthorized.",
                 });
             }
-            const schedules = await bookingService.assignSchedules(bookingId, userId);
-            return res.status(200).json({
+            const { classSessionId } = req.body;
+            if (!classSessionId ||
+                typeof classSessionId !== "string") {
+                return res.status(400).json({
+                    success: false,
+                    message: "Class session ID is required.",
+                });
+            }
+            const booking = await bookingService.bookMemberSession(userId, classSessionId);
+            return res.status(201).json({
                 success: true,
-                message: "Schedules assigned successfully.",
-                data: schedules,
+                message: "Class session booked successfully.",
+                data: {
+                    booking,
+                },
             });
         }
         catch (error) {
-            console.error("Assign Schedules Error:", error);
+            console.error("Book Member Session Error:", error);
             return res.status(400).json({
                 success: false,
                 message: error?.message ||
-                    "Failed to assign schedules.",
+                    "Unable to book class session.",
             });
         }
     }
     // =========================================================
-    // LEGACY:
-    // HEALTH & SAFETY FORM
+    // MEMBERSHIP CREDIT SUMMARY
     // =========================================================
-    //
-    // Kept temporarily for old frontend compatibility.
-    //
-    // =========================================================
-    async saveHealthSafetyForm(req, res) {
+    async getMembershipCreditSummary(req, res) {
         try {
             const userId = req.user?.userId;
             if (!userId) {
@@ -460,114 +428,48 @@ class BookingController {
                     message: "Unauthorized.",
                 });
             }
+            const summary = await bookingService.getMembershipCreditSummary(userId);
+            return res.status(200).json({
+                success: true,
+                data: summary,
+            });
+        }
+        catch (error) {
+            console.error("Get Membership Credit Summary Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message ||
+                    "Unable to retrieve membership credits.",
+            });
+        }
+    }
+    async cancelBooking(req, res) {
+        try {
             const bookingId = String(req.params.bookingId);
-            if (!bookingId ||
-                bookingId === "undefined") {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid booking ID.",
-                });
-            }
-            const result = await bookingService.saveHealthSafetyForm(bookingId, userId, req.body);
-            return res.status(200).json({
-                success: true,
-                message: "Health & Safety form saved successfully.",
-                data: {
-                    healthSafetyForm: result,
-                },
-            });
-        }
-        catch (error) {
-            console.error("Health Safety Form Error:", error);
-            return res.status(400).json({
-                success: false,
-                message: error?.message ||
-                    "Unable to save Health & Safety form.",
-            });
-        }
-    }
-    // =========================================================
-    // LEGACY:
-    // UPDATE BOOKING PREFERENCES
-    // =========================================================
-    async updateBookingPreferences(req, res) {
-        try {
             const userId = req.user?.userId;
             if (!userId) {
                 return res.status(401).json({
                     success: false,
-                    message: "Unauthorized.",
+                    message: "Authentication required.",
                 });
             }
-            const { error, value, } = updateBookingPreferencesSchema.validate(req.body);
-            if (error) {
+            if (!bookingId) {
                 return res.status(400).json({
                     success: false,
-                    message: error.details[0].message,
+                    message: "Booking ID is required.",
                 });
             }
-            const booking = await bookingService.updateBookingPreferences(req.params.bookingId, userId, value);
+            const result = await bookingService.cancelBooking(bookingId, userId);
             return res.status(200).json({
                 success: true,
-                message: "Booking preferences saved successfully.",
-                data: {
-                    booking,
-                },
+                ...result,
             });
         }
         catch (error) {
-            console.error("Update Booking Preferences Error:", error);
+            console.error("Cancel booking error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message ||
-                    "Failed to save booking preferences.",
-            });
-        }
-    }
-    // =========================================================
-    // LEGACY:
-    // UPDATE CLASS
-    // =========================================================
-    async updateBookingClass(req, res) {
-        try {
-            const { bookingId, } = req.params;
-            const { classId, } = req.body;
-            if (typeof bookingId !== "string" ||
-                !bookingId.trim()) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid booking ID.",
-                });
-            }
-            if (typeof classId !== "string" ||
-                !classId.trim()) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Please select a class.",
-                });
-            }
-            const userId = req.user?.userId;
-            if (!userId) {
-                return res.status(401).json({
-                    success: false,
-                    message: "Unauthorized.",
-                });
-            }
-            const booking = await bookingService.updateBookingClass(bookingId, userId, classId);
-            return res.status(200).json({
-                success: true,
-                message: "Class selected successfully.",
-                data: {
-                    booking,
-                },
-            });
-        }
-        catch (error) {
-            console.error("Update Booking Class Error:", error);
-            return res.status(400).json({
-                success: false,
-                message: error?.message ||
-                    "Failed to save selected class.",
+                message: error?.message || "Failed to cancel booking.",
             });
         }
     }

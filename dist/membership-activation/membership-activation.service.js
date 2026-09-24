@@ -180,10 +180,13 @@ class MembershipActivationService {
                 data: {
                     userId: booking.userId ?? null,
                     membershipId: booking.membershipId,
-                    bookingId: booking.id,
                     status: MembershipStatus.ACTIVE,
                     startDate,
                     expiryDate,
+                    // Membership.classLimit becomes the member's total credits.
+                    // null means unlimited.
+                    creditsTotal: booking.membership.classLimit,
+                    creditsUsed: 0,
                 },
             });
         }

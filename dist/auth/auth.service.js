@@ -475,8 +475,8 @@ class AuthService {
             });
         }
         /*
-         * Link guest bookings only when the
-         * verified Google email matches.
+         * Link guest bookings when the verified
+         * Google email matches.
          */
         await prisma.booking.updateMany({
             where: {
@@ -487,6 +487,42 @@ class AuthService {
                 userId: user.id,
             },
         });
+        /*
+         * Find the latest paid booking that is still
+         * waiting for account activation.
+         *
+         * This is the same activation logic used
+         * by normal login/register.
+         */
+        const paidBooking = await prisma.booking.findFirst({
+            where: {
+                userId: user.id,
+                email: normalizedEmail,
+                paymentStatus: PaymentStatus.PAID,
+                bookingStatus: BookingStatus.PENDING,
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+        /*
+         * Activate the paid booking.
+         *
+         * For GROUP bookings this will:
+         * - activate MemberMembership
+         * - calculate membership expiry
+         * - create MemberSchedule
+         * - confirm the booking
+         * - create the Google Calendar event
+         *
+         * For PRIVATE bookings this will:
+         * - activate MemberMembership
+         * - confirm the booking
+         * - skip group schedule/capacity/calendar logic
+         */
+        if (paidBooking) {
+            await bookingService.confirmBooking(paidBooking.id, user.id);
+        }
         const jwtPayload = {
             userId: user.id,
             email: user.email,

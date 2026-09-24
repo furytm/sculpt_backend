@@ -6,79 +6,53 @@ export enum PaymentStatus {
   FAILED = "FAILED",
 }
 
-export type PaymentMethod = "PAYMISH" | "PAYSTACK" | "OFFLINE";
+export type PaymentMethod = "PAYMISH"  | "OFFLINE";
+
+export interface HealthDeclarationDto {
+  accepted: boolean;
+  notes?: string;
+}
 
 export interface CreateBookingDto {
   fullName: string;
   email: string;
   phone: string;
 
-  /**
-   * Selected before payment
-   */
   membershipId: string;
+
+  /**
+   * Selected group class.
+   * Required for GROUP memberships.
+   */
   classId?: string;
 
   /**
-   * The customer selects the recurring schedule
-   * after payment, so this normally starts as undefined.
+   * Selected dated/available session.
+   * Required for GROUP memberships in the new booking flow.
    */
   scheduleId?: string;
 
+  /**
+   * The date of the selected class session.
+   */
   bookingDate?: string;
 
   paymentMethod: PaymentMethod;
+
+  /**
+   * Health & Safety acknowledgement is completed
+   * before payment.
+   */
+  healthDeclaration: HealthDeclarationDto;
 }
 
 export interface BookingResponse {
   booking: Booking | any;
   paymentMethod: PaymentMethod;
   authorizationUrl: string | null;
-
-  /**
-   * Temporary token used to securely continue the
-   * booking flow before the customer creates/logs in
-   * to an account.
-   */
   bookingFlowToken?: string;
 }
 
-export interface UpdateBookingPreferencesDto {
-  classId?: string;
-  preferredStartDate?: string;
-  availableDays?: string[];
-  preferredTimes?: string[];
-}
-/**
- * Used when the customer selects a recurring
- * schedule during the booking flow.
- */
-export interface UpdateBookingScheduleDto {
-  scheduleId: string;
-}
-
-/**
- * Used when the customer chooses their membership
- * start date.
- */
-export interface UpdateBookingStartDateDto {
-  startDate: string;
-}
-
-/**
- * New Health Declaration
- *
- * This replaces the old detailed medical questionnaire.
- */
-export interface HealthDeclarationDto {
-  accepted: boolean;
-  notes?: string;
-}
-
-/**
- * Data stored when the customer accepts
- * the Health Declaration.
- */
 export interface HealthDeclarationResponse {
   accepted: boolean;
   declarationVersion: string;
@@ -86,30 +60,17 @@ export interface HealthDeclarationResponse {
   acceptedAt: Date | null;
 }
 
-/**
- * Used after registration/login to connect the
- * pre-account booking to the authenticated user.
- */
 export interface AttachBookingAccountDto {
   bookingFlowToken: string;
 }
 
-/**
- * Data required when finally confirming
- * the booking.
- */
 export interface ConfirmBookingDto {
   bookingFlowToken?: string;
 }
 
-/**
- * Schedule availability returned to the frontend.
- *
- * Capacity is determined by the backend.
- * The frontend should NOT hardcode capacity.
- */
 export interface ScheduleAvailability {
   id: string;
+
   className: string;
   tutorName: string;
   code: string;
@@ -126,7 +87,10 @@ export interface ScheduleAvailability {
   startTime: string;
   endTime: string;
 
-  isActive: boolean;
+  /**
+   * Actual date of this available class session.
+   */
+  sessionDate: string;
 
   capacity: number;
   bookedCount: number;
@@ -134,10 +98,6 @@ export interface ScheduleAvailability {
   isAvailable: boolean;
 }
 
-/**
- * Complete booking-flow state returned to the
- * frontend when the customer continues a booking.
- */
 export interface BookingFlowResponse {
   booking: Booking | any;
 
@@ -148,6 +108,20 @@ export interface BookingFlowResponse {
   bookingFlowToken?: string;
 }
 
+/**
+ * Used when a logged-in member wants to book
+ * another class using an existing membership.
+ */
+export interface CreateMemberClassBookingDto {
+  scheduleId: string;
+  bookingDate: string;
+}
+
+/**
+ * Used for the existing/legacy Health & Safety
+ * form fields. Keep this because your database
+ * still contains those fields.
+ */
 export interface HealthSafetyFormDto {
   dateOfBirth?: string;
   age?: number;

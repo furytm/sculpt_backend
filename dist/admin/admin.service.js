@@ -1,6 +1,7 @@
 import { BookingStatus, PaymentMethod, PaymentStatus, UserRole, MembershipStatus, } from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
+import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
 console.log("🔥 ACTIVATION SERVICE IMPORT:", membershipActivationService);
 class AdminService {
     async getPendingOfflinePayments() {
@@ -210,6 +211,192 @@ class AdminService {
         });
         return bookings;
     }
+    /**
+     * Get one booking for admin management.
+     */
+    async getBookingById(bookingId) {
+        const booking = await prisma.booking.findUnique({
+            where: {
+                id: bookingId,
+            },
+            include: {
+                membership: true,
+                memberMembership: true,
+                user: true,
+                healthSafetyForm: true,
+                membershipActivation: true,
+                schedule: true,
+                session: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+                memberSchedules: {
+                    where: {
+                        isActive: true,
+                    },
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+        });
+        if (!booking) {
+            throw new Error("Booking not found.");
+        }
+        return booking;
+    }
+    /**
+     * Cancel a booking as an admin.
+     *
+     * Cancelling preserves the booking record for history,
+     * restores one finite membership credit, frees the
+     * session spot, and removes the Google Calendar event.
+     */
+    async cancelBooking(bookingId) {
+        const result = await prisma.$transaction(async (tx) => {
+            /**
+             * Lock the booking so two cancellation requests
+             * cannot restore the same credit twice.
+             */
+            await tx.$queryRaw `
+      SELECT id
+      FROM "Booking"
+      WHERE id = ${bookingId}
+      FOR UPDATE
+    `;
+            const booking = await tx.booking.findUnique({
+                where: {
+                    id: bookingId,
+                },
+                include: {
+                    memberMembership: true,
+                    session: {
+                        include: {
+                            schedule: true,
+                        },
+                    },
+                },
+            });
+            if (!booking) {
+                throw new Error("Booking not found.");
+            }
+            /**
+             * Only confirmed bookings should be cancelled.
+             */
+            if (booking.bookingStatus !== BookingStatus.CONFIRMED) {
+                throw new Error("Only confirmed bookings can be cancelled.");
+            }
+            /**
+             * A group booking must have an associated session.
+             */
+            if (!booking.session) {
+                throw new Error("This booking does not have an associated class session.");
+            }
+            /**
+             * Do not allow an admin to cancel a booking
+             * after the class has already started.
+             */
+            if (booking.session.sessionDate <= new Date()) {
+                throw new Error("This booking can no longer be cancelled because the session has started or already passed.");
+            }
+            /**
+             * Cancel the booking.
+             */
+            const cancelledBooking = await tx.booking.update({
+                where: {
+                    id: booking.id,
+                },
+                data: {
+                    bookingStatus: BookingStatus.CANCELLED,
+                },
+                include: {
+                    membership: true,
+                    memberMembership: true,
+                    user: true,
+                    session: {
+                        include: {
+                            schedule: true,
+                        },
+                    },
+                },
+            });
+            /**
+             * Restore one credit for finite memberships.
+             *
+             * Unlimited memberships have creditsTotal === null,
+             * so nothing is restored.
+             */
+            let creditRestored = false;
+            if (booking.memberMembership &&
+                booking.memberMembership.creditsTotal !== null &&
+                booking.memberMembership.creditsUsed > 0) {
+                await tx.memberMembership.update({
+                    where: {
+                        id: booking.memberMembership.id,
+                    },
+                    data: {
+                        creditsUsed: {
+                            decrement: 1,
+                        },
+                    },
+                });
+                creditRestored = true;
+            }
+            /**
+             * Recalculate the number of confirmed bookings.
+             */
+            const session = booking.session;
+            const confirmedBookingCount = await tx.booking.count({
+                where: {
+                    sessionId: session.id,
+                    bookingStatus: BookingStatus.CONFIRMED,
+                },
+            });
+            const capacity = session.capacity ??
+                session.schedule.capacity;
+            /**
+             * If the session was FULL and now has space,
+             * reopen it.
+             */
+            if (session.status === "FULL" &&
+                confirmedBookingCount < capacity) {
+                await tx.classSession.update({
+                    where: {
+                        id: session.id,
+                    },
+                    data: {
+                        status: "OPEN",
+                    },
+                });
+            }
+            return {
+                booking: cancelledBooking,
+                creditRestored,
+                calendarEventId: booking.calendarEventId,
+                session: {
+                    id: session.id,
+                    capacity,
+                    bookedCount: confirmedBookingCount,
+                    availableSlots: Math.max(capacity - confirmedBookingCount, 0),
+                },
+                message: "Booking cancelled successfully.",
+            };
+        });
+        // =====================================================
+        // GOOGLE CALENDAR CLEANUP
+        // =====================================================
+        if (result.calendarEventId) {
+            try {
+                await googleCalendarService.deleteBookingEvent(result.calendarEventId);
+                console.log(`✅ Google Calendar event deleted for admin-cancelled booking ${bookingId}`);
+            }
+            catch (calendarError) {
+                console.error(`⚠️ Failed to remove Google Calendar event for admin-cancelled booking ${bookingId}:`, calendarError);
+            }
+        }
+        return result;
+    }
     async confirmOfflinePayment(bookingId) {
         const booking = await prisma.booking.findUnique({
             where: {
@@ -240,6 +427,7 @@ class AdminService {
             },
             data: {
                 paymentStatus: PaymentStatus.PAID,
+                bookingStatus: BookingStatus.CONFIRMED,
             },
         });
         try {
@@ -255,6 +443,7 @@ class AdminService {
                 },
                 data: {
                     paymentStatus: PaymentStatus.PENDING,
+                    bookingStatus: BookingStatus.PENDING,
                 },
             });
             throw error;
@@ -283,6 +472,161 @@ class AdminService {
             throw new Error("Payment not found.");
         }
         return booking;
+    }
+    async deleteBooking(bookingId) {
+        const booking = await prisma.booking.findUnique({
+            where: {
+                id: bookingId,
+            },
+            include: {
+                memberMembership: true,
+                membershipActivation: true,
+                healthSafetyForm: true,
+                memberSchedules: true,
+                session: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+        });
+        if (!booking) {
+            throw new Error("Booking not found.");
+        }
+        const calendarEventId = booking.calendarEventId;
+        const result = await prisma.$transaction(async (tx) => {
+            /**
+             * Remember the booking state before deleting it.
+             *
+             * A CONFIRMED booking consumed a membership credit,
+             * so deleting it must restore that credit.
+             *
+             * PENDING and CANCELLED bookings do not restore a credit.
+             */
+            const shouldRestoreCredit = booking.bookingStatus === BookingStatus.CONFIRMED &&
+                booking.memberMembership !== null &&
+                booking.memberMembership.creditsTotal !== null &&
+                booking.memberMembership.creditsUsed > 0;
+            /**
+             * Remove membership activation linked to this booking.
+             */
+            if (booking.membershipActivation) {
+                await tx.membershipActivation.delete({
+                    where: {
+                        id: booking.membershipActivation.id,
+                    },
+                });
+            }
+            /**
+             * Remove health & safety form.
+             */
+            if (booking.healthSafetyForm) {
+                await tx.healthSafetyForm.delete({
+                    where: {
+                        id: booking.healthSafetyForm.id,
+                    },
+                });
+            }
+            /**
+             * Remove member schedules linked to this booking.
+             */
+            if (booking.memberSchedules.length > 0) {
+                await tx.memberSchedule.deleteMany({
+                    where: {
+                        bookingId: booking.id,
+                    },
+                });
+            }
+            /**
+             * Restore one membership credit if this booking
+             * had previously consumed one.
+             */
+            if (shouldRestoreCredit && booking.memberMembership) {
+                await tx.memberMembership.update({
+                    where: {
+                        id: booking.memberMembership.id,
+                    },
+                    data: {
+                        creditsUsed: {
+                            decrement: 1,
+                        },
+                    },
+                });
+            }
+            /**
+             * Delete the booking.
+             *
+             * We do NOT modify MemberMembership.bookingId because
+             * MemberMembership does not have a bookingId field.
+             *
+             * The relationship is:
+             *
+             * Booking.memberMembershipId
+             *        ↓
+             * MemberMembership.id
+             */
+            await tx.booking.delete({
+                where: {
+                    id: booking.id,
+                },
+            });
+            /**
+             * Recalculate the session after deleting the booking.
+             *
+             * The deleted booking is no longer occupying a spot.
+             */
+            let sessionAvailability = null;
+            if (booking.session) {
+                const confirmedBookingCount = await tx.booking.count({
+                    where: {
+                        sessionId: booking.session.id,
+                        bookingStatus: BookingStatus.CONFIRMED,
+                    },
+                });
+                const capacity = booking.session.capacity ??
+                    booking.session.schedule.capacity;
+                /**
+                 * If the session was FULL and now has space,
+                 * reopen it.
+                 */
+                if (booking.session.status === "FULL" &&
+                    confirmedBookingCount < capacity) {
+                    await tx.classSession.update({
+                        where: {
+                            id: booking.session.id,
+                        },
+                        data: {
+                            status: "OPEN",
+                        },
+                    });
+                }
+                sessionAvailability = {
+                    sessionId: booking.session.id,
+                    capacity,
+                    bookedCount: confirmedBookingCount,
+                    availableSlots: Math.max(capacity - confirmedBookingCount, 0),
+                };
+            }
+            return {
+                bookingId: booking.id,
+                message: "Booking deleted successfully.",
+                creditRestored: shouldRestoreCredit,
+                sessionAvailability,
+            };
+        });
+        // =====================================================
+        // GOOGLE CALENDAR CLEANUP
+        // =====================================================
+        if (calendarEventId) {
+            try {
+                await googleCalendarService.deleteBookingEvent(calendarEventId);
+                console.log(`✅ Google Calendar event deleted for deleted booking ${bookingId}`);
+            }
+            catch (calendarError) {
+                console.error(`⚠️ Failed to remove Google Calendar event for deleted booking ${bookingId}:`, calendarError);
+            }
+        }
+        return result;
     }
     async rejectOfflinePayment(bookingId, reason) {
         const booking = await prisma.booking.findUnique({

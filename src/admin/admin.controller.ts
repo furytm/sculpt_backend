@@ -118,6 +118,94 @@ async getAllBookings(
     });
   }
 }
+
+  async getBookingById(req: Request, res: Response) {
+    try {
+      const bookingId = Array.isArray(req.params.bookingId)
+        ? req.params.bookingId[0]
+        : req.params.bookingId;
+
+      if (!bookingId) {
+        return res.status(400).json({
+          success: false,
+          message: "Booking ID is required.",
+        });
+      }
+
+      const booking =
+        await adminService.getBookingById(bookingId);
+
+      return res.status(200).json({
+        success: true,
+        message: "Booking retrieved successfully.",
+        data: booking,
+      });
+    } catch (error: any) {
+      console.error(
+        "Get Admin Booking Error:",
+        error
+      );
+
+      if (error?.message === "Booking not found.") {
+        return res.status(404).json({
+          success: false,
+          message: error.message,
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.message ||
+          "Failed to retrieve booking.",
+      });
+    }
+  }
+
+  async cancelBooking(req: Request, res: Response) {
+    try {
+      const bookingId = Array.isArray(req.params.bookingId)
+        ? req.params.bookingId[0]
+        : req.params.bookingId;
+
+      if (!bookingId) {
+        return res.status(400).json({
+          success: false,
+          message: "Booking ID is required.",
+        });
+      }
+
+      const result =
+        await adminService.cancelBooking(bookingId);
+
+      return res.status(200).json({
+        success: true,
+        message: "Booking cancelled successfully.",
+        data: result,
+      });
+    } catch (error: any) {
+      console.error(
+        "Admin Cancel Booking Error:",
+        error
+      );
+
+      const message =
+        error?.message ||
+        "Failed to cancel booking.";
+
+      if (message === "Booking not found.") {
+        return res.status(404).json({
+          success: false,
+          message,
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message,
+      });
+    }
+  }
 async rejectOfflinePayment(req: Request, res: Response) {
   try {
     const bookingId = Array.isArray(req.params.bookingId)

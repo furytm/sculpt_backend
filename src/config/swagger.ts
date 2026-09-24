@@ -38,6 +38,8 @@ apis: [
   "./src/booking/*.ts",
   "./src/payment/*.ts",
   "./src/schedule/*.ts",
+  "./src/admin/*.ts",
+
 ],
 };
 

@@ -4,17 +4,21 @@ import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
 
 import {
+  BookingStatus,
   PaymentMethod,
   PaymentStatus,
-  BookingStatus,
+  MembershipStatus,
+  MembershipType,
+  Prisma,
 } from "@prisma/client";
 
-import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
+import {
+  googleCalendarService,
+} from "../google-calendar/google-calendar.service.js";
 
 import {
   BookingResponse,
   CreateBookingDto,
-  UpdateBookingPreferencesDto,
   HealthSafetyFormDto,
 } from "./booking.types.js";
 
@@ -25,16 +29,14 @@ class BookingService {
 
   private readonly HEALTH_DECLARATION_VERSION = "1.0";
 
+  // How many days of future sessions the availability API
+  // should expose.
+  private readonly AVAILABILITY_DAYS = 30;
+
   // =========================================================
   // BOOKING FLOW TOKEN
   // =========================================================
 
-  /**
-   * Generate a secure temporary token.
-   *
-   * The raw token is returned to the frontend.
-   * Only the SHA-256 hash is stored in PostgreSQL.
-   */
   private generateBookingFlowToken() {
     const token = crypto.randomBytes(32).toString("hex");
 
@@ -49,9 +51,6 @@ class BookingService {
     };
   }
 
-  /**
-   * Hash a token supplied by the frontend.
-   */
   private hashBookingFlowToken(token: string) {
     return crypto
       .createHash("sha256")
@@ -59,31 +58,38 @@ class BookingService {
       .digest("hex");
   }
 
-  /**
-   * Verify that a temporary booking token belongs to
-   * the specified booking.
-   */
   private async getBookingByFlowToken(
     bookingId: string,
     bookingFlowToken: string
   ) {
     if (!bookingFlowToken) {
-      throw new Error("Booking continuation token is required.");
+      throw new Error(
+        "Booking continuation token is required."
+      );
     }
 
-    const tokenHash = this.hashBookingFlowToken(bookingFlowToken);
+    const tokenHash =
+      this.hashBookingFlowToken(
+        bookingFlowToken
+      );
 
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        bookingFlowTokenHash: tokenHash,
-      },
-      include: {
-        membership: true,
-        schedule: true,
-        healthSafetyForm: true,
-      },
-    });
+    const booking =
+      await prisma.booking.findFirst({
+        where: {
+          id: bookingId,
+          bookingFlowTokenHash: tokenHash,
+        },
+
+        include: {
+          membership: true,
+          healthSafetyForm: true,
+          session: {
+            include: {
+              schedule: true,
+            },
+          },
+        },
+      });
 
     if (!booking) {
       throw new Error(
@@ -95,114 +101,826 @@ class BookingService {
   }
 
   // =========================================================
+  // DATE HELPERS
+  // =========================================================
+
+  /**
+   * Returns the beginning of tomorrow.
+   *
+   * IMPORTANT:
+   * Today is NOT bookable.
+   *
+   * If today is September 23:
+   * September 23 -> invalid
+   * September 24 -> first valid date
+   */
+  private getTomorrowStart() {
+    const tomorrow = new Date();
+
+    tomorrow.setHours(
+      0,
+      0,
+      0,
+      0
+    );
+
+    tomorrow.setDate(
+      tomorrow.getDate() + 1
+    );
+
+    return tomorrow;
+  }
+
+  /**
+   * Make sure a selected session date is tomorrow or later.
+   */
+  private validateFutureSessionDate(
+    sessionDate: Date
+  ) {
+    if (
+      Number.isNaN(
+        sessionDate.getTime()
+      )
+    ) {
+      throw new Error(
+        "Invalid session date."
+      );
+    }
+
+    const tomorrow =
+      this.getTomorrowStart();
+
+    const selectedDate =
+      new Date(sessionDate);
+
+    selectedDate.setHours(
+      0,
+      0,
+      0,
+      0
+    );
+
+    if (
+      selectedDate < tomorrow
+    ) {
+      throw new Error(
+        "You can only select sessions from tomorrow onwards."
+      );
+    }
+
+    return true;
+  }
+
+  /**
+   * Calculate membership expiry.
+   */
+  private calculateMembershipExpiry(
+    startDate: Date,
+    duration: string,
+    period: string
+  ) {
+    const expiryDate =
+      new Date(startDate);
+
+    const normalizedDuration =
+      duration
+        .trim()
+        .toLowerCase();
+
+    const normalizedPeriod =
+      period
+        .trim()
+        .toLowerCase();
+
+    // -------------------------------------------------------
+    // SINGLE CLASS
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+        "single" &&
+      normalizedPeriod.includes(
+        "class"
+      )
+    ) {
+      expiryDate.setDate(
+        expiryDate.getDate() + 30
+      );
+
+      return expiryDate;
+    }
+
+    // -------------------------------------------------------
+    // INTRO WEEK
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+      "1 week"
+    ) {
+      expiryDate.setDate(
+        expiryDate.getDate() + 7
+      );
+
+      return expiryDate;
+    }
+
+    // -------------------------------------------------------
+    // MONTHLY
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+        "monthly" &&
+      normalizedPeriod.includes(
+        "month"
+      )
+    ) {
+      expiryDate.setMonth(
+        expiryDate.getMonth() + 1
+      );
+
+      return expiryDate;
+    }
+
+    // -------------------------------------------------------
+    // QUARTERLY
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+        "quarterly" &&
+      normalizedPeriod.includes(
+        "3 month"
+      )
+    ) {
+      expiryDate.setMonth(
+        expiryDate.getMonth() + 3
+      );
+
+      return expiryDate;
+    }
+
+    // -------------------------------------------------------
+    // ANNUAL
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+        "annual" &&
+      normalizedPeriod.includes(
+        "year"
+      )
+    ) {
+      expiryDate.setFullYear(
+        expiryDate.getFullYear() + 1
+      );
+
+      return expiryDate;
+    }
+
+    // -------------------------------------------------------
+    // GENERIC NUMERIC PERIOD
+    // -------------------------------------------------------
+
+    const numericDuration =
+      Number.parseInt(
+        normalizedDuration,
+        10
+      );
+
+    if (
+      !Number.isNaN(
+        numericDuration
+      ) &&
+      numericDuration > 0
+    ) {
+      if (
+        normalizedPeriod.includes(
+          "month"
+        )
+      ) {
+        expiryDate.setMonth(
+          expiryDate.getMonth() +
+            numericDuration
+        );
+
+        return expiryDate;
+      }
+
+      if (
+        normalizedPeriod.includes(
+          "week"
+        )
+      ) {
+        expiryDate.setDate(
+          expiryDate.getDate() +
+            numericDuration * 7
+        );
+
+        return expiryDate;
+      }
+
+      if (
+        normalizedPeriod.includes(
+          "day"
+        )
+      ) {
+        expiryDate.setDate(
+          expiryDate.getDate() +
+            numericDuration
+        );
+
+        return expiryDate;
+      }
+
+      if (
+        normalizedPeriod.includes(
+          "year"
+        )
+      ) {
+        expiryDate.setFullYear(
+          expiryDate.getFullYear() +
+            numericDuration
+        );
+
+        return expiryDate;
+      }
+    }
+
+    // -------------------------------------------------------
+    // PRIVATE MEMBERSHIPS
+    // -------------------------------------------------------
+
+    if (
+      normalizedDuration ===
+        "single" &&
+      normalizedPeriod.includes(
+        "session"
+      )
+    ) {
+      return null;
+    }
+
+    if (
+      normalizedDuration ===
+        "package" &&
+      normalizedPeriod.includes(
+        "package"
+      )
+    ) {
+      return null;
+    }
+
+    throw new Error(
+      `Unsupported membership duration: ${duration} (${period})`
+    );
+  }
+
+  // =========================================================
+  // MEMBERSHIP CREDITS
+  // =========================================================
+
+  /**
+   * Get the number of credits attached to a membership.
+   *
+   * null = unlimited.
+   */
+  private getMembershipCredits(
+    classLimit: number | null
+  ) {
+    if (
+      classLimit === null ||
+      classLimit === undefined
+    ) {
+      return null;
+    }
+
+    return classLimit;
+  }
+
+  /**
+   * Check whether a membership still has a usable credit.
+   */
+  private hasRemainingCredit(
+    memberMembership: {
+      creditsTotal: number | null;
+      creditsUsed: number;
+    }
+  ) {
+    // Unlimited
+    if (
+      memberMembership.creditsTotal ===
+      null
+    ) {
+      return true;
+    }
+
+    return (
+      memberMembership.creditsUsed <
+      memberMembership.creditsTotal
+    );
+  }
+
+  // =========================================================
   // CREATE BOOKING
   // =========================================================
 
   async createBooking(
     data: CreateBookingDto
   ): Promise<BookingResponse> {
-    const paymentReference = `SL-${Date.now()}`;
-
-    // ---------------------------------------------------------
-    // Validate membership
-    // ---------------------------------------------------------
-
-    const membership = await prisma.membership.findUnique({
-      where: {
-        id: data.membershipId,
-      },
-    });
-
-    if (!membership) {
-      throw new Error("Membership not found.");
+    if (!data.fullName?.trim()) {
+      throw new Error(
+        "Full name is required."
+      );
     }
 
-    // ---------------------------------------------------------
-    // Generate secure booking continuation token
-    // ---------------------------------------------------------
+    if (!data.email?.trim()) {
+      throw new Error(
+        "Email is required."
+      );
+    }
 
-    const { token: bookingFlowToken, tokenHash } =
+    if (!data.phone?.trim()) {
+      throw new Error(
+        "Phone number is required."
+      );
+    }
+
+    if (!data.membershipId) {
+      throw new Error(
+        "Membership is required."
+      );
+    }
+
+    // -------------------------------------------------------
+    // MEMBERSHIP
+    // -------------------------------------------------------
+
+    const membership =
+      await prisma.membership.findUnique({
+        where: {
+          id: data.membershipId,
+        },
+      });
+
+    if (!membership) {
+      throw new Error(
+        "Membership not found."
+      );
+    }
+
+    if (!membership.isActive) {
+      throw new Error(
+        "This membership is no longer available."
+      );
+    }
+
+    // -------------------------------------------------------
+    // SESSION
+    // -------------------------------------------------------
+
+    /**
+     * The new flow selects the session BEFORE payment.
+     *
+     * Your updated DTO should contain:
+     *
+     * classSessionId?: string
+     */
+    const classSessionId =
+      (data as any).classSessionId;
+
+    if (
+      membership.type ===
+        MembershipType.GROUP &&
+      !classSessionId
+    ) {
+      throw new Error(
+        "Please select an available class session."
+      );
+    }
+
+    let classSession = null;
+
+    if (classSessionId) {
+      classSession =
+        await prisma.classSession.findUnique({
+          where: {
+            id: classSessionId,
+          },
+
+          include: {
+            schedule: true,
+
+            _count: {
+              select: {
+                bookings: {
+                  where: {
+                    bookingStatus:
+                      BookingStatus.CONFIRMED,
+                  },
+                },
+              },
+            },
+          },
+        });
+
+      if (!classSession) {
+        throw new Error(
+          "Selected class session was not found."
+        );
+      }
+
+      if (
+        !classSession.schedule.isActive
+      ) {
+        throw new Error(
+          "This class schedule is no longer active."
+        );
+      }
+
+      if (
+        classSession.status !==
+        "OPEN"
+      ) {
+        throw new Error(
+          "This class session is no longer available."
+        );
+      }
+
+      // -----------------------------------------------------
+      // TOMORROW ONWARD
+      // -----------------------------------------------------
+
+      this.validateFutureSessionDate(
+        classSession.sessionDate
+      );
+
+      // -----------------------------------------------------
+      // CLASS MATCH
+      // -----------------------------------------------------
+
+      if (
+        data.classId &&
+        classSession.schedule.className
+          .toLowerCase() !==
+          data.classId.toLowerCase()
+      ) {
+        throw new Error(
+          "The selected session does not belong to the selected class."
+        );
+      }
+
+      // -----------------------------------------------------
+      // CAPACITY
+      // -----------------------------------------------------
+
+      const capacity =
+        classSession.capacity ??
+        classSession.schedule.capacity;
+
+      const bookedCount =
+        classSession._count.bookings;
+
+      if (
+        bookedCount >= capacity
+      ) {
+        throw new Error(
+          "This class session is already full."
+        );
+      }
+    }
+
+    // -------------------------------------------------------
+    // HEALTH DECLARATION
+    // -------------------------------------------------------
+
+    const healthDeclaration =
+      (data as any).healthDeclaration;
+
+    if (
+      !healthDeclaration ||
+      healthDeclaration.accepted !== true
+    ) {
+      throw new Error(
+        "You must accept the Health Declaration before payment."
+      );
+    }
+
+    // -------------------------------------------------------
+    // PAYMENT REFERENCE
+    // -------------------------------------------------------
+
+    const paymentReference =
+      `SL-${Date.now()}-${crypto
+        .randomBytes(4)
+        .toString("hex")}`;
+
+    // -------------------------------------------------------
+    // FLOW TOKEN
+    // -------------------------------------------------------
+
+    const {
+      token: bookingFlowToken,
+      tokenHash,
+    } =
       this.generateBookingFlowToken();
 
-    // ---------------------------------------------------------
-    // Create booking
-    // ---------------------------------------------------------
+    // -------------------------------------------------------
+    // CREATE BOOKING
+    // -------------------------------------------------------
 
-    const booking = await prisma.booking.create({
-      data: {
-        fullName: data.fullName,
-        email: data.email,
-        phone: data.phone,
+    const booking =
+      await prisma.$transaction(
+        async (tx) => {
+          // Recheck session capacity inside transaction.
+          if (classSession) {
+            await tx.$queryRaw`
+              SELECT id
+              FROM "ClassSession"
+              WHERE id = ${classSession.id}
+              FOR UPDATE
+            `;
 
-        userId: null,
+            const latestSession =
+              await tx.classSession.findUnique({
+                where: {
+                  id: classSession.id,
+                },
 
-        classId: data.classId ?? null,
+                include: {
+                  schedule: true,
 
-        // Schedule is selected AFTER payment.
-        scheduleId: null,
+                  _count: {
+                    select: {
+                      bookings: {
+                        where: {
+                          bookingStatus:
+                            BookingStatus.CONFIRMED,
+                        },
+                      },
+                    },
+                  },
+                },
+              });
 
-        bookingDate: null,
+            if (!latestSession) {
+              throw new Error(
+                "Selected class session was not found."
+              );
+            }
 
-        membershipId: membership.id,
+            this.validateFutureSessionDate(
+              latestSession.sessionDate
+            );
 
-        amount: membership.price,
+            const capacity =
+              latestSession.capacity ??
+              latestSession.schedule.capacity;
 
-    paymentMethod:
-  data.paymentMethod === "OFFLINE"
-    ? PaymentMethod.OFFLINE
-    : PaymentMethod.PAYMISH,
-        paymentReference,
+            if (
+              latestSession._count.bookings >=
+              capacity
+            ) {
+              throw new Error(
+                "This class session has just become full. Please select another session."
+              );
+            }
+          }
 
-        paymentStatus: PaymentStatus.PENDING,
+          const createdBooking =
+            await tx.booking.create({
+              data: {
+                fullName:
+                  data.fullName.trim(),
 
-        bookingFlowTokenHash: tokenHash,
-      },
-      include: {
-        membership: true,
-      },
-    });
+                email:
+                  data.email
+                    .trim()
+                    .toLowerCase(),
 
-    // ========================================================
-    // OFFLINE PAYMENT
-    // ========================================================
+                phone:
+                  data.phone.trim(),
 
-    if (data.paymentMethod === "OFFLINE") {
+                userId: null,
+
+                classId:
+                  data.classId ??
+                  classSession?.schedule
+                    .className ??
+                  null,
+
+                sessionId:
+                  classSession?.id ??
+                  null,
+
+                // Keep old scheduleId populated
+                // for compatibility with existing
+                // Booking relations.
+                scheduleId:
+                  classSession?.scheduleId ??
+                  null,
+
+                bookingDate:
+                  classSession?.sessionDate ??
+                  null,
+
+                preferredStartDate:
+                  classSession?.sessionDate ??
+                  null,
+
+                membershipId:
+                  membership.id,
+
+                amount:
+                  membership.price,
+
+                paymentMethod:
+                  data.paymentMethod ===
+                  "OFFLINE"
+                    ? PaymentMethod.OFFLINE
+                    : PaymentMethod.PAYMISH,
+
+                paymentReference,
+
+                paymentStatus:
+                  PaymentStatus.PENDING,
+
+                bookingStatus:
+                  BookingStatus.PENDING,
+
+                bookingFlowTokenHash:
+                  tokenHash,
+              },
+
+              include: {
+                membership: true,
+
+                session: {
+                  include: {
+                    schedule: true,
+                  },
+                },
+              },
+            });
+
+          // -------------------------------------------------
+          // SAVE HEALTH DECLARATION BEFORE PAYMENT
+          // -------------------------------------------------
+
+          await tx.healthSafetyForm.create({
+            data: {
+              bookingId:
+                createdBooking.id,
+
+              userId: null,
+
+              accepted: true,
+
+              declarationVersion:
+                this.HEALTH_DECLARATION_VERSION,
+
+              notes:
+                healthDeclaration.notes
+                  ?.trim() || null,
+
+              acceptedAt:
+                new Date(),
+
+              submittedAt:
+                new Date(),
+
+              screeningAnswers:
+                {},
+
+              consent:
+                [],
+            },
+          });
+
+          return createdBooking;
+        }
+      );
+
+    // -------------------------------------------------------
+    // OFFLINE
+    // -------------------------------------------------------
+
+    if (
+      data.paymentMethod ===
+      "OFFLINE"
+    ) {
       return {
         booking,
-        paymentMethod: PaymentMethod.OFFLINE,
+
+        paymentMethod:
+          PaymentMethod.OFFLINE,
+
         authorizationUrl: null,
+
         bookingFlowToken,
       };
     }
 
-    // ========================================================
-    // PAYMISH PAYMENT
-    // ========================================================
+    // -------------------------------------------------------
+    // PAYMISH
+    // -------------------------------------------------------
 
-  // ========================================================
-// PAYSTACK PAYMENT
-// ========================================================
+    const payment =
+      await paymentService
+        .initializeTransaction({
+          email:
+            booking.email,
 
-const payment =
-  await paymentService.initializeTransaction({
-    email: booking.email,
-    amount: booking.amount,
-    reference: paymentReference,
-  });
+          amount:
+            booking.amount,
 
-return {
-  booking,
-  paymentMethod: PaymentMethod.PAYMISH,
-  authorizationUrl: payment.data.authorization_url,
-  bookingFlowToken,
-};
+          reference:
+            paymentReference,
+        });
+
+    return {
+      booking,
+
+      paymentMethod:
+        PaymentMethod.PAYMISH,
+
+      authorizationUrl:
+        payment.data.authorization_url,
+
+      bookingFlowToken,
+    };
   }
 
   // =========================================================
-  // GET BOOKING BY ID
+  // INITIALIZE PAYMENT
   // =========================================================
 
-  async getBookingById(id: string) {
+  /**
+   * This method can be used if you decide to create the
+   * booking first and initialize payment separately.
+   */
+  async initializePayment(
+    bookingId: string,
+    bookingFlowToken: string
+  ) {
+    const booking =
+      await this.getBookingByFlowToken(
+        bookingId,
+        bookingFlowToken
+      );
+
+    if (
+      booking.paymentStatus ===
+      PaymentStatus.PAID
+    ) {
+      throw new Error(
+        "This booking has already been paid for."
+      );
+    }
+
+    if (
+      booking.bookingStatus !==
+      BookingStatus.PENDING
+    ) {
+      throw new Error(
+        "This booking is no longer available for payment."
+      );
+    }
+
+    const payment =
+      await paymentService
+        .initializeTransaction({
+          email:
+            booking.email,
+
+          amount:
+            booking.amount,
+
+          reference:
+            booking.paymentReference,
+        });
+
+    return {
+      authorizationUrl:
+        payment.data.authorization_url,
+
+      accessCode:
+        payment.data.access_code,
+
+      reference:
+        payment.data.reference ??
+        booking.paymentReference,
+    };
+  }
+
+  // =========================================================
+  // GET BOOKING
+  // =========================================================
+
+  async getBookingById(
+    id: string
+  ) {
     return await prisma.booking.findUnique({
       where: {
         id,
@@ -210,19 +928,18 @@ return {
 
       include: {
         membership: true,
+
         user: true,
 
-        schedule: true,
-
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-
+        session: {
           include: {
             schedule: true,
           },
         },
+
+        schedule: true,
+
+        memberMembership: true,
 
         healthSafetyForm: true,
       },
@@ -233,45 +950,44 @@ return {
   // MARK BOOKING PAID
   // =========================================================
 
-  async markBookingPaid(reference: string) {
+  async markBookingPaid(
+    reference: string
+  ) {
+    if (!reference) {
+      throw new Error(
+        "Payment reference is required."
+      );
+    }
+
+    const booking =
+      await prisma.booking.findUnique({
+        where: {
+          paymentReference:
+            reference,
+        },
+      });
+
+    if (!booking) {
+      throw new Error(
+        "Booking not found."
+      );
+    }
+
+    if (
+      booking.paymentStatus ===
+      PaymentStatus.PAID
+    ) {
+      return booking;
+    }
+
     return await prisma.booking.update({
       where: {
-        paymentReference: reference,
+        id: booking.id,
       },
 
       data: {
-        paymentStatus: PaymentStatus.PAID,
-      },
-    });
-  }
-
-  // =========================================================
-  // GET ALL BOOKINGS
-  // =========================================================
-
-  async getAllBookings() {
-    return await prisma.booking.findMany({
-      include: {
-        membership: true,
-        user: true,
-
-        schedule: true,
-
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-
-          include: {
-            schedule: true,
-          },
-        },
-
-        healthSafetyForm: true,
-      },
-
-      orderBy: {
-        createdAt: "desc",
+        paymentStatus:
+          PaymentStatus.PAID,
       },
     });
   }
@@ -280,11 +996,14 @@ return {
   // GET BOOKING CONFIRMATION
   // =========================================================
 
-  async getBookingConfirmation(reference: string) {
+  async getBookingConfirmation(
+    reference: string
+  ) {
     const booking =
       await prisma.booking.findUnique({
         where: {
-          paymentReference: reference,
+          paymentReference:
+            reference,
         },
 
         include: {
@@ -292,118 +1011,93 @@ return {
 
           user: true,
 
-          schedule: true,
-
-          memberSchedules: {
-            where: {
-              isActive: true,
-            },
-
+          session: {
             include: {
               schedule: true,
             },
           },
+
+          schedule: true,
+
+          memberMembership: true,
 
           healthSafetyForm: true,
         },
       });
 
     if (!booking) {
-      throw new Error("Booking not found.");
+      throw new Error(
+        "Booking not found."
+      );
     }
 
     return booking;
   }
 
-  async getBookingByReference(reference: string) {
-  const booking = await prisma.booking.findUnique({
-    where: {
-      paymentReference: reference,
-    },
-    include: {
-      membership: true,
-      user: true,
-      schedule: true,
-      memberSchedules: {
-        where: {
-          isActive: true,
-        },
-        include: {
-          schedule: true,
-        },
-      },
-      healthSafetyForm: true,
-    },
-  });
-
-  if (!booking) {
-    throw new Error("Booking not found.");
-  }
-
-  return booking;
-}
-
-    // =========================================================
+  // =========================================================
   // CONTINUE GUEST BOOKING
   // =========================================================
-  //
-  // Creates a fresh booking continuation token when the
-  // customer returns from Paymish using the payment reference.
-  //
-  // The raw token is returned to the frontend.
-  // Only the SHA-256 hash is stored in PostgreSQL.
-  //
-  // This allows the booking flow to continue even when the
-  // customer returns on a different frontend origin, such as
-  // a published V0 app or the production Sculpt LAB website.
-  //
-  // =========================================================
 
-  async continueGuestBooking(reference: string) {
-    if (!reference || typeof reference !== "string") {
-      throw new Error("Payment reference is required.");
+  async continueGuestBooking(
+    reference: string
+  ) {
+    if (
+      !reference ||
+      typeof reference !==
+        "string"
+    ) {
+      throw new Error(
+        "Payment reference is required."
+      );
     }
 
-    const booking = await prisma.booking.findUnique({
-      where: {
-        paymentReference: reference,
-      },
-      include: {
-        membership: true,
-        user: true,
-        schedule: true,
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-          include: {
-            schedule: true,
-          },
+    const booking =
+      await prisma.booking.findUnique({
+        where: {
+          paymentReference:
+            reference,
         },
-        healthSafetyForm: true,
-      },
-    });
+
+        include: {
+          membership: true,
+
+          user: true,
+
+          session: {
+            include: {
+              schedule: true,
+            },
+          },
+
+          schedule: true,
+
+          healthSafetyForm: true,
+        },
+      });
 
     if (!booking) {
-      throw new Error("Booking not found.");
+      throw new Error(
+        "Booking not found."
+      );
     }
 
-    // ---------------------------------------------------------
-    // Payment must be completed
-    // ---------------------------------------------------------
-
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
+    if (
+      booking.paymentStatus !==
+      PaymentStatus.PAID
+    ) {
       throw new Error(
         "Payment has not been completed for this booking."
       );
     }
 
-    // ---------------------------------------------------------
-    // Booking must still be pending
-    // ---------------------------------------------------------
-
-    if (booking.bookingStatus !== BookingStatus.PENDING) {
-      if (booking.bookingStatus === BookingStatus.CONFIRMED) {
+    if (
+      booking.bookingStatus !==
+      BookingStatus.PENDING
+    ) {
+      if (
+        booking.bookingStatus ===
+        BookingStatus.CONFIRMED
+      ) {
         throw new Error(
           "This booking has already been confirmed."
         );
@@ -414,59 +1108,46 @@ return {
       );
     }
 
-    // ---------------------------------------------------------
-    // If the booking is already attached to an account,
-    // do not create another guest continuation session.
-    // ---------------------------------------------------------
-
     if (booking.userId) {
       throw new Error(
         "This booking is already attached to an account."
       );
     }
 
-    // ---------------------------------------------------------
-    // Generate a fresh secure continuation token
-    // ---------------------------------------------------------
-
     const {
       token: bookingFlowToken,
       tokenHash,
-    } = this.generateBookingFlowToken();
+    } =
+      this.generateBookingFlowToken();
 
-    // ---------------------------------------------------------
-    // Rotate the stored token hash
-    //
-    // This invalidates the previous guest continuation token.
-    // ---------------------------------------------------------
-
-    const updatedBooking = await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        bookingFlowTokenHash: tokenHash,
-      },
-
-      include: {
-        membership: true,
-        user: true,
-        schedule: true,
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-          include: {
-            schedule: true,
-          },
+    const updatedBooking =
+      await prisma.booking.update({
+        where: {
+          id: booking.id,
         },
-        healthSafetyForm: true,
-      },
-    });
+
+        data: {
+          bookingFlowTokenHash:
+            tokenHash,
+        },
+
+        include: {
+          membership: true,
+
+          session: {
+            include: {
+              schedule: true,
+            },
+          },
+
+          healthSafetyForm: true,
+        },
+      });
 
     return {
-      booking: updatedBooking,
+      booking:
+        updatedBooking,
+
       bookingFlowToken,
     };
   }
@@ -475,7 +1156,9 @@ return {
   // GET MY BOOKINGS
   // =========================================================
 
-  async getMyBookings(userId: string) {
+  async getMyBookings(
+    userId: string
+  ) {
     return await prisma.booking.findMany({
       where: {
         userId,
@@ -484,17 +1167,15 @@ return {
       include: {
         membership: true,
 
-        schedule: true,
-
-        memberSchedules: {
-          where: {
-            isActive: true,
-          },
-
+        session: {
           include: {
             schedule: true,
           },
         },
+
+        schedule: true,
+
+        memberMembership: true,
 
         healthSafetyForm: true,
       },
@@ -506,128 +1187,14 @@ return {
   }
 
   // =========================================================
-  // LEGACY: UPDATE BOOKING CLASS
+  // SAVE HEALTH DECLARATION
   // =========================================================
 
-  async updateBookingClass(
-    bookingId: string,
-    userId: string,
-    classId: string
-  ) {
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-    });
-
-    if (!booking) {
-      throw new Error(
-        "Booking not found or does not belong to you."
-      );
-    }
-
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error(
-        "Your membership payment has not been completed."
-      );
-    }
-
-    if (!classId) {
-      throw new Error("Please select a class.");
-    }
-
-    return await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        classId,
-        scheduleId: null,
-        bookingDate: null,
-      },
-
-      include: {
-        membership: true,
-        schedule: true,
-      },
-    });
-  }
-
-  // =========================================================
-  // LEGACY: UPDATE BOOKING PREFERENCES
-  // =========================================================
-
-  async updateBookingPreferences(
-    bookingId: string,
-    userId: string,
-    data: UpdateBookingPreferencesDto
-  ) {
-    const booking = await prisma.booking.findFirst({
-      where: {
-        id: bookingId,
-        userId,
-      },
-    });
-
-    if (!booking) {
-      throw new Error(
-        "Booking not found or does not belong to you."
-      );
-    }
-
-    if (booking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error(
-        "Your membership payment has not been completed."
-      );
-    }
-
-    if (!data.classId) {
-      throw new Error("Please select a class.");
-    }
-
- if (!data.preferredStartDate) {
-  throw new Error("Preferred start date is required.");
-}
-
-const preferredStartDate = new Date(data.preferredStartDate);
-
-if (Number.isNaN(preferredStartDate.getTime())) {
-  throw new Error("Invalid preferred start date.");
-}
-
-    return await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        classId: data.classId,
-        preferredStartDate,
-        availableDays: data.availableDays,
-        preferredTimes: data.preferredTimes,
-      },
-
-      include: {
-        membership: true,
-      },
-    });
-  }
-
-  // =========================================================
-  // HEALTH DECLARATION
-  // =========================================================
-  //
-  // NEW FLOW:
-  //
-  // Customer has NOT created an account yet.
-  //
-  // Therefore this method uses bookingFlowToken instead
-  // of userId.
-  //
-  // =========================================================
-
+  /**
+   * Health declaration happens BEFORE payment.
+   *
+   * The booking already exists at this point.
+   */
   async saveHealthDeclaration(
     bookingId: string,
     bookingFlowToken: string,
@@ -642,89 +1209,78 @@ if (Number.isNaN(preferredStartDate.getTime())) {
         bookingFlowToken
       );
 
-    // ---------------------------------------------------------
-    // Payment must be completed
-    // ---------------------------------------------------------
-
     if (
-      booking.paymentStatus !==
-      PaymentStatus.PAID
+      booking.bookingStatus !==
+      BookingStatus.PENDING
     ) {
       throw new Error(
-        "Health Declaration can only be completed after payment."
+        "This booking can no longer be changed."
       );
     }
 
-    // ---------------------------------------------------------
-    // Checkbox is required
-    // ---------------------------------------------------------
-
-    if (data.accepted !== true) {
+    if (
+      data.accepted !== true
+    ) {
       throw new Error(
         "You must accept the Health Declaration to continue."
       );
     }
 
-    // ---------------------------------------------------------
-    // Save declaration
-    // ---------------------------------------------------------
+    return await prisma.healthSafetyForm.upsert({
+      where: {
+        bookingId,
+      },
 
-    const healthSafetyForm =
-      await prisma.healthSafetyForm.upsert({
-        where: {
-          bookingId,
-        },
+      create: {
+        bookingId,
 
-        create: {
-          bookingId,
+        userId:
+          booking.userId ??
+          null,
 
-          // Account does not exist yet.
-          userId: null,
+        accepted: true,
 
-          accepted: true,
+        declarationVersion:
+          this.HEALTH_DECLARATION_VERSION,
 
-          declarationVersion:
-            this.HEALTH_DECLARATION_VERSION,
+        notes:
+          data.notes?.trim() ||
+          null,
 
-          notes:
-            data.notes?.trim() || null,
+        acceptedAt:
+          new Date(),
 
-          acceptedAt: new Date(),
+        submittedAt:
+          new Date(),
 
-          submittedAt: new Date(),
+        screeningAnswers:
+          {},
 
-          // Keep legacy fields empty.
-          screeningAnswers: {},
-          consent: [],
-        },
+        consent:
+          [],
+      },
 
-        update: {
-          accepted: true,
+      update: {
+        accepted: true,
 
-          declarationVersion:
-            this.HEALTH_DECLARATION_VERSION,
+        declarationVersion:
+          this.HEALTH_DECLARATION_VERSION,
 
-          notes:
-            data.notes?.trim() || null,
+        notes:
+          data.notes?.trim() ||
+          null,
 
-          acceptedAt: new Date(),
+        acceptedAt:
+          new Date(),
 
-          submittedAt: new Date(),
-        },
-      });
-
-    return healthSafetyForm;
+        submittedAt:
+          new Date(),
+      },
+    });
   }
 
   // =========================================================
   // ATTACH BOOKING TO ACCOUNT
-  // =========================================================
-  //
-  // Called AFTER the customer registers/logs in.
-  //
-  // This connects the pre-account booking to the
-  // authenticated user.
-  //
   // =========================================================
 
   async attachBookingAccount(
@@ -738,10 +1294,6 @@ if (Number.isNaN(preferredStartDate.getTime())) {
         bookingFlowToken
       );
 
-    // ---------------------------------------------------------
-    // Prevent attaching a booking to another account
-    // ---------------------------------------------------------
-
     if (
       booking.userId &&
       booking.userId !== userId
@@ -751,11 +1303,7 @@ if (Number.isNaN(preferredStartDate.getTime())) {
       );
     }
 
-    // ---------------------------------------------------------
-    // Attach booking + health declaration
-    // ---------------------------------------------------------
-
-    const result = await prisma.$transaction(
+    return await prisma.$transaction(
       async (tx) => {
         const updatedBooking =
           await tx.booking.update({
@@ -769,14 +1317,21 @@ if (Number.isNaN(preferredStartDate.getTime())) {
 
             include: {
               membership: true,
-              schedule: true,
+
+              session: {
+                include: {
+                  schedule: true,
+                },
+              },
+
               healthSafetyForm: true,
             },
           });
 
         await tx.healthSafetyForm.updateMany({
           where: {
-            bookingId: booking.id,
+            bookingId:
+              booking.id,
           },
 
           data: {
@@ -787,111 +1342,24 @@ if (Number.isNaN(preferredStartDate.getTime())) {
         return updatedBooking;
       }
     );
-
-    return result;
   }
 
   // =========================================================
-  // SCHEDULE CAPACITY
+  // GET CLASS AVAILABILITY
   // =========================================================
 
   /**
-   * Calculate how many places are currently occupied
-   * for a recurring schedule during a membership period.
+   * Returns actual future sessions.
    *
-   * We count confirmed member schedules whose membership
-   * periods overlap the requested membership period.
+   * IMPORTANT:
+   *
+   * Today is excluded.
+   * Tomorrow is the first selectable date.
    */
-  private async getScheduleAvailability(
-    scheduleId: string,
-    startDate: Date,
-    expiryDate: Date
-  ) {
-    const schedule =
-      await prisma.schedule.findUnique({
-        where: {
-          id: scheduleId,
-        },
-      });
-
-    if (!schedule) {
-      throw new Error(
-        "Selected schedule was not found."
-      );
-    }
-
-    if (!schedule.isActive) {
-      return {
-        schedule,
-        bookedCount: schedule.capacity,
-        availableSlots: 0,
-        isAvailable: false,
-      };
-    }
-
-    const bookedCount =
-      await prisma.memberSchedule.count({
-        where: {
-          scheduleId,
-
-          isActive: true,
-
-          booking: {
-            bookingStatus:
-              BookingStatus.CONFIRMED,
-
-            memberMembership: {
-              is: {
-                startDate: {
-                  lt: expiryDate,
-                },
-
-                expiryDate: {
-                  gt: startDate,
-                },
-              },
-            },
-          },
-        },
-      });
-
-    const availableSlots = Math.max(
-      schedule.capacity - bookedCount,
-      0
-    );
-
-    return {
-      schedule,
-
-      bookedCount,
-
-      availableSlots,
-
-      isAvailable:
-        availableSlots > 0,
-    };
-  }
-
-  // =========================================================
-  // GET CLASS SCHEDULE AVAILABILITY
-  // =========================================================
-  //
-  // This is what the frontend can use to display:
-  //
-  // Thursday 2:00 PM
-  // 3 / 5 booked
-  // 2 spots available
-  //
-  // Friday 8:00 PM
-  // 5 / 5 booked
-  // Full
-  //
-  // =========================================================
-
-  async getClassScheduleAvailability(
+  async getClassAvailability(
     classId: string,
-    startDate: string,
-    expiryDate: string
+    fromDate?: string,
+    toDate?: string
   ) {
     if (!classId) {
       throw new Error(
@@ -899,742 +1367,421 @@ if (Number.isNaN(preferredStartDate.getTime())) {
       );
     }
 
-    const membershipStart =
+    // -------------------------------------------------------
+    // START DATE
+    // -------------------------------------------------------
+
+    let startDate =
+      this.getTomorrowStart();
+
+    if (fromDate) {
+      const requestedStart =
+        new Date(fromDate);
+
+      if (
+        Number.isNaN(
+          requestedStart.getTime()
+        )
+      ) {
+        throw new Error(
+          "Invalid from date."
+        );
+      }
+
+      this.validateFutureSessionDate(
+        requestedStart
+      );
+
+      requestedStart.setHours(
+        0,
+        0,
+        0,
+        0
+      );
+
+      startDate =
+        requestedStart;
+    }
+
+    // -------------------------------------------------------
+    // END DATE
+    // -------------------------------------------------------
+
+    let endDate =
       new Date(startDate);
 
-    const membershipExpiry =
-      new Date(expiryDate);
+    if (toDate) {
+      const requestedEnd =
+        new Date(toDate);
 
-    if (
-      Number.isNaN(
-        membershipStart.getTime()
-      ) ||
-      Number.isNaN(
-        membershipExpiry.getTime()
-      )
-    ) {
-      throw new Error(
-        "Invalid membership dates."
+      if (
+        Number.isNaN(
+          requestedEnd.getTime()
+        )
+      ) {
+        throw new Error(
+          "Invalid to date."
+        );
+      }
+
+      requestedEnd.setHours(
+        23,
+        59,
+        59,
+        999
+      );
+
+      endDate =
+        requestedEnd;
+    } else {
+      endDate.setDate(
+        endDate.getDate() +
+          this.AVAILABILITY_DAYS
+      );
+
+      endDate.setHours(
+        23,
+        59,
+        59,
+        999
       );
     }
 
-    const schedules =
-      await prisma.schedule.findMany({
-        where: {
-          className: {
-            equals: classId,
-            mode: "insensitive",
-          },
-
-          isActive: true,
-        },
-
-        orderBy: [
-          {
-            dayOfWeek: "asc",
-          },
-
-          {
-            startTime: "asc",
-          },
-        ],
-      });
-
-    const results = [];
-
-    for (const schedule of schedules) {
-      const availability =
-        await this.getScheduleAvailability(
-          schedule.id,
-          membershipStart,
-          membershipExpiry
-        );
-
-      results.push({
-        id: schedule.id,
-        className: schedule.className,
-        tutorName: schedule.tutorName,
-        code: schedule.code,
-
-        dayOfWeek:
-          schedule.dayOfWeek,
-
-        startTime:
-          schedule.startTime,
-
-        endTime:
-          schedule.endTime,
-
-        isActive:
-          schedule.isActive,
-
-        capacity:
-          schedule.capacity,
-
-        bookedCount:
-          availability.bookedCount,
-
-        availableSlots:
-          availability.availableSlots,
-
-        isAvailable:
-          availability.isAvailable,
-      });
+    if (
+      endDate < startDate
+    ) {
+      throw new Error(
+        "The end date cannot be before the start date."
+      );
     }
 
-    return results;
+    // -------------------------------------------------------
+    // SESSIONS
+    // -------------------------------------------------------
+
+    const sessions =
+      await prisma.classSession.findMany({
+        where: {
+          sessionDate: {
+            gte: startDate,
+            lte: endDate,
+          },
+
+          status: "OPEN",
+
+          schedule: {
+            className: {
+              equals: classId,
+              mode: "insensitive",
+            },
+
+            isActive: true,
+          },
+        },
+
+        include: {
+          schedule: true,
+
+          _count: {
+            select: {
+              bookings: {
+                where: {
+                  bookingStatus:
+                    BookingStatus.CONFIRMED,
+                },
+              },
+            },
+          },
+        },
+
+        orderBy: {
+          sessionDate: "asc",
+        },
+      });
+
+    // -------------------------------------------------------
+    // FORMAT AVAILABILITY
+    // -------------------------------------------------------
+
+    return sessions.map(
+      (session) => {
+        const capacity =
+          session.capacity ??
+          session.schedule.capacity;
+
+        const bookedCount =
+          session._count.bookings;
+
+        const availableSlots =
+          Math.max(
+            capacity -
+              bookedCount,
+            0
+          );
+
+        return {
+          id: session.id,
+
+          classId:
+            session.schedule.className,
+
+          className:
+            session.schedule.className,
+
+          tutorName:
+            session.schedule.tutorName,
+
+          code:
+            session.schedule.code,
+
+          sessionDate:
+            session.sessionDate,
+
+          dayOfWeek:
+            session.schedule.dayOfWeek,
+
+          startTime:
+            session.schedule.startTime,
+
+          endTime:
+            session.schedule.endTime,
+
+          capacity,
+
+          bookedCount,
+
+          availableSlots,
+
+          isAvailable:
+            availableSlots > 0,
+
+          status:
+            session.status,
+        };
+      }
+    );
   }
 
   // =========================================================
-  // SELECT SCHEDULE
-  // =========================================================
-  //
-  // NEW FLOW:
-  //
-  // Customer is NOT authenticated yet.
-  //
-  // bookingFlowToken is used to authorize the update.
-  //
+  // GET SINGLE SESSION AVAILABILITY
   // =========================================================
 
-  async updateBookingSchedule(
-    bookingId: string,
-    bookingFlowToken: string,
-    scheduleId: string
+  async getSessionAvailability(
+    sessionId: string
   ) {
-    const booking =
-      await this.getBookingByFlowToken(
-        bookingId,
-        bookingFlowToken
+    const session =
+      await prisma.classSession.findUnique({
+        where: {
+          id: sessionId,
+        },
+
+        include: {
+          schedule: true,
+
+          _count: {
+            select: {
+              bookings: {
+                where: {
+                  bookingStatus:
+                    BookingStatus.CONFIRMED,
+                },
+              },
+            },
+          },
+        },
+      });
+
+    if (!session) {
+      throw new Error(
+        "Class session not found."
+      );
+    }
+
+    this.validateFutureSessionDate(
+      session.sessionDate
+    );
+
+    const capacity =
+      session.capacity ??
+      session.schedule.capacity;
+
+    const bookedCount =
+      session._count.bookings;
+
+    const availableSlots =
+      Math.max(
+        capacity -
+          bookedCount,
+        0
       );
 
-    // ---------------------------------------------------------
-    // Payment
-    // ---------------------------------------------------------
+    return {
+      id: session.id,
+
+      className:
+        session.schedule.className,
+
+      tutorName:
+        session.schedule.tutorName,
+
+      sessionDate:
+        session.sessionDate,
+
+      dayOfWeek:
+        session.schedule.dayOfWeek,
+
+      startTime:
+        session.schedule.startTime,
+
+      endTime:
+        session.schedule.endTime,
+
+      capacity,
+
+      bookedCount,
+
+      availableSlots,
+
+      isAvailable:
+        session.status ===
+          "OPEN" &&
+        availableSlots > 0,
+
+      status:
+        session.status,
+    };
+  }
+
+  // =========================================================
+  // CONFIRM INITIAL BOOKING
+  // =========================================================
+
+  /**
+   * Called AFTER:
+   *
+   * 1. Payment is PAID
+   * 2. User has registered/logged in
+   * 3. Booking is attached to account
+   *
+   * This creates the membership and consumes the first credit.
+   */
+  async confirmBooking(
+    bookingId: string,
+    userId: string
+  ) {
+    const booking =
+      await prisma.booking.findFirst({
+        where: {
+          id: bookingId,
+          userId,
+        },
+
+        include: {
+          membership: true,
+
+          memberMembership: true,
+
+          healthSafetyForm: true,
+
+          session: {
+            include: {
+              schedule: true,
+            },
+          },
+        },
+      });
+
+    if (!booking) {
+      throw new Error(
+        "Booking not found or does not belong to you."
+      );
+    }
+
+    if (
+      booking.bookingStatus ===
+      BookingStatus.CONFIRMED
+    ) {
+      return booking;
+    }
 
     if (
       booking.paymentStatus !==
       PaymentStatus.PAID
     ) {
       throw new Error(
-        "Your membership payment has not been completed."
+        "This booking has not been paid for."
       );
     }
-
-    // ---------------------------------------------------------
-    // Class
-    // ---------------------------------------------------------
-
-    if (!booking.classId) {
-      throw new Error(
-        "Please select a class before selecting a schedule."
-      );
-    }
-
-    // ---------------------------------------------------------
-    // Start date is required to calculate membership period
-    // for capacity.
-    //
-    // If it hasn't been selected yet, we allow schedule
-    // selection but capacity will be checked again at final
-    // confirmation.
-    // ---------------------------------------------------------
-
-    const schedule =
-      await prisma.schedule.findFirst({
-        where: {
-          id: scheduleId,
-          isActive: true,
-        },
-      });
-
-    if (!schedule) {
-      throw new Error(
-        "Selected schedule was not found or is no longer available."
-      );
-    }
-
-    // ---------------------------------------------------------
-    // Class match
-    // ---------------------------------------------------------
 
     if (
-      schedule.className.toLowerCase() !==
-      booking.classId.toLowerCase()
+      !booking.healthSafetyForm ||
+      !booking.healthSafetyForm.accepted
     ) {
       throw new Error(
-        "The selected schedule does not belong to your selected class."
+        "Please complete the Health Declaration before confirming your booking."
       );
     }
 
-    // ---------------------------------------------------------
-    // If a start date already exists, perform capacity
-    // check immediately.
-    // ---------------------------------------------------------
-
-    if (booking.preferredStartDate) {
-      const expiryDate =
-        this.calculateMembershipExpiry(
-          booking.preferredStartDate,
-          booking.membership.duration,
-          booking.membership.period
-        );
-
-      const availability =
-        await this.getScheduleAvailability(
-          schedule.id,
-          booking.preferredStartDate,
-          expiryDate
-        );
-
-      if (!availability.isAvailable) {
-        throw new Error(
-          "This schedule is currently full for the selected membership period."
-        );
-      }
-    }
-
-    // ---------------------------------------------------------
-    // Save selected schedule
-    // ---------------------------------------------------------
-
-    return await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        scheduleId: schedule.id,
-      },
-
-      include: {
-        membership: true,
-        schedule: true,
-      },
-    });
-  }
-
-  // =========================================================
-  // MEMBERSHIP EXPIRY CALCULATION
-  // =========================================================
-
-private calculateMembershipExpiry(
-  startDate: Date,
-  duration: string,
-  period: string
+  if (
+  booking.membership.type ===
+    MembershipType.GROUP &&
+  !booking.session
 ) {
-  const expiryDate = new Date(startDate);
-
-  const normalizedDuration = duration
-    .trim()
-    .toLowerCase();
-
-  const normalizedPeriod = period
-    .trim()
-    .toLowerCase();
-
-  // ---------------------------------------------------------
-  // 1. SINGLE CLASS PASS
-  // ---------------------------------------------------------
-  // Sculpt LAB explicitly defines this membership as:
-  // "Valid for 30 days"
-  //
-  // duration: "Single"
-  // period: "per class"
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "single" &&
-    normalizedPeriod.includes("class")
-  ) {
-    expiryDate.setDate(
-      expiryDate.getDate() + 30
-    );
-
-    return expiryDate;
-  }
-
-  // ---------------------------------------------------------
-  // 2. INTRO WEEK
-  // ---------------------------------------------------------
-  // duration: "1 Week"
-  // period: "7 days"
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "1 week"
-  ) {
-    expiryDate.setDate(
-      expiryDate.getDate() + 7
-    );
-
-    return expiryDate;
-  }
-
-  // ---------------------------------------------------------
-  // 3. MONTHLY MEMBERSHIPS
-  // ---------------------------------------------------------
-  // duration: "Monthly"
-  // period: "/month"
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "monthly" &&
-    normalizedPeriod.includes("month")
-  ) {
-    expiryDate.setMonth(
-      expiryDate.getMonth() + 1
-    );
-
-    return expiryDate;
-  }
-
-  // ---------------------------------------------------------
-  // 4. QUARTERLY MEMBERSHIPS
-  // ---------------------------------------------------------
-  // duration: "Quarterly"
-  // period: "3 months"
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "quarterly" &&
-    normalizedPeriod.includes("3 month")
-  ) {
-    expiryDate.setMonth(
-      expiryDate.getMonth() + 3
-    );
-
-    return expiryDate;
-  }
-
-  // ---------------------------------------------------------
-  // 5. ANNUAL MEMBERSHIPS
-  // ---------------------------------------------------------
-  // duration: "Annual"
-  // period: "/year"
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "annual" &&
-    normalizedPeriod.includes("year")
-  ) {
-    expiryDate.setFullYear(
-      expiryDate.getFullYear() + 1
-    );
-
-    return expiryDate;
-  }
-
-  // ---------------------------------------------------------
-  // 6. GENERIC NUMERIC PERIODS
-  // ---------------------------------------------------------
-  // Keeps the function flexible if we add memberships later.
-  //
-  // Examples:
-  // duration: "3"
-  // period: "months"
-  //
-  // duration: "2"
-  // period: "weeks"
-  // ---------------------------------------------------------
-
-  const numericDuration =
-    Number.parseInt(
-      normalizedDuration,
-      10
-    );
-
-  if (
-    !Number.isNaN(numericDuration) &&
-    numericDuration > 0
-  ) {
-    if (
-      normalizedPeriod.includes("month")
-    ) {
-      expiryDate.setMonth(
-        expiryDate.getMonth() +
-          numericDuration
-      );
-
-      return expiryDate;
-    }
-
-    if (
-      normalizedPeriod.includes("week")
-    ) {
-      expiryDate.setDate(
-        expiryDate.getDate() +
-          numericDuration * 7
-      );
-
-      return expiryDate;
-    }
-
-    if (
-      normalizedPeriod.includes("day")
-    ) {
-      expiryDate.setDate(
-        expiryDate.getDate() +
-          numericDuration
-      );
-
-      return expiryDate;
-    }
-
-    if (
-      normalizedPeriod.includes("year")
-    ) {
-      expiryDate.setFullYear(
-        expiryDate.getFullYear() +
-          numericDuration
-      );
-
-      return expiryDate;
-    }
-  }
-
-  // ---------------------------------------------------------
-  // PRIVATE SESSION / PACKAGE
-  // ---------------------------------------------------------
-  // These currently do not have a defined validity period
-  // in the membership data.
-  //
-  // They should not silently receive an arbitrary expiry.
-  // ---------------------------------------------------------
-
-  if (
-    normalizedDuration === "single" &&
-    normalizedPeriod.includes("session")
-  ) {
-    throw new Error(
-      "Private session validity period is not configured."
-    );
-  }
-
-  if (
-    normalizedDuration === "package" &&
-    normalizedPeriod.includes("package")
-  ) {
-    throw new Error(
-      "Private package validity period is not configured."
-    );
-  }
-
   throw new Error(
-    `Unsupported membership duration: ${duration} (${period})`
+    "Please select an available class session."
   );
 }
 
-  // =========================================================
-  // UPDATE START DATE
-  // =========================================================
-  //
-  // NEW FLOW:
-  // Customer is still unauthenticated.
-  //
-  // =========================================================
+    // =======================================================
+    // GROUP
+    // =======================================================
 
-async updateBookingStartDate(
-  bookingId: string,
-  bookingFlowToken: string,
-  startDate: string
-) {
-  const booking =
-    await this.getBookingByFlowToken(
-      bookingId,
-      bookingFlowToken
-    );
-
-  // ---------------------------------------------------------
-  // Payment
-  // ---------------------------------------------------------
-
-  if (
-    booking.paymentStatus !==
-    PaymentStatus.PAID
-  ) {
-    throw new Error(
-      "Your membership payment has not been completed."
-    );
-  }
-
-  // ---------------------------------------------------------
-  // Parse date
-  // ---------------------------------------------------------
-
-  const selectedDate =
-    new Date(startDate);
-
-  if (
-    Number.isNaN(
-      selectedDate.getTime()
-    )
-  ) {
-    throw new Error(
-      "Invalid start date."
-    );
-  }
-
-  // ---------------------------------------------------------
-  // Prevent past dates
-  // ---------------------------------------------------------
-
-  const today = new Date();
-
-  today.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  const comparisonDate =
-    new Date(selectedDate);
-
-  comparisonDate.setHours(
-    0,
-    0,
-    0,
-    0
-  );
-
-  if (
-    comparisonDate < today
-  ) {
-    throw new Error(
-      "Start date cannot be in the past."
-    );
-  }
-
-  // ---------------------------------------------------------
-  // GROUP MEMBERSHIPS
-  // ---------------------------------------------------------
-  // Group memberships use recurring studio schedules.
-  // Calculate the membership validity period and make sure
-  // the selected schedule has enough capacity.
-  // ---------------------------------------------------------
-
-  if (
-    booking.membership.type ===
-    "GROUP" &&
-    booking.scheduleId
-  ) {
-    const expiryDate =
-      this.calculateMembershipExpiry(
-        selectedDate,
-        booking.membership.duration,
-        booking.membership.period
-      );
-
-    const availability =
-      await this.getScheduleAvailability(
-        booking.scheduleId,
-        selectedDate,
-        expiryDate
-      );
-
-    if (!availability.isAvailable) {
-      throw new Error(
-        "This schedule is full for the selected membership period."
+    if (
+      booking.membership.type ===
+      MembershipType.GROUP
+    ) {
+      return await this.confirmGroupBooking(
+        bookingId,
+        userId
       );
     }
-  }
 
-  // ---------------------------------------------------------
-  // PRIVATE MEMBERSHIPS
-  // ---------------------------------------------------------
-  // Private memberships use flexible scheduling.
-  // We do not calculate membership expiry or recurring
-  // schedule capacity here.
-  //
-  // The selected start date is accepted after validating
-  // that it is not in the past.
-  // ---------------------------------------------------------
+    // =======================================================
+    // PRIVATE
+    // =======================================================
 
-  // ---------------------------------------------------------
-  // Save start date
-  // ---------------------------------------------------------
-
-  const updatedBooking =
-    await prisma.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        preferredStartDate:
-          selectedDate,
-      },
-
-      include: {
-        membership: true,
-        schedule: true,
-      },
-    });
-
-  return updatedBooking;
-}
-
-// =========================================================
-// FINAL CONFIRMATION
-// =========================================================
-//
-// Customer is authenticated here.
-//
-// Required:
-// - paid
-// - class
-// - health declaration
-// - start date
-//
-// GROUP:
-// - schedule required
-// - capacity checked
-// - membership activated
-// - one MemberSchedule created
-// - booking confirmed
-// - one recurring Google Calendar event created
-//
-// PRIVATE:
-// - schedule NOT required
-// - no capacity check
-// - no membership expiry calculation
-// - no MemberSchedule
-// - no Google Calendar recurring event
-// - membership activated
-// - booking confirmed
-//
-// =========================================================
-
-async confirmBooking(
-  bookingId: string,
-  userId: string
-) {
-  // =========================================================
-  // GET BOOKING
-  // =========================================================
-
-  const booking = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      userId,
-    },
-
-    include: {
-      membership: true,
-
-      memberMembership: true,
-
-      memberSchedules: {
-        where: {
-          isActive: true,
-        },
-
-        include: {
-          schedule: true,
-        },
-      },
-
-      schedule: true,
-
-      healthSafetyForm: true,
-    },
-  });
-
-  if (!booking) {
-    throw new Error(
-      "Booking not found or does not belong to you."
+    return await this.confirmPrivateBooking(
+      bookingId,
+      userId
     );
   }
 
   // =========================================================
-  // PAYMENT
+  // CONFIRM GROUP BOOKING
   // =========================================================
 
-  if (
-    booking.paymentStatus !==
-    PaymentStatus.PAID
+  private async confirmGroupBooking(
+    bookingId: string,
+    userId: string
   ) {
-    throw new Error(
-      "This booking has not been paid for."
-    );
-  }
-
-  // =========================================================
-  // CLASS
-  // =========================================================
-
-  if (!booking.classId) {
-    throw new Error(
-      "Please select a class before confirming your booking."
-    );
-  }
-
-  // =========================================================
-  // START DATE
-  // =========================================================
-
-  if (!booking.preferredStartDate) {
-    throw new Error(
-      "Please select a start date before confirming your booking."
-    );
-  }
-
-  // =========================================================
-  // HEALTH DECLARATION
-  // =========================================================
-
-  if (
-    !booking.healthSafetyForm ||
-    !booking.healthSafetyForm.accepted
-  ) {
-    throw new Error(
-      "Please complete the Health Declaration before confirming your booking."
-    );
-  }
-
-  // =========================================================
-  // ALREADY CONFIRMED
-  // =========================================================
-
-  if (
-    booking.bookingStatus ===
-    BookingStatus.CONFIRMED
-  ) {
-    return booking;
-  }
-
-  // =========================================================
-  // PRIVATE MEMBERSHIP
-  // =========================================================
-  //
-  // PRIVATE memberships do NOT use:
-  // - recurring group schedules
-  // - group capacity
-  // - membership expiry calculation
-  // - MemberSchedule
-  // - recurring Google Calendar events
-  //
-  // They simply become ACTIVE from the selected
-  // preferred start date.
-  //
-  // =========================================================
-
-  if (
-    booking.membership.type ===
-    "PRIVATE"
-  ) {
-    const confirmedPrivateBooking =
+    const confirmedBooking =
       await prisma.$transaction(
         async (tx) => {
-          // -----------------------------------------------------
-          // RELOAD BOOKING INSIDE TRANSACTION
-          // -----------------------------------------------------
+          // -------------------------------------------------
+          // LOCK BOOKING
+          // -------------------------------------------------
+
+          await tx.$queryRaw`
+            SELECT id
+            FROM "Booking"
+            WHERE id = ${bookingId}
+            FOR UPDATE
+          `;
 
           const currentBooking =
             await tx.booking.findUnique({
               where: {
-                id: booking.id,
+                id: bookingId,
               },
 
               include: {
@@ -1643,6 +1790,12 @@ async confirmBooking(
                 memberMembership: true,
 
                 healthSafetyForm: true,
+
+                session: {
+                  include: {
+                    schedule: true,
+                  },
+                },
               },
             });
 
@@ -1651,10 +1804,6 @@ async confirmBooking(
               "Booking not found."
             );
           }
-
-          // -----------------------------------------------------
-          // MAKE SURE BOOKING BELONGS TO USER
-          // -----------------------------------------------------
 
           if (
             currentBooking.userId !==
@@ -1665,9 +1814,12 @@ async confirmBooking(
             );
           }
 
-          // -----------------------------------------------------
-          // RECHECK PAYMENT
-          // -----------------------------------------------------
+          if (
+            currentBooking.bookingStatus ===
+            BookingStatus.CONFIRMED
+          ) {
+            return currentBooking;
+          }
 
           if (
             currentBooking.paymentStatus !==
@@ -1678,62 +1830,121 @@ async confirmBooking(
             );
           }
 
-          // -----------------------------------------------------
-          // RECHECK CLASS
-          // -----------------------------------------------------
-
-          if (!currentBooking.classId) {
-            throw new Error(
-              "Please select a class before confirming your booking."
-            );
-          }
-
-          // -----------------------------------------------------
-          // RECHECK START DATE
-          // -----------------------------------------------------
-
-          if (
-            !currentBooking.preferredStartDate
-          ) {
-            throw new Error(
-              "Please select a start date before confirming your booking."
-            );
-          }
-
-          // -----------------------------------------------------
-          // RECHECK HEALTH DECLARATION
-          // -----------------------------------------------------
-
           if (
             !currentBooking.healthSafetyForm ||
-            !currentBooking.healthSafetyForm.accepted
+            !currentBooking.healthSafetyForm
+              .accepted
           ) {
             throw new Error(
               "Please complete the Health Declaration before confirming your booking."
             );
           }
 
-          // -----------------------------------------------------
-          // ALREADY CONFIRMED
-          // -----------------------------------------------------
+          const session =
+            currentBooking.session;
 
-          if (
-            currentBooking.bookingStatus ===
-            BookingStatus.CONFIRMED
-          ) {
-            return currentBooking;
+          if (!session) {
+            throw new Error(
+              "No class session has been selected."
+            );
           }
 
-          // -----------------------------------------------------
-          // CREATE / UPDATE PRIVATE MEMBERSHIP
-          // -----------------------------------------------------
-          //
-          // IMPORTANT:
-          // expiryDate remains NULL because the current
-          // PRIVATE membership catalog does not define a
-          // validity period.
-          //
-          // -----------------------------------------------------
+          // -------------------------------------------------
+          // SESSION MUST STILL BE FUTURE
+          // -------------------------------------------------
+
+          this.validateFutureSessionDate(
+            session.sessionDate
+          );
+
+          // -------------------------------------------------
+          // SESSION MUST BE OPEN
+          // -------------------------------------------------
+
+          if (
+            session.status !==
+            "OPEN"
+          ) {
+            throw new Error(
+              "This class session is no longer available."
+            );
+          }
+
+          if (
+            !session.schedule.isActive
+          ) {
+            throw new Error(
+              "This class schedule is no longer active."
+            );
+          }
+
+          // -------------------------------------------------
+          // LOCK SESSION
+          // -------------------------------------------------
+
+          await tx.$queryRaw`
+            SELECT id
+            FROM "ClassSession"
+            WHERE id = ${session.id}
+            FOR UPDATE
+          `;
+
+          // -------------------------------------------------
+          // RECOUNT BOOKINGS
+          // -------------------------------------------------
+
+          const bookedCount =
+            await tx.booking.count({
+              where: {
+                sessionId:
+                  session.id,
+
+                bookingStatus:
+                  BookingStatus.CONFIRMED,
+              },
+            });
+
+          const capacity =
+            session.capacity ??
+            session.schedule.capacity;
+
+          if (
+            bookedCount >= capacity
+          ) {
+            throw new Error(
+              "This class session has just become full. Please select another session."
+            );
+          }
+
+          // -------------------------------------------------
+          // MEMBERSHIP EXPIRY
+          // -------------------------------------------------
+
+          const membershipStart =
+            session.sessionDate;
+
+          const membershipExpiry =
+            this.calculateMembershipExpiry(
+              membershipStart,
+              currentBooking.membership
+                .duration,
+              currentBooking.membership
+                .period
+            );
+
+          // -------------------------------------------------
+          // CREDITS
+          // -------------------------------------------------
+
+          const creditsTotal =
+            this.getMembershipCredits(
+              currentBooking.membership
+                .classLimit
+            );
+
+          // -------------------------------------------------
+          // CREATE MEMBERSHIP
+          // -------------------------------------------------
 
           let memberMembership =
             currentBooking.memberMembership;
@@ -1744,25 +1955,32 @@ async confirmBooking(
                 data: {
                   userId,
 
-                  bookingId:
-                    currentBooking.id,
+             
 
                   membershipId:
                     currentBooking.membershipId,
 
-                  status: "ACTIVE",
+                  status:
+                    MembershipStatus.ACTIVE,
 
                   startDate:
-                    currentBooking.preferredStartDate,
+                    membershipStart,
 
-                  expiryDate: null,
+                  expiryDate:
+                    membershipExpiry,
+
+                  creditsTotal,
+
+                  creditsUsed:
+                    0,
                 },
               });
           } else {
             memberMembership =
               await tx.memberMembership.update({
                 where: {
-                  id: memberMembership.id,
+                  id:
+                    memberMembership.id,
                 },
 
                 data: {
@@ -1771,32 +1989,77 @@ async confirmBooking(
                   membershipId:
                     currentBooking.membershipId,
 
-                  status: "ACTIVE",
+                  status:
+                    MembershipStatus.ACTIVE,
 
                   startDate:
-                    currentBooking.preferredStartDate,
+                    membershipStart,
 
-                  expiryDate: null,
+                  expiryDate:
+                    membershipExpiry,
+
+                  creditsTotal,
                 },
               });
           }
 
-          // -----------------------------------------------------
-          // CONFIRM PRIVATE BOOKING
-          // -----------------------------------------------------
+          // -------------------------------------------------
+          // CHECK CREDIT
+          // -------------------------------------------------
+
+          if (
+            !this.hasRemainingCredit(
+              memberMembership
+            )
+          ) {
+            throw new Error(
+              "You do not have any remaining class credits."
+            );
+          }
+
+          // -------------------------------------------------
+          // CONSUME FIRST CREDIT
+          // -------------------------------------------------
+
+          if (
+            memberMembership
+              .creditsTotal !==
+            null
+          ) {
+            await tx.memberMembership.update({
+              where: {
+                id:
+                  memberMembership.id,
+              },
+
+              data: {
+                creditsUsed: {
+                  increment: 1,
+                },
+              },
+            });
+          }
+
+          // -------------------------------------------------
+          // CONFIRM BOOKING
+          // -------------------------------------------------
 
           const confirmed =
             await tx.booking.update({
               where: {
-                id: currentBooking.id,
+                id:
+                  currentBooking.id,
               },
 
               data: {
                 bookingStatus:
                   BookingStatus.CONFIRMED,
 
+                bookingDate:
+                  session.sessionDate,
+
                 preferredStartDate:
-                  currentBooking.preferredStartDate,
+                  session.sessionDate,
               },
 
               include: {
@@ -1804,13 +2067,7 @@ async confirmBooking(
 
                 memberMembership: true,
 
-                schedule: true,
-
-                memberSchedules: {
-                  where: {
-                    isActive: true,
-                  },
-
+                session: {
                   include: {
                     schedule: true,
                   },
@@ -1820,483 +2077,35 @@ async confirmBooking(
               },
             });
 
-          return confirmed;
+              return confirmed;
         }
       );
 
-    // ---------------------------------------------------------
-    // PRIVATE BOOKINGS DO NOT CREATE GOOGLE CALENDAR
-    // RECURRING GROUP EVENTS.
-    // ---------------------------------------------------------
+    // =====================================================
+    // GOOGLE CALENDAR
+    // =====================================================
+    //
+    // One confirmed booking = one actual ClassSession
+    // = one Google Calendar event.
+    //
+    // Calendar failure does NOT undo the booking.
+    // =====================================================
 
-    return confirmedPrivateBooking;
-  }
-
-  // =========================================================
-  // GROUP MEMBERSHIP
-  // =========================================================
-  //
-  // Everything below remains the existing GROUP booking
-  // behavior:
-  //
-  // - schedule required
-  // - expiry calculated
-  // - capacity checked
-  // - MemberMembership activated
-  // - selected MemberSchedule created
-  // - booking confirmed
-  // - recurring Google Calendar event created
-  //
-  // =========================================================
-
-  // =========================================================
-  // SCHEDULE
-  // =========================================================
-
-  if (!booking.scheduleId) {
-    throw new Error(
-      "Please select an available schedule before confirming your booking."
-    );
-  }
-
-  if (!booking.schedule) {
-    throw new Error(
-      "Selected schedule could not be found."
-    );
-  }
-
-  // =========================================================
-  // MEMBERSHIP PERIOD
-  // =========================================================
-
-  const membershipStart =
-    booking.preferredStartDate;
-
-  const membershipExpiry =
-    this.calculateMembershipExpiry(
-      membershipStart,
-      booking.membership.duration,
-      booking.membership.period
-    );
-
-  // =========================================================
-  // IMPORTANT:
-  // CONCURRENT CAPACITY PROTECTION
-  // =========================================================
-  //
-  // We use a PostgreSQL row lock on the Schedule.
-  //
-  // If two people try to take the last available slot
-  // at exactly the same time:
-  //
-  // Customer A:
-  //   locks Schedule
-  //   checks capacity
-  //   creates MemberSchedule
-  //   commits
-  //
-  // Customer B:
-  //   waits for Schedule lock
-  //   gets the lock after A commits
-  //   checks capacity again
-  //   sees that the schedule is now full
-  //   fails safely
-  //
-  // This prevents the "two people got the last slot"
-  // race condition.
-  //
-  // =========================================================
-
-  const confirmedBooking =
-    await prisma.$transaction(
-      async (tx) => {
-        // -----------------------------------------------------
-        // LOCK THE SCHEDULE ROW
-        // -----------------------------------------------------
-
-        await tx.$queryRaw`
-          SELECT id
-          FROM "Schedule"
-          WHERE id = ${booking.scheduleId}
-          FOR UPDATE
-        `;
-
-        // -----------------------------------------------------
-        // RELOAD THE BOOKING INSIDE THE TRANSACTION
-        // -----------------------------------------------------
-
-        const currentBooking =
-          await tx.booking.findUnique({
-            where: {
-              id: booking.id,
-            },
-
-            include: {
-              membership: true,
-
-              memberMembership: true,
-
-              healthSafetyForm: true,
-
-              schedule: true,
-
-              memberSchedules: {
-                where: {
-                  isActive: true,
-                },
-
-                include: {
-                  schedule: true,
-                },
-              },
-            },
-          });
-
-        if (!currentBooking) {
-          throw new Error(
-            "Booking not found."
-          );
-        }
-
-        // -----------------------------------------------------
-        // MAKE SURE BOOKING BELONGS TO USER
-        // -----------------------------------------------------
-
-        if (
-          currentBooking.userId !==
-          userId
-        ) {
-          throw new Error(
-            "This booking does not belong to your account."
-          );
-        }
-
-        // -----------------------------------------------------
-        // CHECK IF ALREADY CONFIRMED
-        // -----------------------------------------------------
-
-        if (
-          currentBooking.bookingStatus ===
-          BookingStatus.CONFIRMED
-        ) {
-          return currentBooking;
-        }
-
-        // -----------------------------------------------------
-        // RECHECK PAYMENT
-        // -----------------------------------------------------
-
-        if (
-          currentBooking.paymentStatus !==
-          PaymentStatus.PAID
-        ) {
-          throw new Error(
-            "This booking has not been paid for."
-          );
-        }
-
-        // -----------------------------------------------------
-        // RECHECK REQUIRED BOOKING DATA
-        // -----------------------------------------------------
-
-        if (!currentBooking.classId) {
-          throw new Error(
-            "Please select a class before confirming your booking."
-          );
-        }
-
-        if (
-          !currentBooking.preferredStartDate
-        ) {
-          throw new Error(
-            "Please select a start date before confirming your booking."
-          );
-        }
-
-        if (
-          !currentBooking.healthSafetyForm ||
-          !currentBooking.healthSafetyForm.accepted
-        ) {
-          throw new Error(
-            "Please complete the Health Declaration before confirming your booking."
-          );
-        }
-
-        if (!currentBooking.scheduleId) {
-          throw new Error(
-            "Please select an available schedule before confirming your booking."
-          );
-        }
-
-        if (!currentBooking.schedule) {
-          throw new Error(
-            "Selected schedule could not be found."
-          );
-        }
-
-        // -----------------------------------------------------
-        // MAKE SURE THE SCHEDULE IS STILL ACTIVE
-        // -----------------------------------------------------
-
-        if (
-          !currentBooking.schedule.isActive
-        ) {
-          throw new Error(
-            "This schedule is no longer available."
-          );
-        }
-
-        // -----------------------------------------------------
-        // MAKE SURE SCHEDULE MATCHES CLASS
-        // -----------------------------------------------------
-
-        if (
-          currentBooking.schedule.className.toLowerCase() !==
-          currentBooking.classId.toLowerCase()
-        ) {
-          throw new Error(
-            "The selected schedule does not belong to your selected class."
-          );
-        }
-
-        // -----------------------------------------------------
-        // CALCULATE MEMBERSHIP PERIOD
-        // -----------------------------------------------------
-
-        const currentMembershipStart =
-          currentBooking.preferredStartDate;
-
-        const currentMembershipExpiry =
-          this.calculateMembershipExpiry(
-            currentMembershipStart,
-            currentBooking.membership.duration,
-            currentBooking.membership.period
-          );
-
-        // =====================================================
-        // CAPACITY CHECK WHILE SCHEDULE IS LOCKED
-        // =====================================================
-
-        const bookedCount =
-          await tx.memberSchedule.count({
-            where: {
-              scheduleId:
-                currentBooking.scheduleId,
-
-              isActive: true,
-
-              booking: {
-                bookingStatus:
-                  BookingStatus.CONFIRMED,
-
-                memberMembership: {
-                  is: {
-                    startDate: {
-                      lt:
-                        currentMembershipExpiry,
-                    },
-
-                    expiryDate: {
-                      gt:
-                        currentMembershipStart,
-                    },
-                  },
-                },
-              },
-            },
-          });
-
-        // -----------------------------------------------------
-        // CAPACITY
-        // -----------------------------------------------------
-
-        const capacity =
-          currentBooking.schedule.capacity;
-
-        const availableSlots =
-          Math.max(
-            capacity - bookedCount,
-            0
-          );
-
-        // -----------------------------------------------------
-        // CHECK WHETHER THIS BOOKING ALREADY HAS THE SLOT
-        // -----------------------------------------------------
-
-        const alreadyAssigned =
-          currentBooking.memberSchedules.some(
-            (memberSchedule) =>
-              memberSchedule.scheduleId ===
-                currentBooking.scheduleId &&
-              memberSchedule.isActive
-          );
-
-        // -----------------------------------------------------
-        // FULL
-        // -----------------------------------------------------
-
-        if (
-          availableSlots <= 0 &&
-          !alreadyAssigned
-        ) {
-          throw new Error(
-            "This schedule has just become full. Please select another available schedule."
-          );
-        }
-
-        // =====================================================
-        // DEACTIVATE OLD MEMBER SCHEDULES
-        // =====================================================
-
-        await tx.memberSchedule.updateMany({
+    try {
+      const session =
+        await prisma.classSession.findUnique({
           where: {
-            bookingId:
-              currentBooking.id,
+            id: confirmedBooking.sessionId!,
           },
 
-          data: {
-            isActive: false,
-          },
-        });
-
-        // =====================================================
-        // CREATE / UPDATE MEMBER MEMBERSHIP
-        // =====================================================
-
-        let memberMembership =
-          currentBooking.memberMembership;
-
-        if (!memberMembership) {
-          memberMembership =
-            await tx.memberMembership.create({
-              data: {
-                userId,
-
-                bookingId:
-                  currentBooking.id,
-
-                membershipId:
-                  currentBooking.membershipId,
-
-                startDate:
-                  currentMembershipStart,
-
-                expiryDate:
-                  currentMembershipExpiry,
-
-                status: "ACTIVE",
-              },
-            });
-        } else {
-          memberMembership =
-            await tx.memberMembership.update({
-              where: {
-                id: memberMembership.id,
-              },
-
-              data: {
-                userId,
-
-                membershipId:
-                  currentBooking.membershipId,
-
-                startDate:
-                  currentMembershipStart,
-
-                expiryDate:
-                  currentMembershipExpiry,
-
-                status: "ACTIVE",
-              },
-            });
-        }
-
-        // =====================================================
-        // CREATE ONLY THE SELECTED RECURRING SCHEDULE
-        // =====================================================
-
-        await tx.memberSchedule.create({
-          data: {
-            userId,
-
-            bookingId:
-              currentBooking.id,
-
-            scheduleId:
-              currentBooking.scheduleId,
-
-            classId:
-              currentBooking.classId,
-
-            startDate:
-              currentMembershipStart,
-
-            isActive: true,
+          include: {
+            schedule: true,
           },
         });
 
-        // =====================================================
-        // CONFIRM BOOKING
-        // =====================================================
-
-        const confirmed =
-          await tx.booking.update({
-            where: {
-              id: currentBooking.id,
-            },
-
-            data: {
-              bookingStatus:
-                BookingStatus.CONFIRMED,
-
-              preferredStartDate:
-                currentMembershipStart,
-            },
-
-            include: {
-              membership: true,
-
-              memberMembership: true,
-
-              schedule: true,
-
-              memberSchedules: {
-                where: {
-                  isActive: true,
-                },
-
-                include: {
-                  schedule: true,
-                },
-              },
-
-              healthSafetyForm: true,
-            },
-          });
-
-        return confirmed;
-      }
-    );
-
-  // =========================================================
-  // GOOGLE CALENDAR
-  // =========================================================
-  //
-  // GROUP ONLY
-  //
-  // One selected recurring schedule =
-  // one recurring Google Calendar event.
-  //
-  // =========================================================
-
-  try {
-    const schedule =
-      confirmedBooking.schedule;
-
-    if (schedule) {
-      const calendarEvent =
-        await googleCalendarService
-          .createRecurringBookingEvent({
+      if (session) {
+        const calendarEvent =
+          await googleCalendarService.createBookingEvent({
             bookingId:
               confirmedBooking.id,
 
@@ -2310,95 +2119,637 @@ async confirmBooking(
               confirmedBooking.email,
 
             className:
-              schedule.className,
+              session.schedule.className,
 
             tutorName:
-              schedule.tutorName,
+              session.schedule.tutorName,
 
-            bookingDate:
-              confirmedBooking
-                .preferredStartDate!,
-
-            expiryDate:
-              confirmedBooking
-                .memberMembership
-                ?.expiryDate ??
-              membershipExpiry,
-
-            dayOfWeek:
-              schedule.dayOfWeek,
+            sessionDate:
+              session.sessionDate,
 
             startTime:
-              schedule.startTime,
+              session.schedule.startTime,
 
             endTime:
-              schedule.endTime,
+              session.schedule.endTime,
           });
 
-      // -------------------------------------------------------
-      // SAVE CALENDAR EVENT
-      // -------------------------------------------------------
+        if (calendarEvent.eventId) {
+          await prisma.booking.update({
+            where: {
+              id: confirmedBooking.id,
+            },
 
-      if (calendarEvent.eventId) {
-        await prisma.booking.update({
+            data: {
+              calendarEventId:
+                calendarEvent.eventId,
+
+              calendarEventUrl:
+                calendarEvent.eventUrl,
+            },
+          });
+
+          confirmedBooking.calendarEventId =
+            calendarEvent.eventId;
+
+          confirmedBooking.calendarEventUrl =
+            calendarEvent.eventUrl;
+        }
+
+        console.log(
+          `✅ Google Calendar event created for booking ${confirmedBooking.id}`
+        );
+      }
+    } catch (calendarError) {
+      console.error(
+        `⚠️ Google Calendar event creation failed for booking ${confirmedBooking.id}:`,
+        calendarError
+      );
+
+      // Booking remains CONFIRMED.
+      // Calendar failure must not undo successful booking/payment.
+    }
+
+    return confirmedBooking;
+  }
+  // =========================================================
+  // CONFIRM PRIVATE BOOKING
+  // =========================================================
+
+  private async confirmPrivateBooking(
+    bookingId: string,
+    userId: string
+  ) {
+    return await prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT id
+          FROM "Booking"
+          WHERE id = ${bookingId}
+          FOR UPDATE
+        `;
+
+        const booking =
+          await tx.booking.findUnique({
+            where: {
+              id: bookingId,
+            },
+
+            include: {
+              membership: true,
+
+              memberMembership: true,
+
+              healthSafetyForm: true,
+            },
+          });
+
+        if (!booking) {
+          throw new Error(
+            "Booking not found."
+          );
+        }
+
+        if (
+          booking.userId !==
+          userId
+        ) {
+          throw new Error(
+            "This booking does not belong to your account."
+          );
+        }
+
+        if (
+          booking.bookingStatus ===
+          BookingStatus.CONFIRMED
+        ) {
+          return booking;
+        }
+
+        if (
+          booking.paymentStatus !==
+          PaymentStatus.PAID
+        ) {
+          throw new Error(
+            "This booking has not been paid for."
+          );
+        }
+
+        if (
+          !booking.healthSafetyForm ||
+          !booking.healthSafetyForm
+            .accepted
+        ) {
+          throw new Error(
+            "Please complete the Health Declaration before confirming your booking."
+          );
+        }
+
+        const creditsTotal =
+          this.getMembershipCredits(
+            booking.membership
+              .classLimit
+          );
+
+        const membershipStart =
+          booking.preferredStartDate ??
+          new Date();
+
+        const membershipExpiry =
+          this.calculateMembershipExpiry(
+            membershipStart,
+            booking.membership
+              .duration,
+            booking.membership
+              .period
+          );
+
+        let memberMembership =
+          booking.memberMembership;
+
+        if (!memberMembership) {
+          memberMembership =
+            await tx.memberMembership.create({
+              data: {
+                userId,
+
+           
+
+                membershipId:
+                  booking.membershipId,
+
+                status:
+                  MembershipStatus.ACTIVE,
+
+                startDate:
+                  membershipStart,
+
+                expiryDate:
+                  membershipExpiry,
+
+                creditsTotal,
+
+                creditsUsed: 0,
+              },
+            });
+        }
+
+        if (
+          !this.hasRemainingCredit(
+            memberMembership
+          )
+        ) {
+          throw new Error(
+            "You do not have any remaining session credits."
+          );
+        }
+
+        if (
+          memberMembership
+            .creditsTotal !==
+          null
+        ) {
+          await tx.memberMembership.update({
+            where: {
+              id:
+                memberMembership.id,
+            },
+
+            data: {
+              creditsUsed: {
+                increment: 1,
+              },
+            },
+          });
+        }
+
+        return await tx.booking.update({
           where: {
-            id: confirmedBooking.id,
+            id: booking.id,
           },
 
           data: {
-            calendarEventId:
-              JSON.stringify([
-                calendarEvent.eventId,
-              ]),
+            bookingStatus:
+              BookingStatus.CONFIRMED,
 
-            calendarEventUrl:
-              JSON.stringify([
-                calendarEvent.eventUrl,
-              ]),
+            preferredStartDate:
+              membershipStart,
+          },
+
+          include: {
+            membership: true,
+
+            memberMembership: true,
+
+            healthSafetyForm: true,
           },
         });
-
-        confirmedBooking.calendarEventId =
-          JSON.stringify([
-            calendarEvent.eventId,
-          ]);
-
-        confirmedBooking.calendarEventUrl =
-          JSON.stringify([
-            calendarEvent.eventUrl,
-          ]);
       }
-
-      console.log(
-        `✅ Google Calendar event created for booking ${confirmedBooking.id}`
-      );
-    }
-  } catch (calendarError) {
-    console.error(
-      `⚠️ Google Calendar event creation failed for booking ${confirmedBooking.id}:`,
-      calendarError
     );
-
-    // -------------------------------------------------------
-    // IMPORTANT:
-    // Booking remains CONFIRMED even if Google Calendar fails.
-    // -------------------------------------------------------
   }
 
-  return confirmedBooking;
-}
+  // =========================================================
+  // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+  // =========================================================
+
+  /**
+   * Used later from the member dashboard.
+   *
+   * Example:
+   *
+   * 10 Classes / Month
+   *
+   * Member has used 3.
+   *
+   * creditsTotal = 10
+   * creditsUsed  = 3
+   *
+   * They can book another session.
+   */
+  async bookMemberSession(
+    userId: string,
+    sessionId: string
+  ) {
+    if (!userId) {
+      throw new Error(
+        "Authentication is required."
+      );
+    }
+
+    if (!sessionId) {
+      throw new Error(
+        "Class session is required."
+      );
+    }
+
+    return await prisma.$transaction(
+      async (tx) => {
+        // -----------------------------------------------------
+        // LOCK SESSION
+        // -----------------------------------------------------
+
+        await tx.$queryRaw`
+          SELECT id
+          FROM "ClassSession"
+          WHERE id = ${sessionId}
+          FOR UPDATE
+        `;
+
+        const session =
+          await tx.classSession.findUnique({
+            where: {
+              id: sessionId,
+            },
+
+            include: {
+              schedule: true,
+
+              _count: {
+                select: {
+                  bookings: {
+                    where: {
+                      bookingStatus:
+                        BookingStatus.CONFIRMED,
+                    },
+                  },
+                },
+              },
+            },
+          });
+
+        if (!session) {
+          throw new Error(
+            "Class session not found."
+          );
+        }
+
+        // -----------------------------------------------------
+        // TOMORROW ONWARD
+        // -----------------------------------------------------
+
+        this.validateFutureSessionDate(
+          session.sessionDate
+        );
+
+        // -----------------------------------------------------
+        // OPEN
+        // -----------------------------------------------------
+
+        if (
+          session.status !==
+          "OPEN"
+        ) {
+          throw new Error(
+            "This class session is no longer available."
+          );
+        }
+
+        if (
+          !session.schedule.isActive
+        ) {
+          throw new Error(
+            "This class schedule is no longer active."
+          );
+        }
+
+        // -----------------------------------------------------
+        // CAPACITY
+        // -----------------------------------------------------
+
+        const capacity =
+          session.capacity ??
+          session.schedule.capacity;
+
+        if (
+          session._count.bookings >=
+          capacity
+        ) {
+          throw new Error(
+            "This class session is full."
+          );
+        }
+
+        // -----------------------------------------------------
+        // FIND ACTIVE MEMBERSHIP
+        // -----------------------------------------------------
+
+        const now =
+          new Date();
+
+        const membership =
+          await tx.memberMembership.findFirst({
+            where: {
+              userId,
+
+              status:
+                MembershipStatus.ACTIVE,
+
+              OR: [
+                {
+                  expiryDate: null,
+                },
+
+                {
+                  expiryDate: {
+                    gt: now,
+                  },
+                },
+              ],
+            },
+
+            include: {
+              membership: true,
+            },
+
+            orderBy: {
+              expiryDate:
+                "asc",
+            },
+          });
+
+        if (!membership) {
+          throw new Error(
+            "You do not have an active membership."
+          );
+        }
+
+        // -----------------------------------------------------
+        // CHECK MEMBERSHIP EXPIRY
+        // -----------------------------------------------------
+
+        if (
+          membership.expiryDate &&
+          session.sessionDate >
+            membership.expiryDate
+        ) {
+          throw new Error(
+            "This session is outside your membership validity period."
+          );
+        }
+
+        // -----------------------------------------------------
+        // CHECK CREDIT
+        // -----------------------------------------------------
+
+        if (
+          !this.hasRemainingCredit(
+            membership
+          )
+        ) {
+          throw new Error(
+            "You do not have any remaining class credits."
+          );
+        }
+
+        // -----------------------------------------------------
+        // PREVENT DUPLICATE SESSION BOOKING
+        // -----------------------------------------------------
+
+        const duplicate =
+          await tx.booking.findFirst({
+            where: {
+              userId,
+
+              sessionId:
+                session.id,
+
+              bookingStatus:
+                BookingStatus.CONFIRMED,
+            },
+          });
+
+        if (duplicate) {
+          throw new Error(
+            "You are already booked for this session."
+          );
+        }
+
+        // -----------------------------------------------------
+        // CREATE SESSION BOOKING
+        // -----------------------------------------------------
+
+        const reference =
+          `SL-${Date.now()}-${crypto
+            .randomBytes(4)
+            .toString("hex")}`;
+
+        const booking =
+          await tx.booking.create({
+            data: {
+              fullName:
+                "",
+
+              email:
+                "",
+
+              phone:
+                "",
+
+              userId,
+
+              classId:
+                session.schedule
+                  .className,
+
+              sessionId:
+                session.id,
+
+              scheduleId:
+                session.scheduleId,
+
+              bookingDate:
+                session.sessionDate,
+
+              preferredStartDate:
+                session.sessionDate,
+
+              membershipId:
+                membership.membershipId,
+
+              amount: 0,
+
+              paymentReference:
+                reference,
+
+              paymentStatus:
+                PaymentStatus.PAID,
+
+              paymentMethod:
+                PaymentMethod.OFFLINE,
+
+              bookingStatus:
+                BookingStatus.CONFIRMED,
+            },
+
+            include: {
+              membership: true,
+
+              session: {
+                include: {
+                  schedule: true,
+                },
+              },
+            },
+          });
+
+        // -----------------------------------------------------
+        // CONSUME CREDIT
+        // -----------------------------------------------------
+
+        if (
+          membership.creditsTotal !==
+          null
+        ) {
+          await tx.memberMembership.update({
+            where: {
+              id:
+                membership.id,
+            },
+
+            data: {
+              creditsUsed: {
+                increment: 1,
+              },
+            },
+          });
+        }
+
+        return booking;
+      }
+    );
+  }
+
+  // =========================================================
+  // MEMBERSHIP CREDIT SUMMARY
+  // =========================================================
+
+  async getMembershipCreditSummary(
+    userId: string
+  ) {
+    const membership =
+      await prisma.memberMembership.findFirst({
+        where: {
+          userId,
+
+          status:
+            MembershipStatus.ACTIVE,
+
+          OR: [
+            {
+              expiryDate: null,
+            },
+
+            {
+              expiryDate: {
+                gt: new Date(),
+              },
+            },
+          ],
+        },
+
+        include: {
+          membership: true,
+        },
+
+        orderBy: {
+          expiryDate:
+            "asc",
+        },
+      });
+
+    if (!membership) {
+      return null;
+    }
+
+    const remainingCredits =
+      membership.creditsTotal ===
+      null
+        ? null
+        : Math.max(
+            membership.creditsTotal -
+              membership.creditsUsed,
+            0
+          );
+
+    return {
+      memberMembershipId:
+        membership.id,
+
+      membership:
+        membership.membership,
+
+      creditsTotal:
+        membership.creditsTotal,
+
+      creditsUsed:
+        membership.creditsUsed,
+
+      remainingCredits,
+
+      unlimited:
+        membership.creditsTotal ===
+        null,
+
+      startDate:
+        membership.startDate,
+
+      expiryDate:
+        membership.expiryDate,
+
+      status:
+        membership.status,
+    };
+  }
 
   // =========================================================
   // LEGACY HEALTH & SAFETY FORM
   // =========================================================
-  //
-  // Kept temporarily so existing frontend code does not
-  // immediately break.
-  //
-  // New frontend should use saveHealthDeclaration().
-  //
-  // =========================================================
 
+  /**
+   * Kept so older frontend calls do not immediately break.
+   *
+   * New booking flow should use saveHealthDeclaration().
+   */
   async saveHealthSafetyForm(
     bookingId: string,
     userId: string,
@@ -2418,269 +2769,412 @@ async confirmBooking(
       );
     }
 
-    if (
-      booking.paymentStatus !==
-      PaymentStatus.PAID
-    ) {
-      throw new Error(
-        "Health & Safety information can only be submitted for a paid booking."
-      );
-    }
-
-    const healthSafetyForm =
-      await prisma.healthSafetyForm.upsert({
-        where: {
-          bookingId,
-        },
-
-        create: {
-          bookingId,
-          userId,
-
-          dateOfBirth: data.dateOfBirth
-            ? new Date(data.dateOfBirth)
-            : null,
-
-          age: data.age ?? null,
-
-          emergencyContactName:
-            data.emergencyContactName ||
-            null,
-
-          emergencyContactRelationship:
-            data.emergencyContactRelationship ||
-            null,
-
-          emergencyContactPhone:
-            data.emergencyContactPhone ||
-            null,
-
-          pregnancy:
-            data.pregnancy || null,
-
-          pregnancyWeeks:
-            data.pregnancyWeeks ?? null,
-
-          dueDate: data.dueDate
-            ? new Date(data.dueDate)
-            : null,
-
-          pregnancyClearance:
-            data.pregnancyClearance || null,
-
-          postpartum:
-            data.postpartum || null,
-
-          deliveryDate:
-            data.deliveryDate
-              ? new Date(data.deliveryDate)
-              : null,
-
-          postpartumClearance:
-            data.postpartumClearance || null,
-
-          screeningAnswers:
-            data.screeningAnswers || {},
-
-          surgery:
-            data.surgery || null,
-
-          surgeryDetails:
-            data.surgeryDetails || null,
-
-          surgeryClearance:
-            data.surgeryClearance || null,
-
-          consent:
-            data.consent || [],
-
-          signature:
-            data.signature || null,
-
-          submittedAt:
-            new Date(),
-        },
-
-        update: {
-          dateOfBirth: data.dateOfBirth
-            ? new Date(data.dateOfBirth)
-            : null,
-
-          age: data.age ?? null,
-
-          emergencyContactName:
-            data.emergencyContactName ||
-            null,
-
-          emergencyContactRelationship:
-            data.emergencyContactRelationship ||
-            null,
-
-          emergencyContactPhone:
-            data.emergencyContactPhone ||
-            null,
-
-          pregnancy:
-            data.pregnancy || null,
-
-          pregnancyWeeks:
-            data.pregnancyWeeks ?? null,
-
-          dueDate: data.dueDate
-            ? new Date(data.dueDate)
-            : null,
-
-          pregnancyClearance:
-            data.pregnancyClearance || null,
-
-          postpartum:
-            data.postpartum || null,
-
-          deliveryDate:
-            data.deliveryDate
-              ? new Date(data.deliveryDate)
-              : null,
-
-          postpartumClearance:
-            data.postpartumClearance || null,
-
-          screeningAnswers:
-            data.screeningAnswers || {},
-
-          surgery:
-            data.surgery || null,
-
-          surgeryDetails:
-            data.surgeryDetails || null,
-
-          surgeryClearance:
-            data.surgeryClearance || null,
-
-          consent:
-            data.consent || [],
-
-          signature:
-            data.signature || null,
-
-          submittedAt:
-            new Date(),
-        },
-      });
-
-    return await prisma.healthSafetyForm.findUnique({
+    return await prisma.healthSafetyForm.upsert({
       where: {
-        id: healthSafetyForm.id,
+        bookingId,
       },
 
-      include: {
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            phone: true,
-          },
-        },
+      create: {
+        bookingId,
+
+        userId,
+
+        dateOfBirth:
+          data.dateOfBirth
+            ? new Date(
+                data.dateOfBirth
+              )
+            : null,
+
+        age:
+          data.age ??
+          null,
+
+        emergencyContactName:
+          data.emergencyContactName ||
+          null,
+
+        emergencyContactRelationship:
+          data.emergencyContactRelationship ||
+          null,
+
+        emergencyContactPhone:
+          data.emergencyContactPhone ||
+          null,
+
+        pregnancy:
+          data.pregnancy ||
+          null,
+
+        pregnancyWeeks:
+          data.pregnancyWeeks ??
+          null,
+
+        dueDate:
+          data.dueDate
+            ? new Date(
+                data.dueDate
+              )
+            : null,
+
+        pregnancyClearance:
+          data.pregnancyClearance ||
+          null,
+
+        postpartum:
+          data.postpartum ||
+          null,
+
+        deliveryDate:
+          data.deliveryDate
+            ? new Date(
+                data.deliveryDate
+              )
+            : null,
+
+        postpartumClearance:
+          data.postpartumClearance ||
+          null,
+
+        screeningAnswers:
+          data.screeningAnswers ||
+          {},
+
+        surgery:
+          data.surgery ||
+          null,
+
+        surgeryDetails:
+          data.surgeryDetails ||
+          null,
+
+        surgeryClearance:
+          data.surgeryClearance ||
+          null,
+
+        consent:
+          data.consent ||
+          [],
+
+        signature:
+          data.signature ||
+          null,
+
+        submittedAt:
+          new Date(),
+      },
+
+      update: {
+        dateOfBirth:
+          data.dateOfBirth
+            ? new Date(
+                data.dateOfBirth
+              )
+            : null,
+
+        age:
+          data.age ??
+          null,
+
+        emergencyContactName:
+          data.emergencyContactName ||
+          null,
+
+        emergencyContactRelationship:
+          data.emergencyContactRelationship ||
+          null,
+
+        emergencyContactPhone:
+          data.emergencyContactPhone ||
+          null,
+
+        pregnancy:
+          data.pregnancy ||
+          null,
+
+        pregnancyWeeks:
+          data.pregnancyWeeks ??
+          null,
+
+        dueDate:
+          data.dueDate
+            ? new Date(
+                data.dueDate
+              )
+            : null,
+
+        pregnancyClearance:
+          data.pregnancyClearance ||
+          null,
+
+        postpartum:
+          data.postpartum ||
+          null,
+
+        deliveryDate:
+          data.deliveryDate
+            ? new Date(
+                data.deliveryDate
+              )
+            : null,
+
+        postpartumClearance:
+          data.postpartumClearance ||
+          null,
+
+        screeningAnswers:
+          data.screeningAnswers ||
+          {},
+
+        surgery:
+          data.surgery ||
+          null,
+
+        surgeryDetails:
+          data.surgeryDetails ||
+          null,
+
+        surgeryClearance:
+          data.surgeryClearance ||
+          null,
+
+        consent:
+          data.consent ||
+          [],
+
+        signature:
+          data.signature ||
+          null,
+
+        submittedAt:
+          new Date(),
       },
     });
   }
 
-  // =========================================================
-  // LEGACY: ASSIGN ALL SCHEDULES
-  // =========================================================
-  //
-  // DO NOT USE THIS FOR THE NEW BOOKING FLOW.
-  //
-  // Kept temporarily for backwards compatibility.
-  //
-  // =========================================================
+ /**
+ * Cancel a confirmed booking.
+ *
+ * Rules:
+ * - Booking must exist.
+ * - Booking must belong to the authenticated user.
+ * - Booking must currently be CONFIRMED.
+ * - The class session must still be in the future.
+ * - Finite memberships get 1 credit restored.
+ * - Unlimited memberships do not need credit restoration.
+ * - Google Calendar event is deleted after the transaction succeeds.
+ */
+async cancelBooking(bookingId: string, userId: string) {
+  const result = await prisma.$transaction(async (tx) => {
+    /**
+     * Lock the booking so two cancellation requests
+     * cannot restore the same credit twice.
+     */
+    await tx.$queryRaw`
+      SELECT id
+      FROM "Booking"
+      WHERE id = ${bookingId}
+      FOR UPDATE
+    `;
 
-  async assignSchedules(
-    bookingId: string,
-    userId: string
-  ) {
-    const booking =
-      await prisma.booking.findFirst({
-        where: {
-          id: bookingId,
-          userId,
+    const booking = await tx.booking.findUnique({
+      where: {
+        id: bookingId,
+      },
+
+      include: {
+        memberMembership: true,
+
+        session: {
+          include: {
+            schedule: true,
+          },
         },
-      });
+      },
+    });
 
     if (!booking) {
+      throw new Error("Booking not found.");
+    }
+
+    /**
+     * Make sure the authenticated member owns this booking.
+     */
+    if (booking.userId !== userId) {
       throw new Error(
-        "Booking not found."
+        "You are not authorized to cancel this booking."
       );
     }
 
-    if (!booking.classId) {
+    /**
+     * Only confirmed bookings can be cancelled.
+     */
+    if (booking.bookingStatus !== "CONFIRMED") {
       throw new Error(
-        "No class has been selected for this booking."
+        "Only confirmed bookings can be cancelled."
       );
     }
 
-    const schedules =
-      await prisma.schedule.findMany({
-        where: {
-          className: booking.classId,
-          isActive: true,
-        },
-
-        orderBy: [
-          {
-            dayOfWeek: "asc",
-          },
-
-          {
-            startTime: "asc",
-          },
-        ],
-      });
-
-    if (schedules.length === 0) {
+    /**
+     * A confirmed group booking should have a session.
+     */
+    if (!booking.session) {
       throw new Error(
-        `No active schedules found for ${booking.classId}.`
+        "This booking does not have an associated class session."
       );
     }
 
-    await prisma.memberSchedule.deleteMany({
+    const now = new Date();
+    const sessionDate = new Date(
+      booking.session.sessionDate
+    );
+
+    /**
+     * Do not allow cancellation after the session has started.
+     */
+    if (sessionDate <= now) {
+      throw new Error(
+        "This booking can no longer be cancelled because the session has started or already passed."
+      );
+    }
+
+    /**
+     * Cancel the booking.
+     */
+    const cancelledBooking = await tx.booking.update({
       where: {
-        bookingId,
+        id: booking.id,
       },
-    });
 
-    await prisma.memberSchedule.createMany({
-      data: schedules.map(
-        (schedule) => ({
-          userId,
-          bookingId,
-          scheduleId:
-            schedule.id,
-          classId:
-            booking.classId!,
-          startDate:
-            booking.preferredStartDate ??
-            null,
-          isActive: true,
-        })
-      ),
-    });
-
-    return prisma.memberSchedule.findMany({
-      where: {
-        bookingId,
-        isActive: true,
+      data: {
+        bookingStatus: "CANCELLED",
       },
 
       include: {
-        schedule: true,
-      },
-
-      orderBy: {
-        createdAt: "asc",
+        membership: true,
+        memberMembership: true,
+        session: {
+          include: {
+            schedule: true,
+          },
+        },
       },
     });
+
+    /**
+     * Restore one credit for finite memberships.
+     *
+     * Unlimited memberships have creditsTotal === null,
+     * so there is nothing to restore.
+     */
+    let creditRestored = false;
+
+    if (
+      booking.memberMembership &&
+      booking.memberMembership.creditsTotal !== null &&
+      booking.memberMembership.creditsUsed > 0
+    ) {
+      await tx.memberMembership.update({
+        where: {
+          id: booking.memberMembership.id,
+        },
+
+        data: {
+          creditsUsed: {
+            decrement: 1,
+          },
+        },
+      });
+
+      creditRestored = true;
+    }
+
+    /**
+     * Recalculate confirmed bookings after cancellation.
+     */
+    const session = booking.session;
+
+    const confirmedBookingCount =
+      await tx.booking.count({
+        where: {
+          sessionId: session.id,
+          bookingStatus: "CONFIRMED",
+        },
+      });
+
+    const sessionCapacity =
+      session.capacity ??
+      session.schedule.capacity;
+
+    /**
+     * If the session was FULL and now has space,
+     * reopen it.
+     */
+    if (
+      session.status === "FULL" &&
+      confirmedBookingCount < sessionCapacity
+    ) {
+      await tx.classSession.update({
+        where: {
+          id: session.id,
+        },
+
+        data: {
+          status: "OPEN",
+        },
+      });
+    }
+
+    return {
+      message: "Booking cancelled successfully.",
+
+      booking: cancelledBooking,
+
+      creditRestored,
+
+      calendarEventId:
+        booking.calendarEventId,
+
+      session: {
+        id: session.id,
+        capacity: sessionCapacity,
+        bookedCount: confirmedBookingCount,
+        availableSlots: Math.max(
+          sessionCapacity - confirmedBookingCount,
+          0
+        ),
+      },
+    };
+  });
+
+  // =====================================================
+  // GOOGLE CALENDAR CLEANUP
+  // =====================================================
+  //
+  // Do this AFTER the database transaction succeeds.
+  // Never call Google Calendar while the Prisma transaction
+  // is still open.
+  // =====================================================
+
+  if (result.calendarEventId) {
+    try {
+      await googleCalendarService.deleteBookingEvent(
+        result.calendarEventId
+      );
+
+      console.log(
+        `✅ Google Calendar event deleted for cancelled booking ${bookingId}`
+      );
+    } catch (calendarError) {
+      console.error(
+        `⚠️ Failed to remove Google Calendar event for cancelled booking ${bookingId}:`,
+        calendarError
+      );
+    }
   }
+
+  return result;
+}
 }
 
 export default new BookingService();

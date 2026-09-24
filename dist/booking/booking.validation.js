@@ -1,10 +1,6 @@
 import Joi from "joi";
 export const createBookingSchema = Joi.object({
-    fullName: Joi.string()
-        .trim()
-        .min(3)
-        .max(100)
-        .required(),
+    fullName: Joi.string().trim().min(3).max(100).required(),
     email: Joi.string()
         .email()
         .lowercase()
@@ -30,6 +26,16 @@ export const createBookingSchema = Joi.object({
     paymentMethod: Joi.string()
         .valid("PAYMISH", "OFFLINE")
         .required(),
+    healthDeclaration: Joi.object({
+        accepted: Joi.boolean()
+            .valid(true)
+            .required(),
+        notes: Joi.string()
+            .trim()
+            .max(1000)
+            .optional()
+            .allow(""),
+    }).required(),
 });
 export const updateBookingPreferencesSchema = Joi.object({
     classId: Joi.string()
