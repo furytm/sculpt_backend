@@ -2366,23 +2366,96 @@ class BookingService {
    *
    * They can book another session.
    */
-  async bookMemberSession(
-    userId: string,
-    sessionId: string
-  ) {
-    if (!userId) {
-      throw new Error(
-        "Authentication is required."
-      );
-    }
+// =========================================================
+// BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+// =========================================================
 
-    if (!sessionId) {
-      throw new Error(
-        "Class session is required."
-      );
-    }
+/**
+ * Used later from the member dashboard.
+ *
+ * Example:
+ *
+ * 10 Classes / Month
+ *
+ * Member has used 3.
+ *
+ * creditsTotal = 10
+ * creditsUsed  = 3
+ *
+ * They can book another session.
+ */
+// =========================================================
+// BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+// =========================================================
 
-    return await prisma.$transaction(
+/**
+ * Used later from the member dashboard.
+ *
+ * Example:
+ *
+ * 10 Classes / Month
+ *
+ * Member has used 3.
+ *
+ * creditsTotal = 10
+ * creditsUsed  = 3
+ *
+ * They can book another session.
+ */
+// =========================================================
+// BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+// =========================================================
+
+/**
+ * Used later from the member dashboard.
+ *
+ * Example:
+ *
+ * 10 Classes / Month
+ *
+ * Member has used 3.
+ *
+ * creditsTotal = 10
+ * creditsUsed  = 3
+ *
+ * They can book another session.
+ */
+// =========================================================
+// BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+// =========================================================
+
+/**
+ * Used later from the member dashboard.
+ *
+ * Example:
+ *
+ * 10 Classes / Month
+ *
+ * Member has used 3.
+ *
+ * creditsTotal = 10
+ * creditsUsed  = 3
+ *
+ * They can book another session.
+ */
+async bookMemberSession(
+  userId: string,
+  sessionId: string
+) {
+  if (!userId) {
+    throw new Error(
+      "Authentication is required."
+    );
+  }
+
+  if (!sessionId) {
+    throw new Error(
+      "Class session is required."
+    );
+  }
+
+  const booking =
+    await prisma.$transaction(
       async (tx) => {
         // -----------------------------------------------------
         // LOCK SESSION
@@ -2565,6 +2638,29 @@ class BookingService {
         }
 
         // -----------------------------------------------------
+        // GET MEMBER DETAILS
+        // -----------------------------------------------------
+
+        const user =
+          await tx.user.findUnique({
+            where: {
+              id: userId,
+            },
+
+            select: {
+              fullName: true,
+              email: true,
+              phone: true,
+            },
+          });
+
+        if (!user) {
+          throw new Error(
+            "User account not found."
+          );
+        }
+
+        // -----------------------------------------------------
         // CREATE SESSION BOOKING
         // -----------------------------------------------------
 
@@ -2573,17 +2669,17 @@ class BookingService {
             .randomBytes(4)
             .toString("hex")}`;
 
-        const booking =
+        const createdBooking =
           await tx.booking.create({
             data: {
               fullName:
-                "",
+                user.fullName,
 
               email:
-                "",
+                user.email,
 
               phone:
-                "",
+                user.phone ?? "",
 
               userId,
 
@@ -2606,6 +2702,11 @@ class BookingService {
               membershipId:
                 membership.membershipId,
 
+              // Link booking to the active
+              // MemberMembership record.
+              memberMembershipId:
+                membership.id,
+
               amount: 0,
 
               paymentReference:
@@ -2623,6 +2724,8 @@ class BookingService {
 
             include: {
               membership: true,
+
+              memberMembership: true,
 
               session: {
                 include: {
@@ -2654,11 +2757,119 @@ class BookingService {
           });
         }
 
-        return booking;
+        return createdBooking;
+      },
+      {
+        maxWait: 10000,
+        timeout: 15000,
       }
     );
+
+  // =====================================================
+  // GOOGLE CALENDAR
+  // =====================================================
+  //
+  // IMPORTANT:
+  // Create the Calendar event AFTER the database
+  // transaction has successfully committed.
+  //
+  // Calendar failure must NOT undo the booking.
+  // =====================================================
+
+  try {
+    const session =
+      await prisma.classSession.findUnique({
+        where: {
+          id: booking.sessionId!,
+        },
+
+        include: {
+          schedule: true,
+        },
+      });
+
+    if (session) {
+      const calendarEvent =
+        await googleCalendarService.createBookingEvent({
+          bookingId:
+            booking.id,
+
+          bookingReference:
+            booking.paymentReference,
+
+          memberName:
+            booking.fullName,
+
+          memberEmail:
+            booking.email,
+
+          className:
+            session.schedule.className,
+
+          tutorName:
+            session.schedule.tutorName,
+
+          sessionDate:
+            session.sessionDate,
+
+          startTime:
+            session.schedule.startTime,
+
+          endTime:
+            session.schedule.endTime,
+        });
+
+      // ---------------------------------------------------
+      // SAVE CALENDAR EVENT DETAILS
+      // ---------------------------------------------------
+
+      if (calendarEvent.eventId) {
+        const updatedBooking =
+          await prisma.booking.update({
+            where: {
+              id: booking.id,
+            },
+
+            data: {
+              calendarEventId:
+                calendarEvent.eventId,
+
+              calendarEventUrl:
+                calendarEvent.eventUrl,
+            },
+
+            include: {
+              membership: true,
+
+              memberMembership: true,
+
+              session: {
+                include: {
+                  schedule: true,
+                },
+              },
+            },
+          });
+
+        console.log(
+          `✅ Google Calendar event created for booking ${booking.id}`
+        );
+
+        return updatedBooking;
+      }
+    }
+  } catch (calendarError) {
+    console.error(
+      `⚠️ Google Calendar event creation failed for booking ${booking.id}:`,
+      calendarError
+    );
+
+    // Booking remains CONFIRMED.
+    // Calendar failure must not undo the booking.
   }
 
+  return booking;
+}
   // =========================================================
   // MEMBERSHIP CREDIT SUMMARY
   // =========================================================
@@ -2965,187 +3176,195 @@ class BookingService {
  * - Google Calendar event is deleted after the transaction succeeds.
  */
 async cancelBooking(bookingId: string, userId: string) {
-  const result = await prisma.$transaction(async (tx) => {
-    /**
-     * Lock the booking so two cancellation requests
-     * cannot restore the same credit twice.
-     */
-    await tx.$queryRaw`
-      SELECT id
-      FROM "Booking"
-      WHERE id = ${bookingId}
-      FOR UPDATE
-    `;
+  const result = await prisma.$transaction(
+    async (tx) => {
+      /**
+       * Lock the booking so two cancellation requests
+       * cannot restore the same credit twice.
+       */
+      await tx.$queryRaw`
+        SELECT id
+        FROM "Booking"
+        WHERE id = ${bookingId}
+        FOR UPDATE
+      `;
 
-    const booking = await tx.booking.findUnique({
-      where: {
-        id: bookingId,
-      },
-
-      include: {
-        memberMembership: true,
-
-        session: {
-          include: {
-            schedule: true,
-          },
-        },
-      },
-    });
-
-    if (!booking) {
-      throw new Error("Booking not found.");
-    }
-
-    /**
-     * Make sure the authenticated member owns this booking.
-     */
-    if (booking.userId !== userId) {
-      throw new Error(
-        "You are not authorized to cancel this booking."
-      );
-    }
-
-    /**
-     * Only confirmed bookings can be cancelled.
-     */
-    if (booking.bookingStatus !== "CONFIRMED") {
-      throw new Error(
-        "Only confirmed bookings can be cancelled."
-      );
-    }
-
-    /**
-     * A confirmed group booking should have a session.
-     */
-    if (!booking.session) {
-      throw new Error(
-        "This booking does not have an associated class session."
-      );
-    }
-
-    const now = new Date();
-    const sessionDate = new Date(
-      booking.session.sessionDate
-    );
-
-    /**
-     * Do not allow cancellation after the session has started.
-     */
-    if (sessionDate <= now) {
-      throw new Error(
-        "This booking can no longer be cancelled because the session has started or already passed."
-      );
-    }
-
-    /**
-     * Cancel the booking.
-     */
-    const cancelledBooking = await tx.booking.update({
-      where: {
-        id: booking.id,
-      },
-
-      data: {
-        bookingStatus: "CANCELLED",
-      },
-
-      include: {
-        membership: true,
-        memberMembership: true,
-        session: {
-          include: {
-            schedule: true,
-          },
-        },
-      },
-    });
-
-    /**
-     * Restore one credit for finite memberships.
-     *
-     * Unlimited memberships have creditsTotal === null,
-     * so there is nothing to restore.
-     */
-    let creditRestored = false;
-
-    if (
-      booking.memberMembership &&
-      booking.memberMembership.creditsTotal !== null &&
-      booking.memberMembership.creditsUsed > 0
-    ) {
-      await tx.memberMembership.update({
+      const booking = await tx.booking.findUnique({
         where: {
-          id: booking.memberMembership.id,
+          id: bookingId,
+        },
+
+        include: {
+          memberMembership: true,
+
+          session: {
+            include: {
+              schedule: true,
+            },
+          },
+        },
+      });
+
+      if (!booking) {
+        throw new Error("Booking not found.");
+      }
+
+      /**
+       * Make sure the authenticated member owns this booking.
+       */
+      if (booking.userId !== userId) {
+        throw new Error(
+          "You are not authorized to cancel this booking."
+        );
+      }
+
+      /**
+       * Only confirmed bookings can be cancelled.
+       */
+      if (booking.bookingStatus !== "CONFIRMED") {
+        throw new Error(
+          "Only confirmed bookings can be cancelled."
+        );
+      }
+
+      /**
+       * A confirmed group booking should have a session.
+       */
+      if (!booking.session) {
+        throw new Error(
+          "This booking does not have an associated class session."
+        );
+      }
+
+      const now = new Date();
+
+      const sessionDate = new Date(
+        booking.session.sessionDate
+      );
+
+      /**
+       * Do not allow cancellation after the session has started.
+       */
+      if (sessionDate <= now) {
+        throw new Error(
+          "This booking can no longer be cancelled because the session has started or already passed."
+        );
+      }
+
+      /**
+       * Cancel the booking.
+       */
+      const cancelledBooking = await tx.booking.update({
+        where: {
+          id: booking.id,
         },
 
         data: {
-          creditsUsed: {
-            decrement: 1,
+          bookingStatus: "CANCELLED",
+        },
+
+        include: {
+          membership: true,
+          memberMembership: true,
+
+          session: {
+            include: {
+              schedule: true,
+            },
           },
         },
       });
 
-      creditRestored = true;
-    }
+      /**
+       * Restore one credit for finite memberships.
+       *
+       * Unlimited memberships have creditsTotal === null,
+       * so there is nothing to restore.
+       */
+      let creditRestored = false;
 
-    /**
-     * Recalculate confirmed bookings after cancellation.
-     */
-    const session = booking.session;
+      if (
+        booking.memberMembership &&
+        booking.memberMembership.creditsTotal !== null &&
+        booking.memberMembership.creditsUsed > 0
+      ) {
+        await tx.memberMembership.update({
+          where: {
+            id: booking.memberMembership.id,
+          },
 
-    const confirmedBookingCount =
-      await tx.booking.count({
-        where: {
-          sessionId: session.id,
-          bookingStatus: "CONFIRMED",
-        },
-      });
+          data: {
+            creditsUsed: {
+              decrement: 1,
+            },
+          },
+        });
 
-    const sessionCapacity =
-      session.capacity ??
-      session.schedule.capacity;
+        creditRestored = true;
+      }
 
-    /**
-     * If the session was FULL and now has space,
-     * reopen it.
-     */
-    if (
-      session.status === "FULL" &&
-      confirmedBookingCount < sessionCapacity
-    ) {
-      await tx.classSession.update({
-        where: {
+      /**
+       * Recalculate confirmed bookings after cancellation.
+       */
+      const session = booking.session;
+
+      const confirmedBookingCount =
+        await tx.booking.count({
+          where: {
+            sessionId: session.id,
+            bookingStatus: "CONFIRMED",
+          },
+        });
+
+      const sessionCapacity =
+        session.capacity ??
+        session.schedule.capacity;
+
+      /**
+       * If the session was FULL and now has space,
+       * reopen it.
+       */
+      if (
+        session.status === "FULL" &&
+        confirmedBookingCount < sessionCapacity
+      ) {
+        await tx.classSession.update({
+          where: {
+            id: session.id,
+          },
+
+          data: {
+            status: "OPEN",
+          },
+        });
+      }
+
+      return {
+        message: "Booking cancelled successfully.",
+
+        booking: cancelledBooking,
+
+        creditRestored,
+
+        calendarEventId:
+          booking.calendarEventId,
+
+        session: {
           id: session.id,
+          capacity: sessionCapacity,
+          bookedCount: confirmedBookingCount,
+          availableSlots: Math.max(
+            sessionCapacity - confirmedBookingCount,
+            0
+          ),
         },
-
-        data: {
-          status: "OPEN",
-        },
-      });
+      };
+    },
+    {
+      maxWait: 10000,
+      timeout: 15000,
     }
-
-    return {
-      message: "Booking cancelled successfully.",
-
-      booking: cancelledBooking,
-
-      creditRestored,
-
-      calendarEventId:
-        booking.calendarEventId,
-
-      session: {
-        id: session.id,
-        capacity: sessionCapacity,
-        bookedCount: confirmedBookingCount,
-        availableSlots: Math.max(
-          sessionCapacity - confirmedBookingCount,
-          0
-        ),
-      },
-    };
-  });
+  );
 
   // =====================================================
   // GOOGLE CALENDAR CLEANUP

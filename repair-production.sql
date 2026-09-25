@@ -88,6 +88,86 @@ BEGIN
 END
 $$;
 
+-- =========================================================
+-- ADD MISSING BOOKING COLUMNS
+-- =========================================================
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "sessionId" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "classId" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "bookingFlowTokenHash" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "calendarEventId" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "calendarEventUrl" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "memberMembershipId" TEXT;
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "preferredStartDate" TIMESTAMP(3);
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "availableDays" TEXT[];
+
+ALTER TABLE "Booking"
+ADD COLUMN IF NOT EXISTS "preferredTimes" TEXT[];
+
+CREATE INDEX IF NOT EXISTS "Booking_sessionId_idx"
+ON "Booking" ("sessionId");
+
+CREATE INDEX IF NOT EXISTS "Booking_memberMembershipId_idx"
+ON "Booking" ("memberMembershipId");
+
+CREATE INDEX IF NOT EXISTS "Booking_userId_idx"
+ON "Booking" ("userId");
+
+CREATE INDEX IF NOT EXISTS "Booking_bookingStatus_idx"
+ON "Booking" ("bookingStatus");
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'Booking_sessionId_fkey'
+    ) THEN
+
+        ALTER TABLE "Booking"
+        ADD CONSTRAINT "Booking_sessionId_fkey"
+        FOREIGN KEY ("sessionId")
+        REFERENCES "ClassSession"("id")
+        ON DELETE SET NULL
+        ON UPDATE CASCADE;
+
+    END IF;
+END
+$$;
+
+-- =========================================================
+-- ADD MISSING MEMBER MEMBERSHIP CREDIT COLUMNS
+-- =========================================================
+
+ALTER TABLE "MemberMembership"
+ADD COLUMN IF NOT EXISTS "creditsTotal" INTEGER;
+
+ALTER TABLE "MemberMembership"
+ADD COLUMN IF NOT EXISTS "creditsUsed" INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS "MemberMembership_userId_idx"
+ON "MemberMembership" ("userId");
+
+CREATE INDEX IF NOT EXISTS "MemberMembership_status_idx"
+ON "MemberMembership" ("status");
+
+CREATE INDEX IF NOT EXISTS "MemberMembership_expiryDate_idx"
+ON "MemberMembership" ("expiryDate");
+
 
 -- =========================================================
 -- DONE

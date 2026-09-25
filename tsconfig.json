@@ -22,7 +22,7 @@
   },
   "include": [
     "src/**/*.ts"
-, "prisma/notepad check-render-db.ts"  ],
+, "prisma/notepad check-render-db.ts", "test-google-calendar.ts"  ],
   "exclude": [
     "node_modules",
     "dist"
