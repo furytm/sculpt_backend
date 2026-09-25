@@ -1310,6 +1310,74 @@ class BookingService {
      *
      * They can book another session.
      */
+    // =========================================================
+    // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+    // =========================================================
+    /**
+     * Used later from the member dashboard.
+     *
+     * Example:
+     *
+     * 10 Classes / Month
+     *
+     * Member has used 3.
+     *
+     * creditsTotal = 10
+     * creditsUsed  = 3
+     *
+     * They can book another session.
+     */
+    // =========================================================
+    // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+    // =========================================================
+    /**
+     * Used later from the member dashboard.
+     *
+     * Example:
+     *
+     * 10 Classes / Month
+     *
+     * Member has used 3.
+     *
+     * creditsTotal = 10
+     * creditsUsed  = 3
+     *
+     * They can book another session.
+     */
+    // =========================================================
+    // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+    // =========================================================
+    /**
+     * Used later from the member dashboard.
+     *
+     * Example:
+     *
+     * 10 Classes / Month
+     *
+     * Member has used 3.
+     *
+     * creditsTotal = 10
+     * creditsUsed  = 3
+     *
+     * They can book another session.
+     */
+    // =========================================================
+    // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP
+    // =========================================================
+    /**
+     * Used later from the member dashboard.
+     *
+     * Example:
+     *
+     * 10 Classes / Month
+     *
+     * Member has used 3.
+     *
+     * creditsTotal = 10
+     * creditsUsed  = 3
+     *
+     * They can book another session.
+     */
     async bookMemberSession(userId, sessionId) {
         if (!userId) {
             throw new Error("Authentication is required.");
@@ -1317,7 +1385,7 @@ class BookingService {
         if (!sessionId) {
             throw new Error("Class session is required.");
         }
-        return await prisma.$transaction(async (tx) => {
+        const booking = await prisma.$transaction(async (tx) => {
             // -----------------------------------------------------
             // LOCK SESSION
             // -----------------------------------------------------
@@ -1427,16 +1495,32 @@ class BookingService {
                 throw new Error("You are already booked for this session.");
             }
             // -----------------------------------------------------
+            // GET MEMBER DETAILS
+            // -----------------------------------------------------
+            const user = await tx.user.findUnique({
+                where: {
+                    id: userId,
+                },
+                select: {
+                    fullName: true,
+                    email: true,
+                    phone: true,
+                },
+            });
+            if (!user) {
+                throw new Error("User account not found.");
+            }
+            // -----------------------------------------------------
             // CREATE SESSION BOOKING
             // -----------------------------------------------------
             const reference = `SL-${Date.now()}-${crypto
                 .randomBytes(4)
                 .toString("hex")}`;
-            const booking = await tx.booking.create({
+            const createdBooking = await tx.booking.create({
                 data: {
-                    fullName: "",
-                    email: "",
-                    phone: "",
+                    fullName: user.fullName,
+                    email: user.email,
+                    phone: user.phone ?? "",
                     userId,
                     classId: session.schedule
                         .className,
@@ -1445,6 +1529,9 @@ class BookingService {
                     bookingDate: session.sessionDate,
                     preferredStartDate: session.sessionDate,
                     membershipId: membership.membershipId,
+                    // Link booking to the active
+                    // MemberMembership record.
+                    memberMembershipId: membership.id,
                     amount: 0,
                     paymentReference: reference,
                     paymentStatus: PaymentStatus.PAID,
@@ -1453,6 +1540,7 @@ class BookingService {
                 },
                 include: {
                     membership: true,
+                    memberMembership: true,
                     session: {
                         include: {
                             schedule: true,
@@ -1476,8 +1564,75 @@ class BookingService {
                     },
                 });
             }
-            return booking;
+            return createdBooking;
+        }, {
+            maxWait: 10000,
+            timeout: 15000,
         });
+        // =====================================================
+        // GOOGLE CALENDAR
+        // =====================================================
+        //
+        // IMPORTANT:
+        // Create the Calendar event AFTER the database
+        // transaction has successfully committed.
+        //
+        // Calendar failure must NOT undo the booking.
+        // =====================================================
+        try {
+            const session = await prisma.classSession.findUnique({
+                where: {
+                    id: booking.sessionId,
+                },
+                include: {
+                    schedule: true,
+                },
+            });
+            if (session) {
+                const calendarEvent = await googleCalendarService.createBookingEvent({
+                    bookingId: booking.id,
+                    bookingReference: booking.paymentReference,
+                    memberName: booking.fullName,
+                    memberEmail: booking.email,
+                    className: session.schedule.className,
+                    tutorName: session.schedule.tutorName,
+                    sessionDate: session.sessionDate,
+                    startTime: session.schedule.startTime,
+                    endTime: session.schedule.endTime,
+                });
+                // ---------------------------------------------------
+                // SAVE CALENDAR EVENT DETAILS
+                // ---------------------------------------------------
+                if (calendarEvent.eventId) {
+                    const updatedBooking = await prisma.booking.update({
+                        where: {
+                            id: booking.id,
+                        },
+                        data: {
+                            calendarEventId: calendarEvent.eventId,
+                            calendarEventUrl: calendarEvent.eventUrl,
+                        },
+                        include: {
+                            membership: true,
+                            memberMembership: true,
+                            session: {
+                                include: {
+                                    schedule: true,
+                                },
+                            },
+                        },
+                    });
+                    console.log(`✅ Google Calendar event created for booking ${booking.id}`);
+                    return updatedBooking;
+                }
+            }
+        }
+        catch (calendarError) {
+            console.error(`⚠️ Google Calendar event creation failed for booking ${booking.id}:`, calendarError);
+            // Booking remains CONFIRMED.
+            // Calendar failure must not undo the booking.
+        }
+        return booking;
     }
     // =========================================================
     // MEMBERSHIP CREDIT SUMMARY
@@ -1655,11 +1810,11 @@ class BookingService {
              * cannot restore the same credit twice.
              */
             await tx.$queryRaw `
-      SELECT id
-      FROM "Booking"
-      WHERE id = ${bookingId}
-      FOR UPDATE
-    `;
+        SELECT id
+        FROM "Booking"
+        WHERE id = ${bookingId}
+        FOR UPDATE
+      `;
             const booking = await tx.booking.findUnique({
                 where: {
                     id: bookingId,
@@ -1783,6 +1938,9 @@ class BookingService {
                     availableSlots: Math.max(sessionCapacity - confirmedBookingCount, 0),
                 },
             };
+        }, {
+            maxWait: 10000,
+            timeout: 15000,
         });
         // =====================================================
         // GOOGLE CALENDAR CLEANUP
