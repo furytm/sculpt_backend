@@ -477,6 +477,72 @@ async initiateRenewal(
       targetMembership,
   };
 }
+
+private calculateMembershipExpiry(
+  startDate: Date,
+  duration: string,
+  period: string
+): Date {
+  const expiryDate = new Date(startDate);
+
+  const durationValue = Number(duration);
+
+  if (Number.isNaN(durationValue)) {
+    throw new Error(
+      `Invalid membership duration: ${duration}`
+    );
+  }
+
+  switch (period.toLowerCase()) {
+    case "day":
+    case "days":
+      expiryDate.setDate(
+        expiryDate.getDate() + durationValue
+      );
+      break;
+
+    case "week":
+    case "weeks":
+      expiryDate.setDate(
+        expiryDate.getDate() + durationValue * 7
+      );
+      break;
+
+    case "month":
+    case "months":
+      expiryDate.setMonth(
+        expiryDate.getMonth() + durationValue
+      );
+      break;
+
+    case "quarter":
+    case "quarters":
+      expiryDate.setMonth(
+        expiryDate.getMonth() + durationValue * 3
+      );
+      break;
+
+    case "year":
+    case "years":
+      expiryDate.setFullYear(
+        expiryDate.getFullYear() + durationValue
+      );
+      break;
+
+    default:
+      throw new Error(
+        `Unsupported membership period: ${period}`
+      );
+  }
+
+  return expiryDate;
+}
+
+private getMembershipCredits(
+  classLimit: number | null
+): number | null {
+  return classLimit;
+}
 async completeMembershipPurchase(
   paymentReference: string
 ) {
