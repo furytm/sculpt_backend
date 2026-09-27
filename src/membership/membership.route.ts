@@ -1,5 +1,5 @@
 import { Router } from "express";
-
+import authenticate from "../middleware/authenticate.js";
 import membershipController from "./membership.controller.js";
 
 const router = Router();
@@ -21,7 +21,17 @@ console.log("membership.route.ts loaded");
 router.get("/test", (req, res) => {
   res.send("Membership routes working");
 });
+router.post(
+  "/upgrade",
+  authenticate,
+  membershipController.upgradeMembership
+);
 
+router.post(
+  "/renew",
+  authenticate,
+  membershipController.renewMembership
+);
 /**
  * @openapi
  * /api/memberships:

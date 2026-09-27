@@ -64,6 +64,18 @@ const router = Router();
  */
 router.post("/", bookingController.createBooking);
 
+router.get(
+  "/:bookingId/receipt",
+  authenticate,
+  bookingController.downloadPaymentReceipt
+);
+
+router.get(
+  "/:bookingId/voucher",
+  authenticate,
+  bookingController.downloadBookingVoucher
+);
+
 // =========================================================
 // AVAILABILITY
 // =========================================================

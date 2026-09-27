@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import bookingService from "./booking.service.js";
+import { bookingDocumentsService } from "./booking-documents.service.js";
 
 class BookingController {
   // =========================================================
@@ -656,6 +657,88 @@ const reference = String(req.params.reference);
       });
     }
   }
+
+  async downloadPaymentReceipt(
+  req: Request,
+  res: Response
+) {
+  try {
+   const bookingId = String(req.params.bookingId);
+
+    const userId =
+      req.user?.userId;
+
+    const result =
+      await bookingDocumentsService.getBookingReceipt(
+        bookingId,
+        userId
+      );
+
+    res.setHeader(
+      "Content-Type",
+      "application/pdf"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${result.filename}"`
+    );
+
+    return res.send(result.pdf);
+  } catch (error: any) {
+    console.error(
+      "Download receipt error:",
+      error
+    );
+
+    return res.status(400).json({
+      message:
+        error?.message ||
+        "Unable to download payment receipt.",
+    });
+  }
+}
+
+async downloadBookingVoucher(
+  req: Request,
+  res: Response
+) {
+  try {
+  const bookingId = String(req.params.bookingId);
+
+    const userId =
+      req.user?.userId;
+
+    const result =
+      await bookingDocumentsService.getBookingVoucher(
+        bookingId,
+        userId
+      );
+
+    res.setHeader(
+      "Content-Type",
+      "application/pdf"
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${result.filename}"`
+    );
+
+    return res.send(result.pdf);
+  } catch (error: any) {
+    console.error(
+      "Download voucher error:",
+      error
+    );
+
+    return res.status(400).json({
+      message:
+        error?.message ||
+        "Unable to download booking voucher.",
+    });
+  }
+}
 }
 
 export default new BookingController();

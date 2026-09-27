@@ -1,3 +1,5 @@
+import prisma  from "../config/prisma.js";
+import  membershipService  from "../membership/membership.service.js";
 import { Request, Response } from "express";
 import paymentService from "./payment.service.js";
 import bookingService from "../booking/booking.service.js";
@@ -65,46 +67,65 @@ class PaymentController {
   // This restores the old working Sculpt LAB flow.
   // =========================================================
 
-  async callback(req: Request, res: Response) {
-    try {
-      const { reference } = req.query;
+async callback(req: Request, res: Response) {
+  try {
+    const { reference } = req.query;
 
-      if (
-        !reference ||
-        typeof reference !== "string"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Payment reference is required.",
-        });
-      }
+    if (
+      !reference ||
+      typeof reference !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
 
-      // -------------------------------------------------------
-      // MARK BOOKING AS PAID
-      // -------------------------------------------------------
+    // -------------------------------------------------------
+    // CHECK MEMBERSHIP PURCHASE FIRST
+    // -------------------------------------------------------
 
-      await bookingService.markBookingPaid(reference);
+    const membershipPurchase =
+      await prisma.membershipPurchase.findUnique({
+        where: {
+          paymentReference: reference,
+        },
+      });
 
-      // -------------------------------------------------------
-      // REDIRECT TO FRONTEND
-      // -------------------------------------------------------
+    if (membershipPurchase) {
+      await membershipService.completeMembershipPurchase(
+        reference
+      );
 
       return res.redirect(
-        `${process.env.FRONTEND_URL}/confirmation?status=success&reference=${encodeURIComponent(
+        `${process.env.FRONTEND_URL}/membership/success?status=success&reference=${encodeURIComponent(
           reference
         )}`
       );
-    } catch (error) {
-      console.error(
-        "Paymish Callback Error:",
-        error
-      );
-
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/confirmation?payment=failed`
-      );
     }
+
+    // -------------------------------------------------------
+    // OTHERWISE, THIS IS A NORMAL BOOKING PAYMENT
+    // -------------------------------------------------------
+
+    await bookingService.markBookingPaid(reference);
+
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/confirmation?status=success&reference=${encodeURIComponent(
+        reference
+      )}`
+    );
+  } catch (error) {
+    console.error(
+      "Paymish Callback Error:",
+      error
+    );
+
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/confirmation?payment=failed`
+    );
   }
+}
 
   // =========================================================
   // WEBHOOK

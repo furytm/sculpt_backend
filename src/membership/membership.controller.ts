@@ -130,6 +130,89 @@ class MembershipController {
       });
     }
   }
+
+
+  async upgradeMembership(req: Request, res: Response) {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        message: "Authentication required.",
+      });
+    }
+
+    const { membershipId } = req.body;
+
+    if (!membershipId) {
+      return res.status(400).json({
+        message:
+          "Target membership ID is required.",
+      });
+    }
+
+    const result =
+      await membershipService.initiateUpgrade(
+        userId,
+        membershipId
+      );
+
+    return res.status(200).json({
+      message:
+        "Membership upgrade payment initialized.",
+      ...result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Upgrade membership error:",
+      error
+    );
+
+    return res.status(400).json({
+      message:
+        error?.message ||
+        "Unable to initialize membership upgrade.",
+    });
+  }
+}
+
+async renewMembership(req: Request, res: Response) {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        message: "Authentication required.",
+      });
+    }
+
+    const { membershipId } = req.body;
+
+    const result =
+      await membershipService.initiateRenewal(
+        userId,
+        membershipId
+      );
+
+    return res.status(200).json({
+      message:
+        "Membership renewal payment initialized.",
+      ...result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Renew membership error:",
+      error
+    );
+
+    return res.status(400).json({
+      message:
+        error?.message ||
+        "Unable to initialize membership renewal.",
+    });
+  }
+}
+
 }
 
 export default new MembershipController();

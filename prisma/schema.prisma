@@ -55,6 +55,32 @@ model Booking {
   @@index([bookingStatus])
 }
 
+
+enum MembershipPurchaseType {
+  NEW
+  RENEWAL
+  UPGRADE
+}
+
+model MembershipPurchase {
+  id                   String                  @id @default(cuid())
+  userId               String
+  membershipId         String
+  previousMembershipId String?
+  type                 MembershipPurchaseType
+
+  amount               Int
+  paymentReference     String                  @unique
+  paymentStatus        PaymentStatus            @default(PENDING)
+
+  carriedCredits       Int                     @default(0)
+
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  membership            Membership              @relation(fields: [membershipId], references: [id])
+}
 model HealthSafetyForm {
   id String @id @default(cuid())
 
@@ -236,6 +262,7 @@ model User {
   memberSchedules   MemberSchedule[]
   memberships       MemberMembership[]
   healthSafetyForms HealthSafetyForm[]
+  membershipPurchases MembershipPurchase[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -305,6 +332,7 @@ model Membership {
 
   bookings          Booking[]
   memberMemberships MemberMembership[]
+  membershipPurchases MembershipPurchase[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

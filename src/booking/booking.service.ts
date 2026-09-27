@@ -3394,6 +3394,8 @@ async cancelBooking(bookingId: string, userId: string) {
 
   return result;
 }
+
+
 }
 
 export default new BookingService();
