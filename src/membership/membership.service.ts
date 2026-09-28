@@ -284,43 +284,16 @@ async initiateUpgrade(
    * REUSE EXISTING PENDING UPGRADE
    * ==================================================
    */
-  if (existingPendingPurchase) {
-    const payment =
-      await paymentService.initializeTransaction({
-        email: user.email,
-
-        amount:
-          existingPendingPurchase.amount,
-
-        reference:
-          existingPendingPurchase.paymentReference,
-      });
-
-    return {
-      purchaseId:
-        existingPendingPurchase.id,
-
-      reference:
-        payment.data.reference ??
-        existingPendingPurchase.paymentReference,
-
-      authorizationUrl:
-        payment.data.authorization_url,
-
-      amount:
-        existingPendingPurchase.amount,
-
-      carriedCredits:
-        existingPendingPurchase.carriedCredits,
-
-      newCreditsTotal,
-
-      membership:
-        targetMembership,
-
-      reusedPendingPurchase: true,
-    };
-  }
+if (existingPendingPurchase) {
+  await prisma.membershipPurchase.update({
+    where: {
+      id: existingPendingPurchase.id,
+    },
+    data: {
+      paymentStatus: PaymentStatus.FAILED,
+    },
+  });
+}
 
   /*
    * ==================================================
@@ -501,38 +474,16 @@ async initiateRenewal(
    *
    * Reuse the existing purchase and reference.
    */
-  if (existingPendingPurchase) {
-    const payment =
-      await paymentService.initializeTransaction({
-        email: user.email,
-
-        amount:
-          existingPendingPurchase.amount,
-
-        reference:
-          existingPendingPurchase.paymentReference,
-      });
-
-    return {
-      purchaseId:
-        existingPendingPurchase.id,
-
-      reference:
-        payment.data.reference ??
-        existingPendingPurchase.paymentReference,
-
-      authorizationUrl:
-        payment.data.authorization_url,
-
-      amount:
-        existingPendingPurchase.amount,
-
-      membership:
-        targetMembership,
-
-      reusedPendingPurchase: true,
-    };
-  }
+if (existingPendingPurchase) {
+  await prisma.membershipPurchase.update({
+    where: {
+      id: existingPendingPurchase.id,
+    },
+    data: {
+      paymentStatus: PaymentStatus.FAILED,
+    },
+  });
+}
 
   /*
    * ==================================================
