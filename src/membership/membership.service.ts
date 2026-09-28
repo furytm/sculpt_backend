@@ -150,7 +150,9 @@ async initiateUpgrade(
   }
 
   if (!targetMembershipId) {
-    throw new Error("Target membership is required.");
+    throw new Error(
+      "Target membership is required."
+    );
   }
 
   const targetMembership =
@@ -161,7 +163,9 @@ async initiateUpgrade(
     });
 
   if (!targetMembership) {
-    throw new Error("Target membership not found.");
+    throw new Error(
+      "Target membership not found."
+    );
   }
 
   if (!targetMembership.isActive) {
@@ -170,6 +174,9 @@ async initiateUpgrade(
     );
   }
 
+  /*
+   * Find the member's active membership.
+   */
   const currentMembership =
     await prisma.memberMembership.findFirst({
       where: {
@@ -216,16 +223,6 @@ async initiateUpgrade(
 
   /*
    * Calculate unused credits.
-   *
-   * Example:
-   *
-   * Old plan = 10
-   * Used      = 5
-   * Remaining = 5
-   *
-   * New plan = 20
-   *
-   * New total = 20 + 5 = 25
    */
   const carriedCredits =
     currentMembership.creditsTotal === null
@@ -241,6 +238,95 @@ async initiateUpgrade(
       ? null
       : targetMembership.classLimit +
         carriedCredits;
+
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+
+      select: {
+        email: true,
+      },
+    });
+
+  if (!user) {
+    throw new Error("User not found.");
+  }
+
+  /*
+   * ==================================================
+   * CHECK FOR EXISTING PENDING UPGRADE
+   * ==================================================
+   */
+  const existingPendingPurchase =
+    await prisma.membershipPurchase.findFirst({
+      where: {
+        userId,
+
+        membershipId:
+          targetMembership.id,
+
+        type:
+          MembershipPurchaseType.UPGRADE,
+
+        paymentStatus:
+          PaymentStatus.PENDING,
+      },
+
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+  /*
+   * ==================================================
+   * REUSE EXISTING PENDING UPGRADE
+   * ==================================================
+   */
+  if (existingPendingPurchase) {
+    const payment =
+      await paymentService.initializeTransaction({
+        email: user.email,
+
+        amount:
+          existingPendingPurchase.amount,
+
+        reference:
+          existingPendingPurchase.paymentReference,
+      });
+
+    return {
+      purchaseId:
+        existingPendingPurchase.id,
+
+      reference:
+        payment.data.reference ??
+        existingPendingPurchase.paymentReference,
+
+      authorizationUrl:
+        payment.data.authorization_url,
+
+      amount:
+        existingPendingPurchase.amount,
+
+      carriedCredits:
+        existingPendingPurchase.carriedCredits,
+
+      newCreditsTotal,
+
+      membership:
+        targetMembership,
+
+      reusedPendingPurchase: true,
+    };
+  }
+
+  /*
+   * ==================================================
+   * CREATE NEW UPGRADE PURCHASE
+   * ==================================================
+   */
 
   const paymentReference =
     `SL-UPGRADE-${Date.now()}`;
@@ -271,21 +357,6 @@ async initiateUpgrade(
       },
     });
 
-  const user =
-    await prisma.user.findUnique({
-      where: {
-        id: userId,
-      },
-
-      select: {
-        email: true,
-      },
-    });
-
-  if (!user) {
-    throw new Error("User not found.");
-  }
-
   const payment =
     await paymentService.initializeTransaction({
       email: user.email,
@@ -298,7 +369,8 @@ async initiateUpgrade(
     });
 
   return {
-    purchaseId: purchase.id,
+    purchaseId:
+      purchase.id,
 
     reference:
       payment.data.reference ??
@@ -314,7 +386,10 @@ async initiateUpgrade(
 
     newCreditsTotal,
 
-    membership: targetMembership,
+    membership:
+      targetMembership,
+
+    reusedPendingPurchase: false,
   };
 }
 
@@ -327,7 +402,7 @@ async initiateRenewal(
   }
 
   /*
-   * Find the member's current/latest membership.
+   * Find the member's latest membership.
    */
   const currentMembership =
     await prisma.memberMembership.findFirst({
@@ -351,10 +426,8 @@ async initiateRenewal(
   }
 
   /*
-   * If frontend supplies a membershipId,
-   * use that membership as the renewal target.
-   *
-   * Otherwise renew the member's existing plan.
+   * Renewal always uses the member's existing
+   * membership unless a membershipId was explicitly supplied.
    */
   const targetMembershipId =
     membershipId ??
@@ -380,7 +453,11 @@ async initiateRenewal(
   }
 
   /*
-   * Prevent renewal of an already pending renewal.
+   * Find an existing pending renewal.
+   *
+   * Do NOT block the user.
+   *
+   * If one exists, reuse it.
    */
   const existingPendingPurchase =
     await prisma.membershipPurchase.findFirst({
@@ -396,13 +473,72 @@ async initiateRenewal(
         paymentStatus:
           PaymentStatus.PENDING,
       },
+
+      orderBy: {
+        createdAt: "desc",
+      },
     });
 
-  if (existingPendingPurchase) {
-    throw new Error(
-      "You already have a pending renewal payment."
-    );
+  const user =
+    await prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+
+      select: {
+        email: true,
+      },
+    });
+
+  if (!user) {
+    throw new Error("User not found.");
   }
+
+  /*
+   * ==================================================
+   * EXISTING PENDING RENEWAL
+   * ==================================================
+   *
+   * Reuse the existing purchase and reference.
+   */
+  if (existingPendingPurchase) {
+    const payment =
+      await paymentService.initializeTransaction({
+        email: user.email,
+
+        amount:
+          existingPendingPurchase.amount,
+
+        reference:
+          existingPendingPurchase.paymentReference,
+      });
+
+    return {
+      purchaseId:
+        existingPendingPurchase.id,
+
+      reference:
+        payment.data.reference ??
+        existingPendingPurchase.paymentReference,
+
+      authorizationUrl:
+        payment.data.authorization_url,
+
+      amount:
+        existingPendingPurchase.amount,
+
+      membership:
+        targetMembership,
+
+      reusedPendingPurchase: true,
+    };
+  }
+
+  /*
+   * ==================================================
+   * NEW RENEWAL
+   * ==================================================
+   */
 
   const paymentReference =
     `SL-RENEW-${Date.now()}`;
@@ -434,21 +570,6 @@ async initiateRenewal(
       },
     });
 
-  const user =
-    await prisma.user.findUnique({
-      where: {
-        id: userId,
-      },
-
-      select: {
-        email: true,
-      },
-    });
-
-  if (!user) {
-    throw new Error("User not found.");
-  }
-
   const payment =
     await paymentService.initializeTransaction({
       email: user.email,
@@ -461,7 +582,8 @@ async initiateRenewal(
     });
 
   return {
-    purchaseId: purchase.id,
+    purchaseId:
+      purchase.id,
 
     reference:
       payment.data.reference ??
@@ -475,6 +597,8 @@ async initiateRenewal(
 
     membership:
       targetMembership,
+
+    reusedPendingPurchase: false,
   };
 }
 

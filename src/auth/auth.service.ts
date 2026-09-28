@@ -328,6 +328,8 @@ async register(data: RegisterDto) {
         createdAt: "desc",
       },
     });
+    console.log("JWT ACCESS SECRET:", !!process.env.JWT_ACCESS_SECRET);
+console.log("JWT REFRESH SECRET:", !!process.env.JWT_REFRESH_SECRET);
 
   // ---------------------------------------------------------
   // Generate JWT tokens
