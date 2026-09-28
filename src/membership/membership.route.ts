@@ -47,6 +47,11 @@ router.post(
  *         description: Failed to retrieve memberships
  */
 router.get("/", membershipController.getMemberships);
+router.get(
+  "/purchase/:reference",
+  authenticate,
+  membershipController.getMembershipPurchase
+);
 
 /**
  * @openapi

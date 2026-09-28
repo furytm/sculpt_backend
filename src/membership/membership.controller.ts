@@ -213,6 +213,61 @@ async renewMembership(req: Request, res: Response) {
   }
 }
 
+async getMembershipPurchase(
+  req: Request<{ reference: string }>,
+  res: Response
+) {
+  try {
+    const userId = req.user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    const { reference } = req.params;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
+
+    const result =
+      await membershipService.getMembershipPurchase(
+        userId,
+        reference
+      );
+
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: "Membership purchase not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Get Membership Purchase Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to retrieve membership purchase.",
+    });
+  }
+}
+
 }
 
 export default new MembershipController();

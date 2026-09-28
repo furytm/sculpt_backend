@@ -92,17 +92,22 @@ async callback(req: Request, res: Response) {
         },
       });
 
-    if (membershipPurchase) {
-      await membershipService.completeMembershipPurchase(
-        reference
-      );
+  if (membershipPurchase) {
+  await membershipService.completeMembershipPurchase(
+    reference
+  );
 
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/membership/success?status=success&reference=${encodeURIComponent(
-          reference
-        )}`
-      );
-    }
+  const mode =
+    membershipPurchase.type === "UPGRADE"
+      ? "upgrade"
+      : "renew";
+
+  return res.redirect(
+    `${process.env.FRONTEND_URL}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(
+      reference
+    )}`
+  );
+}
 
     // -------------------------------------------------------
     // OTHERWISE, THIS IS A NORMAL BOOKING PAYMENT

@@ -911,6 +911,81 @@ async completeMembershipPurchase(
     }
   );
 }
+
+async getMembershipPurchase(
+  userId: string,
+  paymentReference: string
+) {
+  const purchase =
+    await prisma.membershipPurchase.findFirst({
+      where: {
+        userId,
+        paymentReference,
+      },
+      include: {
+        membership: true,
+      },
+    });
+
+  if (!purchase) {
+    return null;
+  }
+
+  const memberMembership =
+    await prisma.memberMembership.findFirst({
+      where: {
+        userId,
+        membershipId: purchase.membershipId,
+        startDate: {
+          gte: purchase.createdAt,
+        },
+      },
+      orderBy: {
+        startDate: "desc",
+      },
+    });
+
+  return {
+    purchase: {
+      id: purchase.id,
+      paymentReference:
+        purchase.paymentReference,
+      type: purchase.type,
+      amount: purchase.amount,
+      paymentStatus:
+        purchase.paymentStatus,
+      carriedCredits:
+        purchase.carriedCredits,
+      createdAt:
+        purchase.createdAt,
+    },
+
+    membership: purchase.membership,
+
+    memberMembership: memberMembership
+      ? {
+          id: memberMembership.id,
+          status: memberMembership.status,
+          startDate:
+            memberMembership.startDate,
+          expiryDate:
+            memberMembership.expiryDate,
+          creditsTotal:
+            memberMembership.creditsTotal,
+          creditsUsed:
+            memberMembership.creditsUsed,
+          remainingCredits:
+            memberMembership.creditsTotal === null
+              ? null
+              : Math.max(
+                  memberMembership.creditsTotal -
+                    memberMembership.creditsUsed,
+                  0
+                ),
+        }
+      : null,
+  };
+}
 }
 
 export default new MembershipService();
