@@ -69,18 +69,21 @@ class PaymentController {
 
 async callback(req: Request, res: Response) {
   try {
+    console.log("========== PAYMISH CALLBACK ==========");
+    console.log("QUERY:", req.query);
+    console.log("FULL URL:", req.originalUrl);
+    console.log("======================================");
+
     const { reference } = req.query;
 
-    if (
-      !reference ||
-      typeof reference !== "string"
-    ) {
+    if (!reference || typeof reference !== "string") {
       return res.status(400).json({
         success: false,
         message: "Payment reference is required.",
       });
     }
 
+    // keep the rest of your existing callback here
     // -------------------------------------------------------
     // CHECK MEMBERSHIP PURCHASE FIRST
     // -------------------------------------------------------
