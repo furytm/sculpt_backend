@@ -109,6 +109,94 @@ class MembershipController {
             });
         }
     }
+    async upgradeMembership(req, res) {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({
+                    message: "Authentication required.",
+                });
+            }
+            const { membershipId } = req.body;
+            if (!membershipId) {
+                return res.status(400).json({
+                    message: "Target membership ID is required.",
+                });
+            }
+            const result = await membershipService.initiateUpgrade(userId, membershipId);
+            return res.status(200).json({
+                message: "Membership upgrade payment initialized.",
+                ...result,
+            });
+        }
+        catch (error) {
+            console.error("Upgrade membership error:", error);
+            return res.status(400).json({
+                message: error?.message ||
+                    "Unable to initialize membership upgrade.",
+            });
+        }
+    }
+    async renewMembership(req, res) {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({
+                    message: "Authentication required.",
+                });
+            }
+            const { membershipId } = req.body;
+            const result = await membershipService.initiateRenewal(userId, membershipId);
+            return res.status(200).json({
+                message: "Membership renewal payment initialized.",
+                ...result,
+            });
+        }
+        catch (error) {
+            console.error("Renew membership error:", error);
+            return res.status(400).json({
+                message: error?.message ||
+                    "Unable to initialize membership renewal.",
+            });
+        }
+    }
+    async getMembershipPurchase(req, res) {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Authentication required.",
+                });
+            }
+            const { reference } = req.params;
+            if (!reference) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment reference is required.",
+                });
+            }
+            const result = await membershipService.getMembershipPurchase(userId, reference);
+            if (!result) {
+                return res.status(404).json({
+                    success: false,
+                    message: "Membership purchase not found.",
+                });
+            }
+            return res.status(200).json({
+                success: true,
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error("Get Membership Purchase Error:", error);
+            return res.status(500).json({
+                success: false,
+                message: error?.message ||
+                    "Failed to retrieve membership purchase.",
+            });
+        }
+    }
 }
 export default new MembershipController();
 //# sourceMappingURL=membership.controller.js.map

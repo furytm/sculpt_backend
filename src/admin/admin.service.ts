@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import {
   BookingStatus,
   PaymentMethod,
@@ -860,6 +861,112 @@ async rejectOfflinePayment(
       reason ||
       "Offline payment was not confirmed.",
   };
+}
+
+async createOfflineMember(data: {
+  fullName?: string;
+  email?: string;
+  phone?: string;
+  membershipId: string;
+}) {
+  const fullName = data.fullName?.trim() || null;
+  const email = data.email?.trim().toLowerCase() || null;
+  const phone = data.phone?.trim() || null;
+
+  if (!data.membershipId) {
+    throw new Error("Membership ID is required.");
+  }
+
+  // =====================================================
+  // GET MEMBERSHIP
+  // =====================================================
+
+  const membership = await prisma.membership.findUnique({
+    where: {
+      id: data.membershipId,
+    },
+  });
+
+  if (!membership) {
+    throw new Error("Membership not found.");
+  }
+
+  if (!membership.isActive) {
+    throw new Error("This membership is not active.");
+  }
+
+  // =====================================================
+  // CREATE OFFLINE BOOKING
+  // =====================================================
+
+  const paymentReference =
+    `OFFLINE-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+
+  const booking = await prisma.booking.create({
+    data: {
+      fullName,
+      email,
+      phone,
+      membershipId: membership.id,
+      amount: membership.price,
+      paymentReference,
+      paymentStatus: PaymentStatus.PAID,
+      bookingStatus: BookingStatus.CONFIRMED,
+      paymentMethod: PaymentMethod.OFFLINE,
+    },
+  });
+
+  try {
+    // =====================================================
+    // CREATE MEMBERSHIP + ACTIVATION
+    // =====================================================
+
+    const activation =
+      await membershipActivationService.createActivationForBooking(
+        booking.id
+      );
+
+    // =====================================================
+    // RETURN RESULT
+    // =====================================================
+
+    return {
+      booking: {
+        id: booking.id,
+        paymentReference: booking.paymentReference,
+        fullName: booking.fullName,
+        email: booking.email,
+        phone: booking.phone,
+        amount: booking.amount,
+        paymentStatus: booking.paymentStatus,
+        bookingStatus: booking.bookingStatus,
+        paymentMethod: booking.paymentMethod,
+      },
+
+      membership: {
+        id: membership.id,
+        name: membership.name,
+        price: membership.price,
+        classLimit: membership.classLimit,
+        duration: membership.duration,
+        type: membership.type,
+      },
+
+      activation,
+    };
+  } catch (error) {
+    // =====================================================
+    // ROLLBACK BOOKING IF ACTIVATION CREATION FAILS
+    // =====================================================
+
+    await prisma.booking.delete({
+      where: {
+        id: booking.id,
+      },
+    });
+
+    throw error;
+  }
 }
 }
 

@@ -361,6 +361,65 @@ async deleteBooking(req: Request, res: Response) {
     });
   }
 }
+
+async createOfflineMember(req: Request, res: Response) {
+  try {
+    const {
+      fullName,
+      email,
+      phone,
+      membershipId,
+    } = req.body;
+
+    if (!membershipId) {
+      return res.status(400).json({
+        success: false,
+        message: "Membership ID is required.",
+      });
+    }
+
+    const result =
+      await adminService.createOfflineMember({
+        fullName,
+        email,
+        phone,
+        membershipId,
+      });
+
+    return res.status(201).json({
+      success: true,
+      message: email
+        ? "Offline member created and activation email sent."
+        : "Offline member created. No email was supplied, so use the activation link to complete registration.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Create Offline Member Error:",
+      error
+    );
+
+    const message =
+      error?.message ||
+      "Failed to create offline member.";
+
+    if (
+      message === "Membership ID is required." ||
+      message === "Membership not found." ||
+      message === "This membership is not active."
+    ) {
+      return res.status(400).json({
+        success: false,
+        message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+}
 }
 
 export const adminController =

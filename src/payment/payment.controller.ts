@@ -139,26 +139,39 @@ async callback(req: Request, res: Response) {
   // WEBHOOK
   // =========================================================
 
-  async webhook(req: Request, res: Response) {
-    try {
-      const response =
-        await paymentService.handleWebhook(
-          req.body
-        );
+async webhook(req: Request, res: Response) {
+  try {
+    const signature =
+      req.headers["x-paymish-signature"];
 
-      return res.status(200).json(response);
-    } catch (error) {
-      console.error(
-        "Paymish Webhook Error:",
-        error
+    const signatureValue =
+      Array.isArray(signature)
+        ? signature[0]
+        : signature;
+
+    const rawBody = req.body as Buffer;
+
+    const response =
+      await paymentService.handleWebhook(
+        rawBody,
+        signatureValue
       );
 
-      return res.status(500).json({
-        success: false,
-        message: "Webhook processing failed.",
-      });
-    }
+    return res.status(200).json(response);
+  } catch (error: any) {
+    console.error(
+      "Paymish Webhook Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Webhook processing failed.",
+    });
   }
+}
 }
 
 export default new PaymentController();

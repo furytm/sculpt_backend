@@ -6,9 +6,10 @@ export interface VerifyActivationDto {
 export interface CompleteActivationDto {
   membershipNumber: string;
   activationToken: string;
-  fullName: string;
-  phone?: string;
   password: string;
+  fullName?: string;
+  email?: string;
+  phone?: string;
 }
 
 export interface ActivationResponse {

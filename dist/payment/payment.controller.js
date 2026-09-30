@@ -1,3 +1,5 @@
+import prisma from "../config/prisma.js";
+import membershipService from "../membership/membership.service.js";
 import paymentService from "./payment.service.js";
 import bookingService from "../booking/booking.service.js";
 class PaymentController {
@@ -47,21 +49,37 @@ class PaymentController {
     // =========================================================
     async callback(req, res) {
         try {
+            console.log("========== PAYMISH CALLBACK ==========");
+            console.log("QUERY:", req.query);
+            console.log("FULL URL:", req.originalUrl);
+            console.log("======================================");
             const { reference } = req.query;
-            if (!reference ||
-                typeof reference !== "string") {
+            if (!reference || typeof reference !== "string") {
                 return res.status(400).json({
                     success: false,
                     message: "Payment reference is required.",
                 });
             }
+            // keep the rest of your existing callback here
             // -------------------------------------------------------
-            // MARK BOOKING AS PAID
+            // CHECK MEMBERSHIP PURCHASE FIRST
+            // -------------------------------------------------------
+            const membershipPurchase = await prisma.membershipPurchase.findUnique({
+                where: {
+                    paymentReference: reference,
+                },
+            });
+            if (membershipPurchase) {
+                await membershipService.completeMembershipPurchase(reference);
+                const mode = membershipPurchase.type === "UPGRADE"
+                    ? "upgrade"
+                    : "renew";
+                return res.redirect(`${process.env.FRONTEND_URL}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(reference)}`);
+            }
+            // -------------------------------------------------------
+            // OTHERWISE, THIS IS A NORMAL BOOKING PAYMENT
             // -------------------------------------------------------
             await bookingService.markBookingPaid(reference);
-            // -------------------------------------------------------
-            // REDIRECT TO FRONTEND
-            // -------------------------------------------------------
             return res.redirect(`${process.env.FRONTEND_URL}/confirmation?status=success&reference=${encodeURIComponent(reference)}`);
         }
         catch (error) {
@@ -74,14 +92,20 @@ class PaymentController {
     // =========================================================
     async webhook(req, res) {
         try {
-            const response = await paymentService.handleWebhook(req.body);
+            const signature = req.headers["x-paymish-signature"];
+            const signatureValue = Array.isArray(signature)
+                ? signature[0]
+                : signature;
+            const rawBody = req.body;
+            const response = await paymentService.handleWebhook(rawBody, signatureValue);
             return res.status(200).json(response);
         }
         catch (error) {
             console.error("Paymish Webhook Error:", error);
-            return res.status(500).json({
+            return res.status(400).json({
                 success: false,
-                message: "Webhook processing failed.",
+                message: error?.message ||
+                    "Webhook processing failed.",
             });
         }
     }

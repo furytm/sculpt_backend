@@ -496,4 +496,61 @@ router.post(
   adminSessionController.reopenSession
 );
 
+// =====================================================
+// OFFLINE MEMBER ONBOARDING
+// =====================================================
+
+/**
+ * @openapi
+ * /api/admin/members/offline:
+ *   post:
+ *     tags:
+ *       - Admin
+ *       - Members
+ *     summary: Create an offline member
+ *     description: Creates a paid offline membership for a member who may not have an account yet.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - membershipId
+ *             properties:
+ *               fullName:
+ *                 type: string
+ *                 example: John Doe
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: john@example.com
+ *               phone:
+ *                 type: string
+ *                 example: 08012345678
+ *               membershipId:
+ *                 type: string
+ *                 example: cmufazfh20002veb8hhfic2te
+ *               classSessionId:
+ *                 type: string
+ *                 example: cmufd6l8x0041ve9c41tzxbin
+ *     responses:
+ *       201:
+ *         description: Offline member created successfully
+ *       400:
+ *         description: Invalid request
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Admin access required
+ */
+router.post(
+  "/members/offline",
+  authenticate,
+  requireAdmin,
+  adminController.createOfflineMember
+);
+
 export default router;

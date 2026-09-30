@@ -60,6 +60,8 @@ const router = Router();
  *         description: Membership or class session not found
  */
 router.post("/", bookingController.createBooking);
+router.get("/:bookingId/receipt", authenticate, bookingController.downloadPaymentReceipt);
+router.get("/:bookingId/voucher", authenticate, bookingController.downloadBookingVoucher);
 // =========================================================
 // AVAILABILITY
 // =========================================================

@@ -76,34 +76,90 @@ async function sendActivationEmail({ email, fullName, membershipName, membership
             html: `
           <!DOCTYPE html>
           <html>
-            <body style="margin:0;padding:0;background:#f7f5f1;font-family:Arial,sans-serif;color:#222;">
-              <div style="max-width:600px;margin:40px auto;background:#ffffff;padding:40px;border-radius:12px;">
-                
-                <h1 style="margin:0 0 24px;font-size:28px;">
+            <body
+              style="
+                margin:0;
+                padding:0;
+                background:#f7f5f1;
+                font-family:Arial,sans-serif;
+                color:#222;
+              "
+            >
+              <div
+                style="
+                  max-width:600px;
+                  margin:40px auto;
+                  background:#ffffff;
+                  padding:40px;
+                  border-radius:12px;
+                "
+              >
+                <h1
+                  style="
+                    margin:0 0 24px;
+                    font-size:28px;
+                  "
+                >
                   Welcome to Sculpt LAB
                 </h1>
 
-                <p style="font-size:16px;line-height:1.6;">
+                <p
+                  style="
+                    font-size:16px;
+                    line-height:1.6;
+                  "
+                >
                   Hi ${escapeHtml(fullName)},
                 </p>
 
-                <p style="font-size:16px;line-height:1.6;">
-                  Your payment of <strong>₦${amount.toLocaleString()}</strong>
-                  for your <strong>${escapeHtml(membershipName)}</strong>
+                <p
+                  style="
+                    font-size:16px;
+                    line-height:1.6;
+                  "
+                >
+                  Your payment of
+                  <strong>₦${amount.toLocaleString()}</strong>
+                  for your
+                  <strong>${escapeHtml(membershipName)}</strong>
                   has been confirmed.
                 </p>
 
-                <div style="margin:28px 0;padding:20px;background:#f7f5f1;border-radius:8px;">
-                  <p style="margin:0 0 8px;font-size:13px;color:#777;">
+                <div
+                  style="
+                    margin:28px 0;
+                    padding:20px;
+                    background:#f7f5f1;
+                    border-radius:8px;
+                  "
+                >
+                  <p
+                    style="
+                      margin:0 0 8px;
+                      font-size:13px;
+                      color:#777;
+                    "
+                  >
                     MEMBERSHIP NUMBER
                   </p>
 
-                  <p style="margin:0;font-size:24px;font-weight:bold;">
+                  <p
+                    style="
+                      margin:0;
+                      font-size:24px;
+                      font-weight:bold;
+                    "
+                  >
                     ${escapeHtml(membershipNumber)}
                   </p>
                 </div>
 
-                <p style="font-size:16px;line-height:1.6;">
+                <p
+                  style="
+                    font-size:16px;
+                    line-height:1.6;
+                  "
+                >
                   Your membership is ready to be activated.
                   Click the button below to create your Sculpt LAB
                   account and link your membership.
@@ -112,24 +168,50 @@ async function sendActivationEmail({ email, fullName, membershipName, membership
                 <div style="margin:32px 0;">
                   <a
                     href="${activationUrl}"
-                    style="display:inline-block;padding:14px 24px;background:#222;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;"
+                    style="
+                      display:inline-block;
+                      padding:14px 24px;
+                      background:#222;
+                      color:#fff;
+                      text-decoration:none;
+                      border-radius:6px;
+                      font-weight:bold;
+                    "
                   >
                     Activate My Membership
                   </a>
                 </div>
 
-                <p style="font-size:14px;line-height:1.6;color:#666;">
-                  Your activation link is valid for ${ACTIVATION_EXPIRY_DAYS} days.
+                <p
+                  style="
+                    font-size:14px;
+                    line-height:1.6;
+                    color:#666;
+                  "
+                >
+                  Your activation link is valid for
+                  ${ACTIVATION_EXPIRY_DAYS} days.
                 </p>
 
-                <p style="font-size:14px;line-height:1.6;color:#666;">
-                  If you did not make this payment, please contact Sculpt LAB.
+                <p
+                  style="
+                    font-size:14px;
+                    line-height:1.6;
+                    color:#666;
+                  "
+                >
+                  If you did not make this payment, please contact
+                  Sculpt LAB.
                 </p>
 
-                <p style="margin-top:32px;font-size:16px;">
+                <p
+                  style="
+                    margin-top:32px;
+                    font-size:16px;
+                  "
+                >
                   Welcome to Sculpt LAB.
                 </p>
-
               </div>
             </body>
           </html>
@@ -210,14 +292,24 @@ class MembershipActivationService {
             },
         });
         try {
-            await sendActivationEmail({
-                email: booking.email,
-                fullName: booking.fullName,
-                membershipName: booking.membership.name,
-                membershipNumber,
-                activationToken,
-                amount: booking.amount,
-            });
+            /*
+             * If the admin/customer supplied an email,
+             * send the activation email.
+             *
+             * If there is no email, the activation is still created.
+             * The admin onboarding flow can return the activation link
+             * so the admin can send it manually.
+             */
+            if (booking.email) {
+                await sendActivationEmail({
+                    email: booking.email,
+                    fullName: booking.fullName || "Sculpt LAB Member",
+                    membershipName: booking.membership.name,
+                    membershipNumber,
+                    activationToken,
+                    amount: booking.amount,
+                });
+            }
         }
         catch (error) {
             await prisma.membershipActivation.delete({
@@ -234,11 +326,18 @@ class MembershipActivationService {
             }
             throw error;
         }
+        const activationUrl = `${FRONTEND_URL}/activate` +
+            `?membership=${encodeURIComponent(membershipNumber)}` +
+            `&token=${encodeURIComponent(activationToken)}`;
         return {
             bookingId: booking.id,
             paymentReference: booking.paymentReference,
             membershipNumber,
             email: booking.email,
+            phone: booking.phone,
+            fullName: booking.fullName,
+            activationUrl,
+            emailSent: Boolean(booking.email),
         };
     }
     async verifyActivation(data) {
@@ -271,6 +370,7 @@ class MembershipActivationService {
         return {
             valid: true,
             membershipNumber: activation.membershipNumber,
+            // These may be null when the admin did not provide them.
             email: activation.booking.email,
             fullName: activation.booking.fullName,
             phone: activation.booking.phone,
@@ -301,19 +401,32 @@ class MembershipActivationService {
             throw new Error("Invalid activation token.");
         }
         const booking = activation.booking;
+        /*
+         * The member must provide an email if the admin
+         * did not already provide one.
+         */
+        const email = data.email?.trim().toLowerCase() ||
+            booking.email?.trim().toLowerCase();
+        if (!email) {
+            throw new Error("Email address is required to complete registration.");
+        }
         const hashedPassword = await bcrypt.hash(data.password, 12);
         const result = await prisma.$transaction(async (tx) => {
             let user = await tx.user.findUnique({
                 where: {
-                    email: booking.email.toLowerCase(),
+                    email,
                 },
             });
             if (!user) {
                 user = await tx.user.create({
                     data: {
-                        fullName: data.fullName || booking.fullName,
-                        email: booking.email.toLowerCase(),
-                        phone: data.phone || booking.phone,
+                        fullName: data.fullName?.trim() ||
+                            booking.fullName ||
+                            "Sculpt LAB Member",
+                        email,
+                        phone: data.phone?.trim() ||
+                            booking.phone ||
+                            null,
                         password: hashedPassword,
                         provider: AuthProvider.LOCAL,
                         role: "MEMBER",
@@ -327,8 +440,10 @@ class MembershipActivationService {
                         id: user.id,
                     },
                     data: {
-                        fullName: data.fullName || user.fullName,
-                        phone: data.phone || user.phone,
+                        fullName: data.fullName?.trim() ||
+                            user.fullName,
+                        phone: data.phone?.trim() ||
+                            user.phone,
                         ...(user.password
                             ? {}
                             : {
@@ -379,7 +494,8 @@ class MembershipActivationService {
             data: {
                 token: refreshToken,
                 userId: result.user.id,
-                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                expiresAt: new Date(Date.now() +
+                    30 * 24 * 60 * 60 * 1000),
             },
         });
         return {

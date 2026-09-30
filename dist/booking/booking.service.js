@@ -448,6 +448,9 @@ class BookingService {
         // -------------------------------------------------------
         // PAYMISH
         // -------------------------------------------------------
+        if (!booking.email) {
+            throw new Error("Email is required before initializing payment.");
+        }
         const payment = await paymentService
             .initializeTransaction({
             email: booking.email,
@@ -477,6 +480,9 @@ class BookingService {
         if (booking.bookingStatus !==
             BookingStatus.PENDING) {
             throw new Error("This booking is no longer available for payment.");
+        }
+        if (!booking.email) {
+            throw new Error("Email is required before initializing payment.");
         }
         const payment = await paymentService
             .initializeTransaction({
@@ -1161,6 +1167,10 @@ class BookingService {
                 },
             });
             if (session) {
+                if (!confirmedBooking.fullName ||
+                    !confirmedBooking.email) {
+                    throw new Error("Member name and email are required before creating the calendar event.");
+                }
                 const calendarEvent = await googleCalendarService.createBookingEvent({
                     bookingId: confirmedBooking.id,
                     bookingReference: confirmedBooking.paymentReference,
@@ -1589,6 +1599,9 @@ class BookingService {
                 },
             });
             if (session) {
+                if (!booking.fullName || !booking.email) {
+                    throw new Error("Member name and email are required before creating the calendar event.");
+                }
                 const calendarEvent = await googleCalendarService.createBookingEvent({
                     bookingId: booking.id,
                     bookingReference: booking.paymentReference,

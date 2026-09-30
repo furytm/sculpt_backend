@@ -1,4 +1,8 @@
 import axios from "axios";
+import crypto from "node:crypto";
+import prisma from "../config/prisma.js";
+import membershipService from "../membership/membership.service.js";
+import bookingService from "../booking/booking.service.js";
 class PaymentService {
     getHeaders() {
         return {
@@ -75,15 +79,109 @@ class PaymentService {
     // =========================================================
     // WEBHOOK
     // =========================================================
-    async handleWebhook(payload) {
-        console.log("========== PAYSTACK WEBHOOK ==========");
-        console.log(payload);
-        console.log("======================================");
-        // Webhook verification can be added separately.
-        // For now, transaction verification in the callback
-        // remains the source of truth.
+    async handleWebhook(rawBody, signature) {
+        const webhookSecret = process.env.PAYMISH_WEBHOOK_SECRET;
+        if (!webhookSecret) {
+            throw new Error("PAYMISH_WEBHOOK_SECRET is not configured.");
+        }
+        if (!signature) {
+            throw new Error("Paymish webhook signature is missing.");
+        }
+        // =====================================================
+        // VERIFY PAYMISH WEBHOOK SIGNATURE
+        // =====================================================
+        const expectedSignature = crypto
+            .createHmac("sha256", webhookSecret)
+            .update(rawBody)
+            .digest("hex");
+        const expectedBuffer = Buffer.from(expectedSignature, "utf8");
+        const receivedBuffer = Buffer.from(signature, "utf8");
+        if (expectedBuffer.length !==
+            receivedBuffer.length) {
+            throw new Error("Invalid Paymish webhook signature.");
+        }
+        if (!crypto.timingSafeEqual(expectedBuffer, receivedBuffer)) {
+            throw new Error("Invalid Paymish webhook signature.");
+        }
+        // =====================================================
+        // PARSE PAYLOAD AFTER SIGNATURE VERIFICATION
+        // =====================================================
+        let payload;
+        try {
+            payload = JSON.parse(rawBody.toString("utf8"));
+        }
+        catch {
+            throw new Error("Invalid Paymish webhook JSON payload.");
+        }
+        console.log("========== PAYMISH WEBHOOK ==========");
+        console.log(JSON.stringify(payload, null, 2));
+        console.log("=====================================");
+        // =====================================================
+        // CHECK EVENT
+        // =====================================================
+        const event = payload?.event;
+        if (event !== "transaction.successful") {
+            return {
+                received: true,
+                processed: false,
+                event,
+            };
+        }
+        // =====================================================
+        // GET TRANSACTION DATA
+        // =====================================================
+        const transaction = payload?.data;
+        if (!transaction) {
+            throw new Error("Paymish webhook transaction data is missing.");
+        }
+        const reference = transaction.reference;
+        if (!reference ||
+            typeof reference !== "string") {
+            throw new Error("Paymish webhook payment reference is missing.");
+        }
+        // =====================================================
+        // CHECK MEMBERSHIP PURCHASE FIRST
+        // =====================================================
+        const membershipPurchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                paymentReference: reference,
+            },
+        });
+        if (membershipPurchase) {
+            await membershipService.completeMembershipPurchase(reference);
+            return {
+                received: true,
+                processed: true,
+                type: "membership",
+                reference,
+            };
+        }
+        // =====================================================
+        // OTHERWISE CHECK NORMAL BOOKING
+        // =====================================================
+        const booking = await prisma.booking.findUnique({
+            where: {
+                paymentReference: reference,
+            },
+        });
+        if (!booking) {
+            console.warn("Paymish webhook reference does not match a Sculpt LAB booking or membership purchase:", reference);
+            return {
+                received: true,
+                processed: false,
+                reference,
+                message: "Payment reference not found.",
+            };
+        }
+        // =====================================================
+        // MARK BOOKING AS PAID
+        // =====================================================
+        await bookingService.markBookingPaid(reference);
         return {
             received: true,
+            processed: true,
+            type: "booking",
+            reference,
         };
     }
 }

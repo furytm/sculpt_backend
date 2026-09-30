@@ -62,11 +62,8 @@ if (!booking.session) {
 const session = booking.session;
   const pdf =
     await bookingPdfService.generateVoucher({
-      fullName:
-        booking.fullName,
-
-      email:
-        booking.email,
+  fullName: booking.fullName ?? "Sculpt LAB Member",
+email: booking.email ?? "Not provided",
 
       bookingReference:
         booking.paymentReference,
@@ -141,11 +138,8 @@ async getBookingReceipt(
 
   const pdf =
     await bookingPdfService.generateReceipt({
-      fullName:
-        booking.fullName,
-
-      email:
-        booking.email,
+  fullName: booking.fullName ?? "Sculpt LAB Member",
+email: booking.email ?? "Not provided",
 
       reference:
         booking.paymentReference,

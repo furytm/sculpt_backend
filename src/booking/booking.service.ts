@@ -826,6 +826,11 @@ class BookingService {
     // PAYMISH
     // -------------------------------------------------------
 
+    if (!booking.email) {
+  throw new Error(
+    "Email is required before initializing payment."
+  );
+}
     const payment =
       await paymentService
         .initializeTransaction({
@@ -888,6 +893,11 @@ class BookingService {
       );
     }
 
+    if (!booking.email) {
+  throw new Error(
+    "Email is required before initializing payment."
+  );
+}
     const payment =
       await paymentService
         .initializeTransaction({
@@ -2104,6 +2114,12 @@ class BookingService {
         });
 
       if (session) {
+        if (    !confirmedBooking.fullName ||
+    !confirmedBooking.email) {
+  throw new Error(
+    "Member name and email are required before creating the calendar event."
+  );
+}
         const calendarEvent =
           await googleCalendarService.createBookingEvent({
             bookingId:
@@ -2789,6 +2805,11 @@ async bookMemberSession(
       });
 
     if (session) {
+      if (!booking.fullName || !booking.email) {
+  throw new Error(
+    "Member name and email are required before creating the calendar event."
+  );
+}
       const calendarEvent =
         await googleCalendarService.createBookingEvent({
           bookingId:

@@ -16,6 +16,19 @@ dotenv.config();
 
 const app = express();
 
+// =====================================================
+// PAYMISH WEBHOOK
+// Must receive the raw body for HMAC signature verification
+// =====================================================
+
+app.use(
+  "/api/payments/webhook",
+  express.raw({
+    type: "application/json",
+  })
+);
+
+// Normal JSON parser for all other routes
 app.use(express.json());
 
 // Swagger MUST have /api-docs here
