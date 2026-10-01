@@ -699,6 +699,42 @@ const reference = String(req.params.reference);
   }
 }
 
+async downloadGuestPaymentReceipt(req: Request, res: Response) {
+  try {
+  const reference = Array.isArray(req.params.reference)
+  ? req.params.reference[0]
+  : req.params.reference;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
+
+    const result =
+      await bookingDocumentsService.getGuestPaymentReceipt(reference);
+
+    res.setHeader("Content-Type", "application/pdf");
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${result.filename}"`
+    );
+
+    return res.send(result.pdf);
+  } catch (error) {
+    console.error("GUEST RECEIPT ERROR:", error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to download receipt.",
+    });
+  }
+}
 async downloadBookingVoucher(
   req: Request,
   res: Response

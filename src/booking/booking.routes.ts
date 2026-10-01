@@ -64,6 +64,13 @@ const router = Router();
  */
 router.post("/", bookingController.createBooking);
 
+// Guest receipt after successful Paymish payment
+router.get(
+  "/confirmation/:reference/receipt",
+  bookingController.downloadGuestPaymentReceipt
+);
+
+// Authenticated member receipt
 router.get(
   "/:bookingId/receipt",
   authenticate,

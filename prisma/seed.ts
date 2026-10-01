@@ -261,7 +261,7 @@ const memberships = [
     name: "Single Private Session",
     description:
       "One private reformer pilates session with a dedicated instructor.",
-    price: 75000,
+    price: 10,
     period: "per session",
     classLimit: 1,
     duration: "Single",

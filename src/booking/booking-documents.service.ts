@@ -167,6 +167,45 @@ email: booking.email ?? "Not provided",
     pdf,
   };
 }
+async getGuestPaymentReceipt(reference: string) {
+  const booking = await prisma.booking.findUnique({
+    where: {
+      paymentReference: reference,
+    },
+    include: {
+      membership: true,
+      user: true,
+    },
+  });
+
+  if (!booking) {
+    throw new Error("Booking not found.");
+  }
+
+  if (booking.paymentReference !== reference) {
+    throw new Error("Invalid payment reference.");
+  }
+
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error("Payment has not been completed.");
+  }
+
+  const pdf = await bookingPdfService.generateReceipt({
+    fullName: booking.fullName ?? "Sculpt LAB Member",
+    email: booking.email ?? "Not provided",
+    reference: booking.paymentReference,
+    amount: booking.amount,
+    paymentDate: booking.updatedAt,
+    paymentMethod: booking.paymentMethod,
+    item: booking.membership?.name ?? "Sculpt LAB Membership",
+    paymentStatus: booking.paymentStatus,
+  });
+
+  return {
+    filename: `sculpt-lab-payment-receipt-${booking.paymentReference}.pdf`,
+    pdf,
+  };
+}
 }
 
 export const bookingDocumentsService =
