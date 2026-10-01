@@ -422,4 +422,5 @@ enum BookingStatus {
 enum PaymentMethod {
   PAYMISH
   OFFLINE
+  PAYSTACK
 }
