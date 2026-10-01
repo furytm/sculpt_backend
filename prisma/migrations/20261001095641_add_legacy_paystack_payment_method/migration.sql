@@ -1,2 +1,2 @@
--- AlterEnum
-ALTER TYPE "PaymentMethod" ADD VALUE 'PAYSTACK';
+-- PAYSTACK already exists in the production database.
+-- This migration exists only to keep Prisma schema history aligned.
