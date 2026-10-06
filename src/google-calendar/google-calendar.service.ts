@@ -59,87 +59,137 @@ class GoogleCalendarService {
    *
    * This is NOT recurring.
    */
-  async createBookingEvent(data: {
-    bookingId: string;
-    bookingReference: string;
+async createBookingEvent(data: {
+  bookingId: string;
+  bookingReference: string;
 
-    memberName: string;
-    memberEmail: string;
+  memberName: string;
+  memberEmail: string;
 
-    className: string;
-    tutorName: string;
+  className: string;
+  tutorName: string;
 
-    sessionDate: Date;
-    startTime: string;
-    endTime: string;
-  }) {
-    const calendar = this.getCalendar();
+  sessionDate: Date;
+  startTime: string;
+  endTime: string;
+}) {
+  const calendar = this.getCalendar();
 
-    const startDate = this.getLagosDate(
-      data.sessionDate
+  const startDate = this.getLagosDate(
+    data.sessionDate
+  );
+
+  const startDateTime =
+    this.combineDateAndTime(
+      startDate,
+      data.startTime
     );
 
-    const startDateTime =
-      this.combineDateAndTime(
-        startDate,
-        data.startTime
-      );
+  const endDateTime =
+    this.combineDateAndTime(
+      startDate,
+      data.endTime
+    );
 
-    const endDateTime =
-      this.combineDateAndTime(
-        startDate,
-        data.endTime
-      );
+  // =====================================================
+  // INSTRUCTOR EMAIL MAPPING
+  // =====================================================
 
-    const event =
-      await calendar.events.insert({
-        calendarId: GOOGLE_CALENDAR_ID!,
-        sendUpdates: "none",
+const tutorEmailMap: Record<string, string> = {
+  "hope": "hopegeorgeg@gmail.com",
+  "betty": "bettyozogbuda@gmail.com",
+};
 
-        requestBody: {
-          summary:
-            `Sculpt LAB — ${data.className}`,
+  const tutorEmail =
+    tutorEmailMap[
+      data.tutorName.trim().toLowerCase()
+    ];
 
-          description: [
-            "Sculpt LAB Class Booking",
-            "",
-            `Member: ${data.memberName}`,
-            `Email: ${data.memberEmail}`,
-            `Class: ${data.className}`,
-            `Instructor: ${data.tutorName}`,
-            `Booking Reference: ${data.bookingReference}`,
-            `Booking ID: ${data.bookingId}`,
-          ].join("\n"),
+  console.log(
+    `📅 Creating calendar event for instructor: ${data.tutorName}`
+  );
 
-          start: {
-            dateTime: startDateTime,
-            timeZone: TIMEZONE,
-          },
+  if (tutorEmail) {
+    console.log(
+      `📧 Instructor calendar invitation: ${tutorEmail}`
+    );
+  } else {
+    console.warn(
+      `⚠️ No instructor email found for tutor: ${data.tutorName}`
+    );
+  }
 
-          end: {
-            dateTime: endDateTime,
-            timeZone: TIMEZONE,
-          },
+  // =====================================================
+  // CREATE GOOGLE CALENDAR EVENT
+  // =====================================================
 
-          extendedProperties: {
-            private: {
-              sculptBookingId:
-                data.bookingId,
+  const event =
+    await calendar.events.insert({
+      calendarId: GOOGLE_CALENDAR_ID!,
 
-              sculptBookingReference:
-                data.bookingReference,
-            },
+      // Send the calendar invitation to the instructor.
+      // If no matching instructor is found, don't send
+      // any attendee notification.
+      sendUpdates:
+        tutorEmail ? "all" : "none",
+
+      requestBody: {
+        summary:
+          `Sculpt LAB — ${data.className}`,
+
+        description: [
+          "Sculpt LAB Class Booking",
+          "",
+          `Member: ${data.memberName}`,
+          `Email: ${data.memberEmail}`,
+          `Class: ${data.className}`,
+          `Instructor: ${data.tutorName}`,
+          `Booking Reference: ${data.bookingReference}`,
+          `Booking ID: ${data.bookingId}`,
+        ].join("\n"),
+
+        start: {
+          dateTime: startDateTime,
+          timeZone: TIMEZONE,
+        },
+
+        end: {
+          dateTime: endDateTime,
+          timeZone: TIMEZONE,
+        },
+
+        // =================================================
+        // INSTRUCTOR ATTENDEE
+        // =================================================
+
+        attendees: tutorEmail
+          ? [
+              {
+                email: tutorEmail,
+              },
+            ]
+          : [],
+
+        extendedProperties: {
+          private: {
+            sculptBookingId:
+              data.bookingId,
+
+            sculptBookingReference:
+              data.bookingReference,
           },
         },
-      });
+      },
+    });
 
-    return {
-      eventId: event.data.id ?? null,
+  return {
+    eventId:
+      event.data.id ?? null,
 
-      eventUrl:
-        event.data.htmlLink ?? null,
-    };
-  }
+    eventUrl:
+      event.data.htmlLink ?? null,
+  };
+}
 
   /**
    * Delete a Google Calendar event.
