@@ -58,35 +58,64 @@ class PaymentController {
       });
     }
   }
-
-  // =========================================================
-  // PAYMISH CALLBACK
-  // =========================================================
-  // IMPORTANT:
-  // We intentionally DO NOT call verifyTransaction() here.
-  // This restores the old working Sculpt LAB flow.
-  // =========================================================
-
 async callback(req: Request, res: Response) {
+  const frontendUrl = process.env.FRONTEND_URL;
+
+  const reference =
+    typeof req.query.reference === "string"
+      ? req.query.reference.trim()
+      : "";
+
   try {
     console.log("========== PAYMISH CALLBACK ==========");
-    console.log("QUERY:", req.query);
-    console.log("FULL URL:", req.originalUrl);
-    console.log("======================================");
+    console.log("REFERENCE:", reference);
 
-    const { reference } = req.query;
-
-    if (!reference || typeof reference !== "string") {
-      return res.status(400).json({
-        success: false,
-        message: "Payment reference is required.",
-      });
+    if (!frontendUrl) {
+      throw new Error("FRONTEND_URL is not configured.");
     }
 
-    // keep the rest of your existing callback here
-    // -------------------------------------------------------
-    // CHECK MEMBERSHIP PURCHASE FIRST
-    // -------------------------------------------------------
+    if (!reference) {
+      return res.redirect(
+        `${frontendUrl}/confirmation?payment=failed`
+      );
+    }
+
+    // ============================================
+    // 1. VERIFY THE PAYMENT DIRECTLY WITH PAYMISH
+    // ============================================
+
+    const verification =
+      await paymentService.verifyTransaction(reference);
+
+    console.log("PAYMISH VERIFICATION STATUS:", verification?.status);
+    console.log(
+      "PAYMISH TRANSACTION STATUS:",
+      verification?.data?.status
+    );
+
+    const transaction = verification?.data;
+
+    const isVerified =
+      verification?.status === "success" &&
+      transaction?.status?.toLowerCase() === "completed" &&
+      transaction?.reference === reference;
+
+    if (!isVerified) {
+      console.warn(
+        "Payment not verified as completed:",
+        reference
+      );
+
+      return res.redirect(
+        `${frontendUrl}/confirmation?payment=failed&reference=${encodeURIComponent(reference)}`
+      );
+    }
+
+    console.log("Payment successfully verified:", reference);
+
+    // ============================================
+    // 2. CHECK MEMBERSHIP PURCHASE
+    // ============================================
 
     const membershipPurchase =
       await prisma.membershipPurchase.findUnique({
@@ -95,42 +124,46 @@ async callback(req: Request, res: Response) {
         },
       });
 
-  if (membershipPurchase) {
-  await membershipService.completeMembershipPurchase(
-    reference
-  );
+    if (membershipPurchase) {
+      await membershipService.completeMembershipPurchase(
+        reference
+      );
 
-  const mode =
-    membershipPurchase.type === "UPGRADE"
-      ? "upgrade"
-      : "renew";
+      const mode =
+        membershipPurchase.type === "UPGRADE"
+          ? "upgrade"
+          : "renew";
 
-  return res.redirect(
-    `${process.env.FRONTEND_URL}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(
-      reference
-    )}`
-  );
-}
+      return res.redirect(
+        `${frontendUrl}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(reference)}`
+      );
+    }
 
-    // -------------------------------------------------------
-    // OTHERWISE, THIS IS A NORMAL BOOKING PAYMENT
-    // -------------------------------------------------------
+    // ============================================
+    // 3. OTHERWISE, PROCESS THE BOOKING PAYMENT
+    // ============================================
 
     await bookingService.markBookingPaid(reference);
 
     return res.redirect(
-      `${process.env.FRONTEND_URL}/confirmation?status=success&reference=${encodeURIComponent(
-        reference
-      )}`
+      `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
     );
   } catch (error) {
-    console.error(
-      "Paymish Callback Error:",
-      error
-    );
+    console.error("Paymish Callback Error:", error);
+
+    if (!frontendUrl) {
+      return res.status(500).json({
+        success: false,
+        message: "Payment callback configuration error.",
+      });
+    }
 
     return res.redirect(
-      `${process.env.FRONTEND_URL}/confirmation?payment=failed`
+      `${frontendUrl}/confirmation?payment=failed${
+        reference
+          ? `&reference=${encodeURIComponent(reference)}`
+          : ""
+      }`
     );
   }
 }
