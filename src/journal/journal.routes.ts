@@ -46,14 +46,6 @@ function handleJournalUploadError(
   next(error);
 }
 
-router.post(
-  '/upload-image',
-  authenticate,
-  requireAdmin,
-  journalImageUpload.single('image'),
-  handleJournalUploadError,
-  uploadImage,
-);
 
 
 
