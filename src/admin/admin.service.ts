@@ -41,9 +41,10 @@ class AdminService {
       },
     });
   }
+
 async getDashboard() {
   const [
-    totalMembers,
+    membersList,
     activeMemberships,
     pendingBookings,
     confirmedBookings,
@@ -53,134 +54,82 @@ async getDashboard() {
     recentBookings,
     upcomingSchedule,
   ] = await Promise.all([
-    // -------------------------------------------------------
     // TOTAL MEMBERS
-    // -------------------------------------------------------
+    // Includes registered members and eligible offline customers.
+    this.getAllMembers(),
 
-    prisma.user.count({
-      where: {
-        role: UserRole.MEMBER,
-      },
-    }),
-
-    // -------------------------------------------------------
     // ACTIVE MEMBERSHIPS
-    // -------------------------------------------------------
-
     prisma.memberMembership.count({
       where: {
         status: MembershipStatus.ACTIVE,
       },
     }),
 
-    // -------------------------------------------------------
     // PENDING BOOKINGS
-    // -------------------------------------------------------
-
     prisma.booking.count({
       where: {
         bookingStatus: BookingStatus.PENDING,
       },
     }),
 
-    // -------------------------------------------------------
     // CONFIRMED BOOKINGS
-    // -------------------------------------------------------
-
     prisma.booking.count({
       where: {
         bookingStatus: BookingStatus.CONFIRMED,
       },
     }),
 
-    // -------------------------------------------------------
     // PAID BOOKINGS
-    // -------------------------------------------------------
-
     prisma.booking.count({
       where: {
         paymentStatus: PaymentStatus.PAID,
       },
     }),
 
-    // -------------------------------------------------------
     // PENDING PAYMENTS
-    // -------------------------------------------------------
-
     prisma.booking.count({
       where: {
         paymentStatus: PaymentStatus.PENDING,
       },
     }),
 
-    // -------------------------------------------------------
     // OFFLINE PAYMENTS
-    // -------------------------------------------------------
-    //
-    // This counts offline bookings specifically.
-    // The admin can then click Payments to see
-    // which ones are pending/paid.
-    //
-
     prisma.booking.count({
       where: {
         paymentMethod: PaymentMethod.OFFLINE,
       },
     }),
 
-    // -------------------------------------------------------
     // RECENT BOOKINGS
-    // -------------------------------------------------------
-    //
-    // Get the latest 5 bookings with enough information
-    // for the admin dashboard.
-    //
-
     prisma.booking.findMany({
       take: 5,
-
       orderBy: {
-        createdAt: "desc",
+        createdAt: 'desc',
       },
-
       include: {
         membership: true,
-
         user: true,
-
         memberMembership: true,
-
         healthSafetyForm: true,
-
         memberSchedules: {
           where: {
             isActive: true,
           },
-
           include: {
             schedule: true,
           },
-
           orderBy: {
-            createdAt: "asc",
+            createdAt: 'asc',
           },
         },
       },
     }),
 
-    // -------------------------------------------------------
     // UPCOMING / ACTIVE SCHEDULES
-    // -------------------------------------------------------
-    //
-    // Schedule does not contain a calendar date.
-    // Therefore we return the active weekly schedule.
-    //
-
     prisma.schedule.findMany({
       where: {
         isActive: true,
       },
-
       include: {
         _count: {
           select: {
@@ -188,22 +137,21 @@ async getDashboard() {
           },
         },
       },
-
       orderBy: [
         {
-          dayOfWeek: "asc",
+          dayOfWeek: 'asc',
         },
         {
-          startTime: "asc",
+          startTime: 'asc',
         },
       ],
     }),
   ]);
 
-  // ---------------------------------------------------------
-  // WEEKDAY ORDER
-  // ---------------------------------------------------------
+  // Calculate unique customers returned by getAllMembers().
+  const totalMembers = membersList.length;
 
+  // WEEKDAY ORDER
   const dayOrder: Record<string, number> = {
     MONDAY: 1,
     TUESDAY: 2,
@@ -216,22 +164,16 @@ async getDashboard() {
 
   upcomingSchedule.sort((a, b) => {
     const dayDifference =
-      dayOrder[a.dayOfWeek] -
-      dayOrder[b.dayOfWeek];
+      dayOrder[a.dayOfWeek] - dayOrder[b.dayOfWeek];
 
     if (dayDifference !== 0) {
       return dayDifference;
     }
 
-    return a.startTime.localeCompare(
-      b.startTime
-    );
+    return a.startTime.localeCompare(b.startTime);
   });
 
-  // ---------------------------------------------------------
   // RETURN DASHBOARD DATA
-  // ---------------------------------------------------------
-
   return {
     stats: {
       totalMembers,
@@ -245,10 +187,10 @@ async getDashboard() {
 
     recentBookings,
 
-    upcomingSchedule:
-      upcomingSchedule.slice(0, 10),
+    upcomingSchedule: upcomingSchedule.slice(0, 10),
   };
 }
+
 
 async getAllBookings() {
   const bookings = await prisma.booking.findMany({
@@ -968,6 +910,136 @@ async createOfflineMember(data: {
     throw error;
   }
 }
+
+
+async getAllMembers() {
+  const now = new Date();
+
+  // Registered members, including those with no current membership.
+  const users = await prisma.user.findMany({
+    where: {
+      role: UserRole.MEMBER,
+    },
+    include: {
+      memberships: {
+        include: {
+          membership: true,
+          activation: true,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+
+  const registeredMembers = users.map((user) => {
+    const currentMembership =
+      user.memberships.find(
+        (item) =>
+          item.status === MembershipStatus.ACTIVE &&
+          (!item.expiryDate || item.expiryDate > now),
+      ) ?? user.memberships[0];
+
+    return {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      membership: currentMembership?.membership ?? null,
+      membershipStatus: currentMembership?.status ?? 'NO_MEMBERSHIP',
+      membershipNumber:
+        currentMembership?.activation?.membershipNumber ?? null,
+      expiryDate: currentMembership?.expiryDate ?? null,
+      createdAt: currentMembership?.createdAt ?? user.createdAt,
+    };
+  });
+
+  // Offline customers may have memberships without a User account.
+  // Only include memberships linked to paid, confirmed offline bookings.
+  const offlineMemberships = await prisma.memberMembership.findMany({
+    where: {
+      userId: null,
+      bookings: {
+        some: {
+          paymentStatus: PaymentStatus.PAID,
+          bookingStatus: BookingStatus.CONFIRMED,
+          paymentMethod: PaymentMethod.OFFLINE,
+        },
+      },
+    },
+    include: {
+      membership: true,
+      activation: true,
+      bookings: {
+        where: {
+          paymentStatus: PaymentStatus.PAID,
+          bookingStatus: BookingStatus.CONFIRMED,
+          paymentMethod: PaymentMethod.OFFLINE,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: 1,
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  });
+
+  // Deduplicate by email, or phone when email is unavailable.
+  // This prevents the same customer appearing twice if they have
+  // multiple memberships or later register an account.
+  const seenCustomers = new Set<string>();
+
+  for (const member of registeredMembers) {
+    const email = member.email?.trim().toLowerCase();
+    const phone = member.phone?.trim();
+
+    if (email) seenCustomers.add(`email:${email}`);
+    else if (phone) seenCustomers.add(`phone:${phone}`);
+  }
+
+  const offlineMembers = [];
+
+  for (const member of offlineMemberships) {
+    const booking = member.bookings[0];
+
+    if (!booking) continue;
+
+    const email = booking.email?.trim().toLowerCase();
+    const phone = booking.phone?.trim();
+
+    const customerKey = email
+      ? `email:${email}`
+      : phone
+        ? `phone:${phone}`
+        : `membership:${member.id}`;
+
+    if (seenCustomers.has(customerKey)) continue;
+
+    seenCustomers.add(customerKey);
+
+    offlineMembers.push({
+      id: member.id,
+      fullName: booking.fullName,
+      email: booking.email,
+      phone: booking.phone,
+      membership: member.membership,
+      membershipStatus: member.status,
+      membershipNumber: member.activation?.membershipNumber ?? null,
+      expiryDate: member.expiryDate,
+      createdAt: booking.createdAt,
+    });
+  }
+
+  return [...registeredMembers, ...offlineMembers];
+}
+
 }
 
 export const adminService = new AdminService();

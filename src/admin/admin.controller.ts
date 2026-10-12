@@ -420,6 +420,29 @@ async createOfflineMember(req: Request, res: Response) {
     });
   }
 }
+
+
+async getAllMembers(req: Request, res: Response) {
+  try {
+    const members = await adminService.getAllMembers();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Members retrieved successfully.',
+      data: {
+        members,
+      },
+    });
+  } catch (error) {
+    console.error('Get all members error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve members.',
+    });
+  }
+}
+
 }
 
 export const adminController =

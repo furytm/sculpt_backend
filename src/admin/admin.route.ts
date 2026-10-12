@@ -553,4 +553,13 @@ router.post(
   adminController.createOfflineMember
 );
 
+
+router.get(
+  '/members',
+  authenticate,
+  requireAdmin,
+  adminController.getAllMembers.bind(adminController),
+);
+
+
 export default router;
