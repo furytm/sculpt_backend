@@ -280,6 +280,44 @@ const reference = String(req.params.reference);
     }
   }
 
+
+  
+async resumeBookingForUser(req: Request, res: Response) {
+  try {
+    const userId = (req as any).user?.userId;
+    const reference = String(req.params.reference || "");
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
+
+    const result = await bookingService.resumeBookingForUser(
+      reference,
+      userId
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    return res.status(400).json({
+      success: false,
+      message: error?.message || "Unable to resume booking.",
+    });
+  }
+}
+
   // =========================================================
   // GET MY BOOKINGS
   // =========================================================

@@ -1162,6 +1162,71 @@ class BookingService {
     };
   }
 
+
+  
+async resumeBookingForUser(
+  reference: string,
+  userId: string
+) {
+  const booking = await prisma.booking.findUnique({
+    where: {
+      paymentReference: reference,
+    },
+  });
+
+  if (!booking) {
+    throw new Error("Booking not found.");
+  }
+
+  // Only the account that owns this booking can resume it.
+  if (booking.userId && booking.userId !== userId) {
+    throw new Error(
+      "This booking cannot be accessed from this account."
+    );
+  }
+
+  if (
+    booking.paymentStatus !== PaymentStatus.PAID
+  ) {
+    throw new Error(
+      "Payment has not been completed for this booking."
+    );
+  }
+
+  // Already attached: do not generate another guest token.
+  if (booking.userId === userId) {
+    return {
+      booking,
+      alreadyAttached: true,
+      bookingFlowToken: null,
+    };
+  }
+
+  if (booking.bookingStatus !== BookingStatus.PENDING) {
+    throw new Error(
+      "This booking can no longer be continued."
+    );
+  }
+
+  const { token: bookingFlowToken, tokenHash } =
+    this.generateBookingFlowToken();
+
+  const updatedBooking = await prisma.booking.update({
+    where: {
+      id: booking.id,
+    },
+    data: {
+      bookingFlowTokenHash: tokenHash,
+    },
+  });
+
+  return {
+    booking: updatedBooking,
+    alreadyAttached: false,
+    bookingFlowToken,
+  };
+}
+
   // =========================================================
   // GET MY BOOKINGS
   // =========================================================

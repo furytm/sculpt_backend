@@ -352,7 +352,12 @@ class MembershipActivationService {
         },
       });
     }
-
+await prisma.booking.update({
+  where: { id: booking.id },
+  data: {
+    memberMembershipId: memberMembership.id,
+  },
+});
     const activationToken = generateActivationToken();
     const tokenHash = hashActivationToken(activationToken);
 
@@ -518,21 +523,28 @@ class MembershipActivationService {
       throw new Error("Invalid activation token.");
     }
 
-    const booking = activation.booking;
 
-    /*
-     * The member must provide an email if the admin
-     * did not already provide one.
-     */
-    const email =
-      data.email?.trim().toLowerCase() ||
-      booking.email?.trim().toLowerCase();
+const booking = activation.booking;
 
-    if (!email) {
-      throw new Error(
-        "Email address is required to complete registration."
-      );
-    }
+// Use the email associated with the original booking.
+const email = booking.email?.trim().toLowerCase();
+
+if (!email) {
+  throw new Error(
+    "Email address is required. Please contact Sculpt LAB admin."
+  );
+}
+
+// Prevent activation with a different email address.
+if (
+  data.email &&
+  data.email.trim().toLowerCase() !== email
+) {
+  throw new Error(
+    "The email must match the email associated with this membership."
+  );
+}
+
 
     const hashedPassword = await bcrypt.hash(
       data.password,

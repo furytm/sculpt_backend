@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-
+import { randomBytes } from "crypto";
 import authService from "./auth.service.js";
 
 import {
@@ -285,84 +285,149 @@ class AuthController {
   /**
    * GET /api/auth/google
    */
-  async google(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const url =
-        await authService.getGoogleAuthUrl();
+async google(req: Request, res: Response) {
+  try {
+    const reference =
+      typeof req.query.reference === "string"
+        ? req.query.reference.trim()
+        : "";
 
-      return res.redirect(url);
-    } catch (error: any) {
-      console.error(
-        "Google Auth Error:",
-        error
-      );
+    // Create unpredictable OAuth state to protect the callback.
+    const nonce = randomBytes(32).toString("hex");
 
-      return res.status(500).json({
-        success: false,
-        message:
-          error.message ||
-          "Unable to start Google authentication.",
-      });
-    }
+    const statePayload = {
+      nonce,
+      reference,
+    };
+
+    const state = Buffer.from(
+      JSON.stringify(statePayload)
+    ).toString("base64url");
+
+    res.cookie("google_oauth_state", state, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 10 * 60 * 1000,
+      path: "/api/auth/google/callback",
+    });
+
+    const url = await authService.getGoogleAuthUrl(state);
+
+    return res.redirect(url);
+  } catch (error: any) {
+    console.error("Google Auth Error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to start Google authentication.",
+    });
   }
+}
 
   /**
    * GET /api/auth/google/callback
    */
-  async googleCallback(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const code =
-        req.query.code as string;
 
-      if (!code) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/login?error=GOOGLE_AUTH_FAILED`
-        );
-      }
+async googleCallback(req: Request, res: Response) {
+  const frontendUrl = process.env.FRONTEND_URL;
 
-      const result =
-        await authService.googleCallback(
-          code
-        );
+  const storedState = req.cookies?.google_oauth_state;
+  const returnedState =
+    typeof req.query.state === "string"
+      ? req.query.state
+      : "";
 
-      // Store Google authentication tokens
-      // in HttpOnly cookies.
-      setAuthCookies(
-        res,
-        result.accessToken,
-        result.refreshToken
-      );
+  res.clearCookie("google_oauth_state", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/api/auth/google/callback",
+  });
 
-      // Do NOT put tokens in the URL.
+  try {
+    if (!frontendUrl) {
+      throw new Error("FRONTEND_URL is not configured.");
+    }
+
+    if (
+      !storedState ||
+      !returnedState ||
+      storedState !== returnedState
+    ) {
       return res.redirect(
-        `${process.env.FRONTEND_URL}/dashboard`
-      );
-    } catch (error: any) {
-      console.error(
-        "Google Callback Error:",
-        error
-      );
-
-      if (
-        error.message ===
-        "LOCAL_ACCOUNT_EXISTS"
-      ) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL}/login?error=LOCAL_ACCOUNT_EXISTS`
-        );
-      }
-
-      return res.redirect(
-        `${process.env.FRONTEND_URL}/login?error=GOOGLE_AUTH_FAILED`
+        `${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`
       );
     }
+
+    let statePayload: {
+      nonce: string;
+      reference?: string;
+    };
+
+    try {
+      statePayload = JSON.parse(
+        Buffer.from(returnedState, "base64url").toString("utf8")
+      );
+    } catch {
+      return res.redirect(
+        `${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`
+      );
+    }
+
+    if (!statePayload.nonce) {
+      return res.redirect(
+        `${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`
+      );
+    }
+
+    const code =
+      typeof req.query.code === "string"
+        ? req.query.code
+        : "";
+
+    if (!code) {
+      return res.redirect(
+        `${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`
+      );
+    }
+
+    const result = await authService.googleCallback(code);
+
+    setAuthCookies(
+      res,
+      result.accessToken,
+      result.refreshToken
+    );
+
+    const reference =
+      typeof statePayload.reference === "string"
+        ? statePayload.reference.trim()
+        : "";
+
+    if (reference) {
+      return res.redirect(
+        `${frontendUrl}/auth/google-success?reference=${encodeURIComponent(reference)}`
+      );
+    }
+
+    return res.redirect(`${frontendUrl}/dashboard`);
+  } catch (error: any) {
+    console.error("Google Callback Error:", error);
+
+    if (error.message === "LOCAL_ACCOUNT_EXISTS") {
+      return res.redirect(
+        `${frontendUrl || ""}/login?error=LOCAL_ACCOUNT_EXISTS`
+      );
+    }
+
+    return res.redirect(
+      `${frontendUrl || ""}/login?error=GOOGLE_AUTH_FAILED`
+    );
   }
+}
 
   /**
    * GET /api/auth/verify-email?token=...

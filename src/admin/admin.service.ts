@@ -147,6 +147,15 @@ async getDashboard() {
       ],
     }),
   ]);
+  console.log("DASHBOARD DEBUG:", {
+  membersListLength: membersList.length,
+  sampleMembers: membersList.slice(0, 3).map((member) => ({
+    id: member.id,
+    fullName: member.fullName,
+    email: member.email,
+    membershipStatus: member.membershipStatus,
+  })),
+});
 
   // Calculate unique customers returned by getAllMembers().
   const totalMembers = membersList.length;

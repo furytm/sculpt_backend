@@ -480,6 +480,12 @@ router.get(
   bookingController.continueGuestBooking
 );
 
+router.get(
+  "/confirmation/:reference/resume",
+  authenticate,
+  bookingController.resumeBookingForUser
+);
+
 // =========================================================
 // AUTHENTICATED MEMBER BOOKINGS
 // =========================================================

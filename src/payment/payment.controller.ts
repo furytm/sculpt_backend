@@ -2,6 +2,7 @@ import prisma  from "../config/prisma.js";
 import  membershipService  from "../membership/membership.service.js";
 import { Request, Response } from "express";
 import paymentService from "./payment.service.js";
+import {sendPaymentConfirmationEmail} from "../utils/mailer.js"
 import bookingService from "../booking/booking.service.js";
 
 interface VerifyParams {
@@ -58,8 +59,9 @@ class PaymentController {
       });
     }
   }
+
 async callback(req: Request, res: Response) {
-  const frontendUrl = process.env.FRONTEND_URL;
+  const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
 
   const reference =
     typeof req.query.reference === "string"
@@ -80,18 +82,9 @@ async callback(req: Request, res: Response) {
       );
     }
 
-    // ============================================
-    // 1. VERIFY THE PAYMENT DIRECTLY WITH PAYMISH
-    // ============================================
-
+    // 1. Verify payment directly with Paymish.
     const verification =
       await paymentService.verifyTransaction(reference);
-
-    console.log("PAYMISH VERIFICATION STATUS:", verification?.status);
-    console.log(
-      "PAYMISH TRANSACTION STATUS:",
-      verification?.data?.status
-    );
 
     const transaction = verification?.data;
 
@@ -101,10 +94,7 @@ async callback(req: Request, res: Response) {
       transaction?.reference === reference;
 
     if (!isVerified) {
-      console.warn(
-        "Payment not verified as completed:",
-        reference
-      );
+      console.warn("Payment not verified:", reference);
 
       return res.redirect(
         `${frontendUrl}/confirmation?payment=failed&reference=${encodeURIComponent(reference)}`
@@ -113,10 +103,7 @@ async callback(req: Request, res: Response) {
 
     console.log("Payment successfully verified:", reference);
 
-    // ============================================
-    // 2. CHECK MEMBERSHIP PURCHASE
-    // ============================================
-
+    // 2. Check membership renewal/upgrade purchases.
     const membershipPurchase =
       await prisma.membershipPurchase.findUnique({
         where: {
@@ -125,9 +112,7 @@ async callback(req: Request, res: Response) {
       });
 
     if (membershipPurchase) {
-      await membershipService.completeMembershipPurchase(
-        reference
-      );
+      await membershipService.completeMembershipPurchase(reference);
 
       const mode =
         membershipPurchase.type === "UPGRADE"
@@ -139,12 +124,50 @@ async callback(req: Request, res: Response) {
       );
     }
 
-    // ============================================
-    // 3. OTHERWISE, PROCESS THE BOOKING PAYMENT
-    // ============================================
-
+    // 3. Mark the specific booking as paid.
     await bookingService.markBookingPaid(reference);
 
+    // 4. Send the customer an email with registration/login links.
+    // Email failure must not turn a verified payment into a failure.
+    try {
+      const continuation =
+        await bookingService.continueGuestBooking(reference);
+
+      const booking = continuation.booking;
+
+      if (!booking.email) {
+        throw new Error(
+          "The paid booking has no customer email address."
+        );
+      }
+
+      const registrationUrl =
+        `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`;
+
+      const loginUrl =
+        `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`;
+
+      await sendPaymentConfirmationEmail({
+        email: booking.email,
+        fullName: booking.fullName || "Sculpt LAB customer",
+        bookingReference: reference,
+        registrationUrl,
+        loginUrl,
+      });
+
+      console.log(
+        "Payment confirmation email sent:",
+        reference
+      );
+    } catch (emailError) {
+      console.error(
+        "Payment confirmed, but continuation email could not be sent:",
+        reference,
+        emailError
+      );
+    }
+
+    // 5. Return to the confirmation page.
     return res.redirect(
       `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
     );
