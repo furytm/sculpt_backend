@@ -531,6 +531,7 @@ if (existingPendingPurchase) {
   };
 }
 
+
 private calculateMembershipExpiry(
   startDate: Date,
   duration: string,
@@ -538,15 +539,46 @@ private calculateMembershipExpiry(
 ): Date {
   const expiryDate = new Date(startDate);
 
-  const durationValue = Number(duration);
+  // Support existing labels such as "Monthly", "Weekly",
+  // and numeric durations such as "1" with period "month".
+  const normalizedDuration = duration.trim().toLowerCase();
+  const normalizedPeriod = period.trim().toLowerCase();
 
-  if (Number.isNaN(durationValue)) {
-    throw new Error(
-      `Invalid membership duration: ${duration}`
+  let durationValue = Number(normalizedDuration);
+  let effectivePeriod = normalizedPeriod;
+
+  if (!Number.isFinite(durationValue) || durationValue <= 0) {
+    const labelMatch = normalizedDuration.match(
+      /^(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|quarter|quarters|year|years|daily|weekly|monthly|quarterly|yearly)$/
     );
+
+    if (labelMatch) {
+      durationValue = Number(labelMatch[1]);
+      effectivePeriod = labelMatch[2];
+    } else {
+      const labels: Record<string, { duration: number; period: string }> = {
+        daily: { duration: 1, period: "day" },
+        weekly: { duration: 1, period: "week" },
+        monthly: { duration: 1, period: "month" },
+        quarterly: { duration: 3, period: "month" },
+        yearly: { duration: 1, period: "year" },
+        annually: { duration: 1, period: "year" },
+      };
+
+      const label = labels[normalizedDuration];
+
+      if (!label) {
+        throw new Error(
+          `Invalid membership duration: ${duration}`
+        );
+      }
+
+      durationValue = label.duration;
+      effectivePeriod = label.period;
+    }
   }
 
-  switch (period.toLowerCase()) {
+  switch (effectivePeriod) {
     case "day":
     case "days":
       expiryDate.setDate(
@@ -590,6 +622,7 @@ private calculateMembershipExpiry(
 
   return expiryDate;
 }
+
 
 private getMembershipCredits(
   classLimit: number | null
