@@ -1,12 +1,3 @@
--- CreateSchema
-CREATE SCHEMA IF NOT EXISTS "public";
-
--- CreateEnum
-CREATE TYPE "MembershipPurchaseType" AS ENUM ('NEW', 'RENEWAL', 'UPGRADE');
-
--- CreateEnum
-CREATE TYPE "JournalStatus" AS ENUM ('DRAFT', 'PUBLISHED');
-
 -- CreateEnum
 CREATE TYPE "SessionStatus" AS ENUM ('OPEN', 'FULL', 'CANCELLED', 'COMPLETED');
 
@@ -32,14 +23,14 @@ CREATE TYPE "AuthProvider" AS ENUM ('LOCAL', 'GOOGLE');
 CREATE TYPE "BookingStatus" AS ENUM ('PENDING', 'CONFIRMED', 'CANCELLED');
 
 -- CreateEnum
-CREATE TYPE "PaymentMethod" AS ENUM ('PAYMISH', 'OFFLINE', 'PAYSTACK');
+CREATE TYPE "PaymentMethod" AS ENUM ('PAYMISH', 'OFFLINE');
 
 -- CreateTable
 CREATE TABLE "Booking" (
     "id" TEXT NOT NULL,
-    "fullName" TEXT,
-    "email" TEXT,
-    "phone" TEXT,
+    "fullName" TEXT NOT NULL,
+    "email" TEXT NOT NULL,
+    "phone" TEXT NOT NULL,
     "classId" TEXT,
     "scheduleId" TEXT,
     "sessionId" TEXT,
@@ -62,42 +53,6 @@ CREATE TABLE "Booking" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Booking_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "journals" (
-    "id" TEXT NOT NULL,
-    "title" TEXT NOT NULL,
-    "slug" TEXT NOT NULL,
-    "excerpt" TEXT NOT NULL,
-    "content" TEXT NOT NULL,
-    "coverImage" TEXT NOT NULL,
-    "authorName" TEXT NOT NULL DEFAULT 'Sculpt LAB',
-    "status" "JournalStatus" NOT NULL DEFAULT 'DRAFT',
-    "isFeatured" BOOLEAN NOT NULL DEFAULT false,
-    "publishedAt" TIMESTAMP(3),
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "journals_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "MembershipPurchase" (
-    "id" TEXT NOT NULL,
-    "userId" TEXT,
-    "email" TEXT NOT NULL,
-    "membershipId" TEXT NOT NULL,
-    "previousMembershipId" TEXT,
-    "type" "MembershipPurchaseType" NOT NULL,
-    "amount" INTEGER NOT NULL,
-    "paymentReference" TEXT NOT NULL,
-    "paymentStatus" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
-    "carriedCredits" INTEGER NOT NULL DEFAULT 0,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "MembershipPurchase_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -302,24 +257,6 @@ CREATE INDEX "Booking_userId_idx" ON "Booking"("userId");
 CREATE INDEX "Booking_bookingStatus_idx" ON "Booking"("bookingStatus");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "journals_slug_key" ON "journals"("slug");
-
--- CreateIndex
-CREATE INDEX "journals_status_publishedAt_idx" ON "journals"("status", "publishedAt");
-
--- CreateIndex
-CREATE INDEX "journals_isFeatured_status_idx" ON "journals"("isFeatured", "status");
-
--- CreateIndex
-CREATE UNIQUE INDEX "MembershipPurchase_paymentReference_key" ON "MembershipPurchase"("paymentReference");
-
--- CreateIndex
-CREATE INDEX "MembershipPurchase_userId_idx" ON "MembershipPurchase"("userId");
-
--- CreateIndex
-CREATE INDEX "MembershipPurchase_email_idx" ON "MembershipPurchase"("email");
-
--- CreateIndex
 CREATE UNIQUE INDEX "HealthSafetyForm_bookingId_key" ON "HealthSafetyForm"("bookingId");
 
 -- CreateIndex
@@ -437,12 +374,6 @@ ALTER TABLE "Booking" ADD CONSTRAINT "Booking_userId_fkey" FOREIGN KEY ("userId"
 ALTER TABLE "Booking" ADD CONSTRAINT "Booking_memberMembershipId_fkey" FOREIGN KEY ("memberMembershipId") REFERENCES "MemberMembership"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "MembershipPurchase" ADD CONSTRAINT "MembershipPurchase_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "MembershipPurchase" ADD CONSTRAINT "MembershipPurchase_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "HealthSafetyForm" ADD CONSTRAINT "HealthSafetyForm_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -480,4 +411,3 @@ ALTER TABLE "EmailVerificationToken" ADD CONSTRAINT "EmailVerificationToken_user
 
 -- AddForeignKey
 ALTER TABLE "PasswordResetToken" ADD CONSTRAINT "PasswordResetToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
