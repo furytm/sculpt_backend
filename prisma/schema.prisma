@@ -93,6 +93,8 @@ model MembershipPurchase {
   email                String
   membershipId         String
   previousMembershipId String?
+  fullName String?
+phone    String?
   type                 MembershipPurchaseType
 
   amount           Int
