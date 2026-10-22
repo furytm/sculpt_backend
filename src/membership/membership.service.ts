@@ -9,6 +9,9 @@ import {
 
 import paymentService from "../payment/payment.service.js";
 
+import crypto from "crypto";
+
+
 class MembershipService {
   /**
    * Get all active memberships
@@ -985,6 +988,71 @@ async getMembershipPurchase(
         }
       : null,
   };
+}
+
+async initiateNewMembershipPurchase(data: {
+  membershipId: string;
+  email: string;
+}) {
+  const email = data.email.trim().toLowerCase();
+
+  if (!data.membershipId || !email) {
+    throw new Error("Membership and email are required.");
+  }
+
+  const membership = await prisma.membership.findFirst({
+    where: {
+      id: data.membershipId,
+      isActive: true,
+    },
+  });
+
+  if (!membership) {
+    throw new Error("Membership not found or is not active.");
+  }
+
+  const paymentReference =
+    `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+
+  const purchase = await prisma.membershipPurchase.create({
+    data: {
+      userId: null,
+      email,
+      membershipId: membership.id,
+      type: MembershipPurchaseType.NEW,
+      amount: membership.price,
+      paymentReference,
+      paymentStatus: PaymentStatus.PENDING,
+    },
+  });
+
+  try {
+    const payment = await paymentService.initializeTransaction({
+      email,
+      amount: purchase.amount,
+      reference: paymentReference,
+    });
+
+    const authorizationUrl =
+      payment?.data?.authorization_url ??
+      payment?.data?.authorizationUrl ??
+      payment?.authorization_url ??
+      payment?.authorizationUrl;
+
+    if (!authorizationUrl) {
+      throw new Error("Payment provider did not return a payment URL.");
+    }
+
+    return {
+      success: true,
+      purchaseId: purchase.id,
+      reference: paymentReference,
+      authorizationUrl,
+    };
+  } catch (error) {
+    // Keep the pending purchase for reconciliation or a safe retry.
+    throw error;
+  }
 }
 }
 

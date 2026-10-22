@@ -268,6 +268,38 @@ async getMembershipPurchase(
   }
 }
 
+
+
 }
+export const purchaseNewMembership = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { membershipId, email } = req.body;
+
+    const result =
+      await membershipService.initiateNewMembershipPurchase({
+        membershipId,
+        email,
+      });
+
+    return res.status(201).json({
+      success: true,
+      message: "Membership payment initialized.",
+      data: result,
+    });
+  } catch (error) {
+    console.error("New membership purchase error:", error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Could not initialize membership payment.",
+    });
+  }
+};
 
 export default new MembershipController();

@@ -89,7 +89,8 @@ model Journal {
 
 model MembershipPurchase {
   id                   String                 @id @default(cuid())
-  userId               String
+  userId               String?
+  email                String
   membershipId         String
   previousMembershipId String?
   type                 MembershipPurchaseType
@@ -103,10 +104,12 @@ model MembershipPurchase {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
   membership Membership @relation(fields: [membershipId], references: [id])
-}
 
+  @@index([userId])
+  @@index([email])
+}
 model HealthSafetyForm {
   id String @id @default(cuid())
 
