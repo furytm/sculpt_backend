@@ -60,6 +60,9 @@ const router = Router();
  *         description: Membership or class session not found
  */
 router.post("/", bookingController.createBooking);
+// Guest receipt after successful Paymish payment
+router.get("/confirmation/:reference/receipt", bookingController.downloadGuestPaymentReceipt);
+// Authenticated member receipt
 router.get("/:bookingId/receipt", authenticate, bookingController.downloadPaymentReceipt);
 router.get("/:bookingId/voucher", authenticate, bookingController.downloadBookingVoucher);
 // =========================================================
@@ -297,6 +300,7 @@ router.post("/:bookingId/confirm", authenticate, bookingController.confirmBookin
  *         description: Session or membership not found
  */
 router.post("/member-session", authenticate, bookingController.bookMemberSession);
+router.patch("/:bookingId/health-declaration/account", authenticate, bookingController.saveHealthDeclarationForUser);
 // =========================================================
 // MEMBERSHIP CREDITS
 // =========================================================
@@ -401,6 +405,7 @@ router.get("/confirmation/:reference", bookingController.getBookingConfirmation)
  *         description: Booking not found
  */
 router.get("/confirmation/:reference/continue", bookingController.continueGuestBooking);
+router.get("/confirmation/:reference/resume", authenticate, bookingController.resumeBookingForUser);
 // =========================================================
 // AUTHENTICATED MEMBER BOOKINGS
 // =========================================================

@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import authService from "./auth.service.js";
 import { registerSchema, loginSchema, } from "./auth.validation.js";
 import { setAuthCookies, clearAuthCookies, } from "../utils/auth-cookies.js";
@@ -15,12 +16,9 @@ class AuthController {
                 });
             }
             const result = await authService.register(value);
-            // Store access and refresh tokens
-            // in HttpOnly cookies.
-            setAuthCookies(res, result.accessToken, result.refreshToken);
             return res.status(201).json({
                 success: true,
-                message: "Account created successfully.",
+                message: 'Account created successfully. Please check your email for the next steps.',
                 data: {
                     user: result.user,
                 },
@@ -179,7 +177,24 @@ class AuthController {
      */
     async google(req, res) {
         try {
-            const url = await authService.getGoogleAuthUrl();
+            const reference = typeof req.query.reference === "string"
+                ? req.query.reference.trim()
+                : "";
+            // Create unpredictable OAuth state to protect the callback.
+            const nonce = randomBytes(32).toString("hex");
+            const statePayload = {
+                nonce,
+                reference,
+            };
+            const state = Buffer.from(JSON.stringify(statePayload)).toString("base64url");
+            res.cookie("google_oauth_state", state, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === "production",
+                sameSite: "lax",
+                maxAge: 10 * 60 * 1000,
+                path: "/api/auth/google/callback",
+            });
+            const url = await authService.getGoogleAuthUrl(state);
             return res.redirect(url);
         }
         catch (error) {
@@ -195,25 +210,58 @@ class AuthController {
      * GET /api/auth/google/callback
      */
     async googleCallback(req, res) {
+        const frontendUrl = process.env.FRONTEND_URL;
+        const storedState = req.cookies?.google_oauth_state;
+        const returnedState = typeof req.query.state === "string"
+            ? req.query.state
+            : "";
+        res.clearCookie("google_oauth_state", {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "lax",
+            path: "/api/auth/google/callback",
+        });
         try {
-            const code = req.query.code;
+            if (!frontendUrl) {
+                throw new Error("FRONTEND_URL is not configured.");
+            }
+            if (!storedState ||
+                !returnedState ||
+                storedState !== returnedState) {
+                return res.redirect(`${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`);
+            }
+            let statePayload;
+            try {
+                statePayload = JSON.parse(Buffer.from(returnedState, "base64url").toString("utf8"));
+            }
+            catch {
+                return res.redirect(`${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`);
+            }
+            if (!statePayload.nonce) {
+                return res.redirect(`${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`);
+            }
+            const code = typeof req.query.code === "string"
+                ? req.query.code
+                : "";
             if (!code) {
-                return res.redirect(`${process.env.FRONTEND_URL}/login?error=GOOGLE_AUTH_FAILED`);
+                return res.redirect(`${frontendUrl}/login?error=GOOGLE_AUTH_FAILED`);
             }
             const result = await authService.googleCallback(code);
-            // Store Google authentication tokens
-            // in HttpOnly cookies.
             setAuthCookies(res, result.accessToken, result.refreshToken);
-            // Do NOT put tokens in the URL.
-            return res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+            const reference = typeof statePayload.reference === "string"
+                ? statePayload.reference.trim()
+                : "";
+            if (reference) {
+                return res.redirect(`${frontendUrl}/auth/google-success?reference=${encodeURIComponent(reference)}`);
+            }
+            return res.redirect(`${frontendUrl}/dashboard`);
         }
         catch (error) {
             console.error("Google Callback Error:", error);
-            if (error.message ===
-                "LOCAL_ACCOUNT_EXISTS") {
-                return res.redirect(`${process.env.FRONTEND_URL}/login?error=LOCAL_ACCOUNT_EXISTS`);
+            if (error.message === "LOCAL_ACCOUNT_EXISTS") {
+                return res.redirect(`${frontendUrl || ""}/login?error=LOCAL_ACCOUNT_EXISTS`);
             }
-            return res.redirect(`${process.env.FRONTEND_URL}/login?error=GOOGLE_AUTH_FAILED`);
+            return res.redirect(`${frontendUrl || ""}/login?error=GOOGLE_AUTH_FAILED`);
         }
     }
     /**
@@ -276,6 +324,28 @@ class AuthController {
                 success: false,
                 message: error.message ||
                     "Unable to reset password.",
+            });
+        }
+    }
+    async resendRegistrationEmail(req, res) {
+        try {
+            const email = typeof req.body?.email === "string"
+                ? req.body.email.trim().toLowerCase()
+                : "";
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please provide a valid email address.",
+                });
+            }
+            const result = await authService.resendRegistrationEmail(email);
+            return res.status(200).json(result);
+        }
+        catch (error) {
+            console.error("Resend registration email error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Unable to process your request right now.",
             });
         }
     }

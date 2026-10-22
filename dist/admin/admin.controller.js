@@ -265,11 +265,20 @@ class AdminController {
     }
     async createOfflineMember(req, res) {
         try {
-            const { fullName, email, phone, membershipId, } = req.body;
+            const { fullName, email, phone, membershipId, remainingCredits, } = req.body;
             if (!membershipId) {
                 return res.status(400).json({
                     success: false,
                     message: "Membership ID is required.",
+                });
+            }
+            if (remainingCredits !== undefined &&
+                (typeof remainingCredits !== "number" ||
+                    !Number.isInteger(remainingCredits) ||
+                    remainingCredits < 0)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Remaining credits must be a non-negative integer.",
                 });
             }
             const result = await adminService.createOfflineMember({
@@ -277,6 +286,7 @@ class AdminController {
                 email,
                 phone,
                 membershipId,
+                remainingCredits,
             });
             return res.status(201).json({
                 success: true,
@@ -288,11 +298,11 @@ class AdminController {
         }
         catch (error) {
             console.error("Create Offline Member Error:", error);
-            const message = error?.message ||
-                "Failed to create offline member.";
+            const message = error?.message || "Failed to create offline member.";
             if (message === "Membership ID is required." ||
                 message === "Membership not found." ||
-                message === "This membership is not active.") {
+                message === "This membership is not active." ||
+                message.startsWith("Remaining credits")) {
                 return res.status(400).json({
                     success: false,
                     message,
@@ -301,6 +311,25 @@ class AdminController {
             return res.status(500).json({
                 success: false,
                 message,
+            });
+        }
+    }
+    async getAllMembers(req, res) {
+        try {
+            const members = await adminService.getAllMembers();
+            return res.status(200).json({
+                success: true,
+                message: 'Members retrieved successfully.',
+                data: {
+                    members,
+                },
+            });
+        }
+        catch (error) {
+            console.error('Get all members error:', error);
+            return res.status(500).json({
+                success: false,
+                message: 'Failed to retrieve members.',
             });
         }
     }

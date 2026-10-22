@@ -32,9 +32,9 @@ class ClassSessionService {
             };
         }
         const today = this.getLagosDate();
-        // Tomorrow is the first selectable/bookable date.
-        const tomorrow = new Date(today);
-        tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+        // Today is the first generated date.
+        // Availability will filter out sessions starting in less than 2 hours.
+        const firstDate = new Date(today);
         let sessionsCreated = 0;
         let sessionsExisting = 0;
         for (const schedule of schedules) {
@@ -44,8 +44,8 @@ class ClassSessionService {
                 continue;
             }
             for (let offset = 0; offset < daysAhead; offset++) {
-                const calendarDate = new Date(tomorrow);
-                calendarDate.setUTCDate(tomorrow.getUTCDate() + offset);
+                const calendarDate = new Date(firstDate);
+                calendarDate.setUTCDate(firstDate.getUTCDate() + offset);
                 const currentDay = calendarDate.getUTCDay();
                 // Only create a session when the calendar date
                 // matches the recurring schedule's day.

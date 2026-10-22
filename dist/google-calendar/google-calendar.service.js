@@ -42,9 +42,30 @@ class GoogleCalendarService {
         const startDate = this.getLagosDate(data.sessionDate);
         const startDateTime = this.combineDateAndTime(startDate, data.startTime);
         const endDateTime = this.combineDateAndTime(startDate, data.endTime);
+        // =====================================================
+        // INSTRUCTOR EMAIL MAPPING
+        // =====================================================
+        const tutorEmailMap = {
+            "hope": "hopegeorgeg@gmail.com",
+            "betty": "bettyozogbuda@gmail.com",
+        };
+        const tutorEmail = tutorEmailMap[data.tutorName.trim().toLowerCase()];
+        console.log(`📅 Creating calendar event for instructor: ${data.tutorName}`);
+        if (tutorEmail) {
+            console.log(`📧 Instructor calendar invitation: ${tutorEmail}`);
+        }
+        else {
+            console.warn(`⚠️ No instructor email found for tutor: ${data.tutorName}`);
+        }
+        // =====================================================
+        // CREATE GOOGLE CALENDAR EVENT
+        // =====================================================
         const event = await calendar.events.insert({
             calendarId: GOOGLE_CALENDAR_ID,
-            sendUpdates: "none",
+            // Send the calendar invitation to the instructor.
+            // If no matching instructor is found, don't send
+            // any attendee notification.
+            sendUpdates: tutorEmail ? "all" : "none",
             requestBody: {
                 summary: `Sculpt LAB — ${data.className}`,
                 description: [
@@ -65,6 +86,16 @@ class GoogleCalendarService {
                     dateTime: endDateTime,
                     timeZone: TIMEZONE,
                 },
+                // =================================================
+                // INSTRUCTOR ATTENDEE
+                // =================================================
+                attendees: tutorEmail
+                    ? [
+                        {
+                            email: tutorEmail,
+                        },
+                    ]
+                    : [],
                 extendedProperties: {
                     private: {
                         sculptBookingId: data.bookingId,

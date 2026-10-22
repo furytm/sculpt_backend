@@ -309,28 +309,17 @@ if (existingPendingPurchase) {
 
   const purchase =
     await prisma.membershipPurchase.create({
-      data: {
-        userId,
-
-        membershipId:
-          targetMembership.id,
-
-        previousMembershipId:
-          currentMembership.membershipId,
-
-        type:
-          MembershipPurchaseType.UPGRADE,
-
-        amount:
-          targetMembership.price,
-
-        paymentReference,
-
-        paymentStatus:
-          PaymentStatus.PENDING,
-
-        carriedCredits,
-      },
+    data: {
+  userId,
+  email: user.email,
+  membershipId: targetMembership.id,
+  previousMembershipId: currentMembership.membershipId,
+  type: MembershipPurchaseType.UPGRADE,
+  amount: targetMembership.price,
+  paymentReference,
+  paymentStatus: PaymentStatus.PENDING,
+  carriedCredits,
+},
     });
 
   const payment =
@@ -499,29 +488,15 @@ if (existingPendingPurchase) {
 
   const purchase =
     await prisma.membershipPurchase.create({
-      data: {
-        userId,
-
-        membershipId:
-          targetMembership.id,
-
-        previousMembershipId:
-          currentMembership?.membershipId ??
-          null,
-
-        type:
-          MembershipPurchaseType.RENEWAL,
-
-        amount:
-          targetMembership.price,
-
-        paymentReference,
-
-        paymentStatus:
-          PaymentStatus.PENDING,
-
-        carriedCredits: 0,
-      },
+  data: {
+  userId,
+  email: user.email,
+  membershipId: targetMembership.id,
+  type: MembershipPurchaseType.RENEWAL,
+  amount: targetMembership.price,
+  paymentReference,
+  paymentStatus: PaymentStatus.PENDING,
+},
     });
 
   const payment =

@@ -49,6 +49,7 @@ router.get("/payments/test-activation-service", (_req, res) => {
  *         description: Admin access required
  */
 router.get("/dashboard", authenticate, requireAdmin, adminController.getDashboard);
+router.post("/sessions/:sessionId/offline-attendees", authenticate, requireAdmin, adminSessionController.addOfflineAttendee);
 // =====================================================
 // PENDING OFFLINE PAYMENTS
 // =====================================================
@@ -450,5 +451,6 @@ router.post("/sessions/:sessionId/reopen", authenticate, requireAdmin, adminSess
  *         description: Admin access required
  */
 router.post("/members/offline", authenticate, requireAdmin, adminController.createOfflineMember);
+router.get('/members', authenticate, requireAdmin, adminController.getAllMembers.bind(adminController));
 export default router;
 //# sourceMappingURL=admin.route.js.map

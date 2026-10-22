@@ -1,5 +1,6 @@
 import bookingService from "./booking.service.js";
 import { bookingDocumentsService } from "./booking-documents.service.js";
+import { MembershipType } from "@prisma/client";
 class BookingController {
     // =========================================================
     // CREATE BOOKING
@@ -103,7 +104,7 @@ class BookingController {
     // =========================================================
     async getClassAvailability(req, res) {
         try {
-            const classId = String(req.params.classId);
+            const classId = String(req.params.classId || "");
             if (!classId) {
                 return res.status(400).json({
                     success: false,
@@ -116,7 +117,17 @@ class BookingController {
             const endDate = typeof req.query.endDate === "string"
                 ? req.query.endDate
                 : undefined;
-            const availability = await bookingService.getClassAvailability(classId, startDate, endDate);
+            const typeParam = typeof req.query.type === "string"
+                ? req.query.type.toUpperCase()
+                : MembershipType.GROUP;
+            if (typeParam !== MembershipType.GROUP &&
+                typeParam !== MembershipType.PRIVATE) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Type must be GROUP or PRIVATE.",
+                });
+            }
+            const availability = await bookingService.getClassAvailability(classId, startDate, endDate, typeParam);
             return res.status(200).json({
                 success: true,
                 data: availability,
@@ -126,7 +137,8 @@ class BookingController {
             console.error("Get Class Availability Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message || "Failed to retrieve class availability.",
+                message: error?.message ||
+                    "Failed to retrieve class availability.",
             });
         }
     }
@@ -135,14 +147,24 @@ class BookingController {
     // =========================================================
     async getSessionAvailability(req, res) {
         try {
-            const sessionId = String(req.params.sessionId);
+            const sessionId = String(req.params.sessionId || "");
             if (!sessionId) {
                 return res.status(400).json({
                     success: false,
                     message: "Session ID is required.",
                 });
             }
-            const session = await bookingService.getSessionAvailability(sessionId);
+            const typeParam = typeof req.query.type === "string"
+                ? req.query.type.toUpperCase()
+                : MembershipType.GROUP;
+            if (typeParam !== MembershipType.GROUP &&
+                typeParam !== MembershipType.PRIVATE) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Type must be GROUP or PRIVATE.",
+                });
+            }
+            const session = await bookingService.getSessionAvailability(sessionId, typeParam);
             if (!session) {
                 return res.status(404).json({
                     success: false,
@@ -158,7 +180,8 @@ class BookingController {
             console.error("Get Session Availability Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message || "Failed to retrieve session availability.",
+                message: error?.message ||
+                    "Failed to retrieve session availability.",
             });
         }
     }
@@ -216,6 +239,35 @@ class BookingController {
                 success: false,
                 message: error?.message ||
                     "Unable to continue this booking.",
+            });
+        }
+    }
+    async resumeBookingForUser(req, res) {
+        try {
+            const userId = req.user?.userId;
+            const reference = String(req.params.reference || "");
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Authentication required.",
+                });
+            }
+            if (!reference) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment reference is required.",
+                });
+            }
+            const result = await bookingService.resumeBookingForUser(reference, userId);
+            return res.status(200).json({
+                success: true,
+                data: result,
+            });
+        }
+        catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error?.message || "Unable to resume booking.",
             });
         }
     }
@@ -417,6 +469,32 @@ class BookingController {
             });
         }
     }
+    async saveHealthDeclarationForUser(req, res) {
+        try {
+            const userId = req.user?.userId;
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Please log in to continue.",
+                });
+            }
+            const bookingId = String(req.params.bookingId);
+            const { accepted, notes } = req.body;
+            const healthSafetyForm = await bookingService.saveHealthDeclaration(bookingId, "", { accepted, notes }, userId);
+            return res.json({
+                success: true,
+                data: { healthSafetyForm },
+            });
+        }
+        catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error instanceof Error
+                    ? error.message
+                    : "Unable to save the health declaration.",
+            });
+        }
+    }
     // =========================================================
     // MEMBERSHIP CREDIT SUMMARY
     // =========================================================
@@ -488,6 +566,32 @@ class BookingController {
             return res.status(400).json({
                 message: error?.message ||
                     "Unable to download payment receipt.",
+            });
+        }
+    }
+    async downloadGuestPaymentReceipt(req, res) {
+        try {
+            const reference = Array.isArray(req.params.reference)
+                ? req.params.reference[0]
+                : req.params.reference;
+            if (!reference) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment reference is required.",
+                });
+            }
+            const result = await bookingDocumentsService.getGuestPaymentReceipt(reference);
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+            return res.send(result.pdf);
+        }
+        catch (error) {
+            console.error("GUEST RECEIPT ERROR:", error);
+            return res.status(400).json({
+                success: false,
+                message: error instanceof Error
+                    ? error.message
+                    : "Unable to download receipt.",
             });
         }
     }

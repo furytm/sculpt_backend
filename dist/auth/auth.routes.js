@@ -43,6 +43,7 @@ const router = Router();
  *         description: Registration failed
  */
 router.post("/register", authController.register);
+router.post("/resend-registration-email", authController.resendRegistrationEmail);
 /**
  * @openapi
  * /api/auth/login:

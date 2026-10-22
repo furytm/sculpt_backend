@@ -233,7 +233,7 @@ function escapeHtml(value) {
         .replace(/'/g, "&#039;");
 }
 class MembershipActivationService {
-    async createActivationForBooking(bookingId) {
+    async createActivationForBooking(bookingId, remainingCredits) {
         const booking = await prisma.booking.findUnique({
             where: { id: bookingId },
             include: {
@@ -258,6 +258,10 @@ class MembershipActivationService {
         const startDate = new Date();
         const expiryDate = getMembershipExpiry(startDate, booking.membership.duration);
         if (!memberMembership) {
+            const classLimit = booking.membership.classLimit;
+            const creditsUsed = classLimit === null || remainingCredits === undefined
+                ? 0
+                : classLimit - remainingCredits;
             memberMembership = await prisma.memberMembership.create({
                 data: {
                     userId: booking.userId ?? null,
@@ -265,13 +269,17 @@ class MembershipActivationService {
                     status: MembershipStatus.ACTIVE,
                     startDate,
                     expiryDate,
-                    // Membership.classLimit becomes the member's total credits.
-                    // null means unlimited.
-                    creditsTotal: booking.membership.classLimit,
-                    creditsUsed: 0,
+                    creditsTotal: classLimit,
+                    creditsUsed,
                 },
             });
         }
+        await prisma.booking.update({
+            where: { id: booking.id },
+            data: {
+                memberMembershipId: memberMembership.id,
+            },
+        });
         const activationToken = generateActivationToken();
         const tokenHash = hashActivationToken(activationToken);
         let membershipNumber = generateMembershipNumber();
@@ -401,14 +409,15 @@ class MembershipActivationService {
             throw new Error("Invalid activation token.");
         }
         const booking = activation.booking;
-        /*
-         * The member must provide an email if the admin
-         * did not already provide one.
-         */
-        const email = data.email?.trim().toLowerCase() ||
-            booking.email?.trim().toLowerCase();
+        // Use the email associated with the original booking.
+        const email = booking.email?.trim().toLowerCase();
         if (!email) {
-            throw new Error("Email address is required to complete registration.");
+            throw new Error("Email address is required. Please contact Sculpt LAB admin.");
+        }
+        // Prevent activation with a different email address.
+        if (data.email &&
+            data.email.trim().toLowerCase() !== email) {
+            throw new Error("The email must match the email associated with this membership.");
         }
         const hashedPassword = await bcrypt.hash(data.password, 12);
         const result = await prisma.$transaction(async (tx) => {
@@ -510,6 +519,62 @@ class MembershipActivationService {
             accessToken,
             refreshToken,
         };
+    }
+    async resendActivationForEmail(email) {
+        const normalizedEmail = email.trim().toLowerCase();
+        const activation = await prisma.membershipActivation.findFirst({
+            where: {
+                usedAt: null,
+                booking: {
+                    email: {
+                        equals: normalizedEmail,
+                        mode: "insensitive",
+                    },
+                    paymentStatus: "PAID",
+                    paymentMethod: "OFFLINE",
+                },
+            },
+            include: {
+                booking: {
+                    include: {
+                        membership: true,
+                    },
+                },
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+        if (!activation) {
+            return { found: false, emailSent: false };
+        }
+        const activationToken = generateActivationToken();
+        const tokenHash = hashActivationToken(activationToken);
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
+        await prisma.membershipActivation.update({
+            where: { id: activation.id },
+            data: {
+                tokenHash,
+                expiresAt,
+            },
+        });
+        try {
+            await sendActivationEmail({
+                email: normalizedEmail,
+                fullName: activation.booking.fullName || "Sculpt LAB Member",
+                membershipName: activation.booking.membership.name,
+                membershipNumber: activation.membershipNumber,
+                activationToken,
+                amount: activation.booking.amount,
+            });
+            console.log("Membership activation email resent:", normalizedEmail);
+            return { found: true, emailSent: true };
+        }
+        catch (error) {
+            console.error("Failed to resend membership activation email:", normalizedEmail, error);
+            return { found: true, emailSent: false };
+        }
     }
 }
 export const membershipActivationService = new MembershipActivationService();

@@ -104,6 +104,45 @@ class AdminSessionController {
             });
         }
     }
+    async addOfflineAttendee(req, res) {
+        try {
+            const sessionId = String(req.params.sessionId ?? "");
+            const { fullName, email, phone, membershipId, amount, paymentStatus, } = req.body;
+            if (typeof fullName !== "string" ||
+                typeof membershipId !== "string") {
+                return res.status(400).json({
+                    success: false,
+                    message: "Attendee name and membership ID are required.",
+                });
+            }
+            if (paymentStatus !== undefined &&
+                !["PAID", "PENDING"].includes(paymentStatus)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Payment status must be PAID or PENDING.",
+                });
+            }
+            const attendee = await adminSessionService.addOfflineAttendee(sessionId, {
+                fullName,
+                email,
+                phone,
+                membershipId,
+                amount,
+                paymentStatus,
+            });
+            return res.status(201).json({
+                success: true,
+                message: "Offline session attendee recorded successfully.",
+                data: attendee,
+            });
+        }
+        catch (error) {
+            return res.status(400).json({
+                success: false,
+                message: error?.message || "Failed to add offline attendee.",
+            });
+        }
+    }
 }
 export default new AdminSessionController();
 //# sourceMappingURL=admin-session.controller.js.map

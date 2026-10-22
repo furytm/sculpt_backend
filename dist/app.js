@@ -11,6 +11,8 @@ import adminRoutes from "./admin/admin.route.js";
 import membershipActivationRoutes from "./membership-activation/membership-activation.route.js";
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger.js";
+import journalRoutes from './journal/journal.routes.js';
+import publicJournalRoutes from './journal/journal.public.routes.js';
 dotenv.config();
 const app = express();
 // =====================================================
@@ -37,6 +39,8 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/memberships", membershipRoutes);
 app.use("/api/schedules", scheduleRoutes);
 app.use("/api/admin", adminRoutes);
+app.use('/api/journal', publicJournalRoutes);
 app.use("/api/membership-activation", membershipActivationRoutes);
+app.use('/api/admin/journal', journalRoutes);
 export default app;
 //# sourceMappingURL=app.js.map
