@@ -117,11 +117,13 @@ async callback(req: Request, res: Response) {
       await membershipService.completeMembershipPurchase(reference);
 
       // NEW purchases should not be labelled as renewals.
-      if (membershipPurchase.type === "NEW") {
-        return res.redirect(
-          `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
-        );
-      }
+  
+if (membershipPurchase.type === "NEW") {
+  return res.redirect(
+    `${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`
+  );
+}
+
 
       // Renewals and upgrades get their appropriate mode.
       if (
@@ -187,9 +189,11 @@ async callback(req: Request, res: Response) {
     }
 
     // 5. Return to the booking confirmation page.
- return res.redirect(
-  `${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`
+
+return res.redirect(
+  `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
 );
+
   } catch (error) {
     console.error("Paymish Callback Error:", error);
 
