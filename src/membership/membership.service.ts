@@ -1032,14 +1032,15 @@ async getPublicMembershipConfirmation(
     : null;
 
   return {
-    purchase: {
-      paymentReference: purchase.paymentReference,
-      type: purchase.type,
-      amount: purchase.amount,
-      paymentStatus: purchase.paymentStatus,
-      carriedCredits: purchase.carriedCredits,
-      createdAt: purchase.createdAt,
-    },
+   purchase: {
+  paymentReference: purchase.paymentReference,
+  email: purchase.email,
+  type: purchase.type,
+  amount: purchase.amount,
+  paymentStatus: purchase.paymentStatus,
+  carriedCredits: purchase.carriedCredits,
+  createdAt: purchase.createdAt,
+},
     membership: {
       name: purchase.membership.name,
       price: purchase.membership.price,
