@@ -317,17 +317,27 @@ async getPublicMembershipConfirmation(
 
 
 }
+
 export const purchaseNewMembership = async (
   req: Request,
   res: Response
 ) => {
   try {
-    const { membershipId, email } = req.body;
+    const { membershipId, fullName, email, phone } = req.body;
+
+    if (!membershipId || !fullName?.trim() || !email?.trim() || !phone?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Membership, name, email, and phone are required.",
+      });
+    }
 
     const result =
       await membershipService.initiateNewMembershipPurchase({
         membershipId,
+        fullName,
         email,
+        phone,
       });
 
     return res.status(201).json({
@@ -347,5 +357,6 @@ export const purchaseNewMembership = async (
     });
   }
 };
+
 
 export default new MembershipController();

@@ -1032,9 +1032,11 @@ async getPublicMembershipConfirmation(
     : null;
 
   return {
-   purchase: {
+purchase: {
   paymentReference: purchase.paymentReference,
+  fullName: purchase.fullName,
   email: purchase.email,
+  phone: purchase.phone,
   type: purchase.type,
   amount: purchase.amount,
   paymentStatus: purchase.paymentStatus,
@@ -1068,10 +1070,11 @@ async getPublicMembershipConfirmation(
   };
 }
 
-
 async initiateNewMembershipPurchase(data: {
   membershipId: string;
+  fullName: string;
   email: string;
+  phone: string;
 }) {
   const email = data.email.trim().toLowerCase();
 

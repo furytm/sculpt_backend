@@ -47,6 +47,7 @@ class AuthService {
  * Register
  */
 
+
 async register(data: RegisterDto) {
   const {
     fullName,
@@ -64,50 +65,77 @@ async register(data: RegisterDto) {
   });
 
   if (existingUser) {
-    throw new Error(
-      "An account with this email already exists."
-    );
+    throw new Error("An account with this email already exists.");
   }
 
-  // Validate the existing purchase before creating the user.
-  let paidBooking = null;
+  let paidBooking: any = null;
+  let paidPurchase: any = null;
 
   if (normalizedReference) {
+    // First check whether this reference belongs to a booking.
     paidBooking = await prisma.booking.findUnique({
-      where: {
-        paymentReference: normalizedReference,
-      },
+      where: { paymentReference: normalizedReference },
     });
 
+    // If no booking exists, check membership purchases.
     if (!paidBooking) {
-      throw new Error("Booking not found for this reference.");
-    }
+      paidPurchase = await prisma.membershipPurchase.findUnique({
+        where: { paymentReference: normalizedReference },
+      });
 
-   if (!paidBooking.email) {
-  throw new Error(
-    "This booking has no email address. Please contact support."
-  );
-}
+      if (!paidPurchase) {
+        throw new Error(
+          "No booking or membership purchase was found for this reference."
+        );
+      }
 
-if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
-  throw new Error(
-    "The booking email does not match your registration email."
-  );
-}
+      if (
+        paidPurchase.email.toLowerCase().trim() !== normalizedEmail
+      ) {
+        throw new Error(
+          "The membership purchase email does not match your registration email."
+        );
+      }
 
-    if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
-      throw new Error(
-        "This booking has not been paid for."
-      );
-    }
+      if (paidPurchase.paymentStatus !== PaymentStatus.PAID) {
+        throw new Error(
+          "This membership purchase has not been paid for."
+        );
+      }
 
-    if (
-      paidBooking.bookingStatus !== BookingStatus.PENDING ||
-      paidBooking.userId
-    ) {
-      throw new Error(
-        "This booking is already attached or can no longer be continued."
-      );
+      if (paidPurchase.userId) {
+        throw new Error(
+          "This membership purchase is already attached to an account."
+        );
+      }
+    } else {
+      // Preserve the existing booking validation.
+      if (!paidBooking.email) {
+        throw new Error(
+          "This booking has no email address. Please contact support."
+        );
+      }
+
+      if (
+        paidBooking.email.toLowerCase().trim() !== normalizedEmail
+      ) {
+        throw new Error(
+          "The booking email does not match your registration email."
+        );
+      }
+
+      if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
+        throw new Error("This booking has not been paid for.");
+      }
+
+      if (
+        paidBooking.bookingStatus !== BookingStatus.PENDING ||
+        paidBooking.userId
+      ) {
+        throw new Error(
+          "This booking is already attached or can no longer be continued."
+        );
+      }
     }
   }
 
@@ -126,8 +154,6 @@ if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
     });
 
     if (paidBooking) {
-      // Recheck ownership/status atomically to avoid attaching
-      // a booking that another request has already claimed.
       const result = await tx.booking.updateMany({
         where: {
           id: paidBooking.id,
@@ -148,13 +174,32 @@ if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
       }
 
       await tx.healthSafetyForm.updateMany({
+        where: { bookingId: paidBooking.id },
+        data: { userId: createdUser.id },
+      });
+    }
+
+    if (paidPurchase) {
+      const result = await tx.membershipPurchase.updateMany({
         where: {
-          bookingId: paidBooking.id,
+          id: paidPurchase.id,
+          paymentReference: normalizedReference!,
+          paymentStatus: PaymentStatus.PAID,
+          userId: null,
+          email: normalizedEmail,
         },
         data: {
           userId: createdUser.id,
+          fullName,
+          phone: phone || null,
         },
       });
+
+      if (result.count !== 1) {
+        throw new Error(
+          "This membership purchase has already been attached or is no longer available."
+        );
+      }
     }
 
     return createdUser;
