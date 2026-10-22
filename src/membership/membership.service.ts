@@ -998,6 +998,76 @@ async getMembershipPurchase(
   };
 }
 
+
+async getPublicMembershipConfirmation(
+  paymentReference: string
+) {
+  const purchase =
+    await prisma.membershipPurchase.findUnique({
+      where: {
+        paymentReference,
+      },
+      include: {
+        membership: true,
+      },
+    });
+
+  if (!purchase) {
+    return null;
+  }
+
+  const memberMembership = purchase.userId
+    ? await prisma.memberMembership.findFirst({
+        where: {
+          userId: purchase.userId,
+          membershipId: purchase.membershipId,
+          startDate: {
+            gte: purchase.createdAt,
+          },
+        },
+        orderBy: {
+          startDate: "desc",
+        },
+      })
+    : null;
+
+  return {
+    purchase: {
+      paymentReference: purchase.paymentReference,
+      type: purchase.type,
+      amount: purchase.amount,
+      paymentStatus: purchase.paymentStatus,
+      carriedCredits: purchase.carriedCredits,
+      createdAt: purchase.createdAt,
+    },
+    membership: {
+      name: purchase.membership.name,
+      price: purchase.membership.price,
+      classLimit: purchase.membership.classLimit,
+      duration: purchase.membership.duration,
+      period: purchase.membership.period,
+    },
+    memberMembership: memberMembership
+      ? {
+          status: memberMembership.status,
+          startDate: memberMembership.startDate,
+          expiryDate: memberMembership.expiryDate,
+          creditsTotal: memberMembership.creditsTotal,
+          creditsUsed: memberMembership.creditsUsed,
+          remainingCredits:
+            memberMembership.creditsTotal === null
+              ? null
+              : Math.max(
+                  memberMembership.creditsTotal -
+                    memberMembership.creditsUsed,
+                  0
+                ),
+        }
+      : null,
+  };
+}
+
+
 async initiateNewMembershipPurchase(data: {
   membershipId: string;
   email: string;

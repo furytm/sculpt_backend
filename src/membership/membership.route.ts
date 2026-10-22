@@ -54,6 +54,11 @@ router.get(
   membershipController.getMembershipPurchase
 );
 
+router.get(
+  "/confirmation/:reference",
+  membershipController.getPublicMembershipConfirmation
+);
+
 /**
  * @openapi
  * /api/memberships/{id}:

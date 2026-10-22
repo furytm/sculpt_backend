@@ -269,6 +269,52 @@ async getMembershipPurchase(
 }
 
 
+async getPublicMembershipConfirmation(
+  req: Request<{ reference: string }>,
+  res: Response
+) {
+  try {
+    const { reference } = req.params;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment reference is required.",
+      });
+    }
+
+    const result =
+      await membershipService.getPublicMembershipConfirmation(
+        reference
+      );
+
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: "Membership purchase not found.",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Get Public Membership Confirmation Error:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to retrieve membership confirmation.",
+    });
+  }
+}
+
+
 
 }
 export const purchaseNewMembership = async (
