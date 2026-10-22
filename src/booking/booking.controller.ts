@@ -652,6 +652,43 @@ async resumeBookingForUser(req: Request, res: Response) {
     }
   }
 
+  async saveHealthDeclarationForUser(req: Request, res: Response) {
+  try {
+    const userId = (req as any).user?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Please log in to continue.",
+      });
+    }
+
+    const bookingId = String(req.params.bookingId);
+    const { accepted, notes } = req.body;
+
+    const healthSafetyForm =
+      await bookingService.saveHealthDeclaration(
+        bookingId,
+        "",
+        { accepted, notes },
+        userId
+      );
+
+    return res.json({
+      success: true,
+      data: { healthSafetyForm },
+    });
+  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Unable to save the health declaration.",
+    });
+  }
+}
+
   // =========================================================
   // MEMBERSHIP CREDIT SUMMARY
   // =========================================================

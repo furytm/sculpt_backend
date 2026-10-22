@@ -46,21 +46,21 @@ class AuthService {
 /**
  * Register
  */
+
 async register(data: RegisterDto) {
   const {
     fullName,
     email,
     password,
     phone,
+    bookingReference,
   } = data;
 
   const normalizedEmail = email.toLowerCase().trim();
+  const normalizedReference = bookingReference?.trim();
 
-  // Check existing account
   const existingUser = await prisma.user.findUnique({
-    where: {
-      email: normalizedEmail,
-    },
+    where: { email: normalizedEmail },
   });
 
   if (existingUser) {
@@ -69,56 +69,106 @@ async register(data: RegisterDto) {
     );
   }
 
-  // Hash password
-  const hashedPassword = await hashPassword(password);
+  // Validate the existing purchase before creating the user.
+  let paidBooking = null;
 
-  // Create user
+  if (normalizedReference) {
+    paidBooking = await prisma.booking.findUnique({
+      where: {
+        paymentReference: normalizedReference,
+      },
+    });
 
-  // Create user
-  const user = await prisma.user.create({
-    data: {
-      fullName,
-      email: normalizedEmail,
-      password: hashedPassword,
-      phone: phone || null,
-      provider: AuthProvider.LOCAL,
-      role: UserRole.MEMBER,
-    },
-  });
+    if (!paidBooking) {
+      throw new Error("Booking not found for this reference.");
+    }
 
-  // Send email verification link
-try {
-  await this.sendVerificationEmailForUser(user.id);
-} catch (error) {
-  console.error(
-    `Failed to send registration verification email to ${user.email}:`,
-    error
+   if (!paidBooking.email) {
+  throw new Error(
+    "This booking has no email address. Please contact support."
   );
 }
 
+if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
+  throw new Error(
+    "The booking email does not match your registration email."
+  );
+}
 
-  // Generate JWT tokens
-  const payload: JwtPayload = {
-    userId: user.id,
-    email: user.email,
-    role: user.role,
-  };
+    if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error(
+        "This booking has not been paid for."
+      );
+    }
 
-  // const accessToken = generateAccessToken(payload);
-  // const refreshToken = generateRefreshToken(payload);
+    if (
+      paidBooking.bookingStatus !== BookingStatus.PENDING ||
+      paidBooking.userId
+    ) {
+      throw new Error(
+        "This booking is already attached or can no longer be continued."
+      );
+    }
+  }
 
-  // // Save refresh token
-  // await prisma.refreshToken.create({
-  //   data: {
-  //     token: refreshToken,
-  //     userId: user.id,
-  //     expiresAt: new Date(
-  //       Date.now() + 1000 * 60 * 60 * 24 * 30
-  //     ),
-  //   },
-  // });
+  const hashedPassword = await hashPassword(password);
 
-  // Return
+  const user = await prisma.$transaction(async (tx) => {
+    const createdUser = await tx.user.create({
+      data: {
+        fullName,
+        email: normalizedEmail,
+        password: hashedPassword,
+        phone: phone || null,
+        provider: AuthProvider.LOCAL,
+        role: UserRole.MEMBER,
+      },
+    });
+
+    if (paidBooking) {
+      // Recheck ownership/status atomically to avoid attaching
+      // a booking that another request has already claimed.
+      const result = await tx.booking.updateMany({
+        where: {
+          id: paidBooking.id,
+          paymentStatus: PaymentStatus.PAID,
+          bookingStatus: BookingStatus.PENDING,
+          userId: null,
+          email: normalizedEmail,
+        },
+        data: {
+          userId: createdUser.id,
+        },
+      });
+
+      if (result.count !== 1) {
+        throw new Error(
+          "This booking has already been attached or is no longer available."
+        );
+      }
+
+      await tx.healthSafetyForm.updateMany({
+        where: {
+          bookingId: paidBooking.id,
+        },
+        data: {
+          userId: createdUser.id,
+        },
+      });
+    }
+
+    return createdUser;
+  });
+
+  try {
+    await this.sendVerificationEmailForUser(user.id);
+  } catch (error) {
+    console.error(
+      `Failed to send registration verification email to ${user.email}:`,
+      error
+    );
+  }
+
   return {
     user: {
       id: user.id,
@@ -129,10 +179,9 @@ try {
       role: user.role,
       isEmailVerified: user.isEmailVerified,
     },
-    // accessToken,
-    // refreshToken,
   };
 }
+
 
   /**
    * Login

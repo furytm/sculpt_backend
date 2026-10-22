@@ -1237,36 +1237,27 @@ if (!this.isSessionAtLeastTwoHoursAhead(
 
 
   
-async resumeBookingForUser(
-  reference: string,
-  userId: string
-) {
-  const booking = await prisma.booking.findUnique({
-    where: {
-      paymentReference: reference,
-    },
-  });
+
+async resumeBookingForUser(reference: string, userId: string) {
+const booking = await prisma.booking.findUnique({
+  where: { paymentReference: reference },
+  include: {
+    healthSafetyForm: true,
+  },
+});
 
   if (!booking) {
     throw new Error("Booking not found.");
   }
 
-  // Only the account that owns this booking can resume it.
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error("Payment has not been completed for this booking.");
+  }
+
   if (booking.userId && booking.userId !== userId) {
-    throw new Error(
-      "This booking cannot be accessed from this account."
-    );
+    throw new Error("This booking is already attached to another account.");
   }
 
-  if (
-    booking.paymentStatus !== PaymentStatus.PAID
-  ) {
-    throw new Error(
-      "Payment has not been completed for this booking."
-    );
-  }
-
-  // Already attached: do not generate another guest token.
   if (booking.userId === userId) {
     return {
       booking,
@@ -1276,21 +1267,32 @@ async resumeBookingForUser(
   }
 
   if (booking.bookingStatus !== BookingStatus.PENDING) {
-    throw new Error(
-      "This booking can no longer be continued."
-    );
+    throw new Error("This booking can no longer be continued.");
   }
 
   const { token: bookingFlowToken, tokenHash } =
     this.generateBookingFlowToken();
+const result = await prisma.booking.updateMany({
+  where: {
+    id: booking.id,
+    userId: null,
+    paymentStatus: PaymentStatus.PAID,
+    bookingStatus: BookingStatus.PENDING,
+    bookingFlowTokenHash: booking.bookingFlowTokenHash,
+  },
+  data: {
+    bookingFlowTokenHash: tokenHash,
+  },
+});
 
-  const updatedBooking = await prisma.booking.update({
-    where: {
-      id: booking.id,
-    },
-    data: {
-      bookingFlowTokenHash: tokenHash,
-    },
+  if (result.count !== 1) {
+    throw new Error(
+      "This booking has changed or is already being processed. Please try again."
+    );
+  }
+
+  const updatedBooking = await prisma.booking.findUniqueOrThrow({
+    where: { id: booking.id },
   });
 
   return {
@@ -1343,154 +1345,151 @@ async resumeBookingForUser(
    *
    * The booking already exists at this point.
    */
-  async saveHealthDeclaration(
-    bookingId: string,
-    bookingFlowToken: string,
-    data: {
-      accepted: boolean;
-      notes?: string;
-    }
-  ) {
-    const booking =
-      await this.getBookingByFlowToken(
-        bookingId,
-        bookingFlowToken
-      );
+async saveHealthDeclaration(
+  bookingId: string,
+  bookingFlowToken: string,
+  data: {
+    accepted: boolean;
+    notes?: string;
+  },
+  userId?: string
+) {
+  let booking;
 
-    if (
-      booking.bookingStatus !==
-      BookingStatus.PENDING
-    ) {
-      throw new Error(
-        "This booking can no longer be changed."
-      );
-    }
-
-    if (
-      data.accepted !== true
-    ) {
-      throw new Error(
-        "You must accept the Health Declaration to continue."
-      );
-    }
-
-    return await prisma.healthSafetyForm.upsert({
-      where: {
-        bookingId,
-      },
-
-      create: {
-        bookingId,
-
-        userId:
-          booking.userId ??
-          null,
-
-        accepted: true,
-
-        declarationVersion:
-          this.HEALTH_DECLARATION_VERSION,
-
-        notes:
-          data.notes?.trim() ||
-          null,
-
-        acceptedAt:
-          new Date(),
-
-        submittedAt:
-          new Date(),
-
-        screeningAnswers:
-          {},
-
-        consent:
-          [],
-      },
-
-      update: {
-        accepted: true,
-
-        declarationVersion:
-          this.HEALTH_DECLARATION_VERSION,
-
-        notes:
-          data.notes?.trim() ||
-          null,
-
-        acceptedAt:
-          new Date(),
-
-        submittedAt:
-          new Date(),
-      },
+  if (userId) {
+    // Authenticated recovery: the booking must belong to this user.
+    booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { healthSafetyForm: true },
     });
+
+    if (!booking || booking.userId !== userId) {
+      throw new Error("This booking does not belong to your account.");
+    }
+
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("Payment has not been completed for this booking.");
+    }
+  } else {
+    // Guest flow: use the original continuation token.
+    booking = await this.getBookingByFlowToken(
+      bookingId,
+      bookingFlowToken
+    );
   }
 
+  if (booking.bookingStatus !== BookingStatus.PENDING) {
+    throw new Error("This booking can no longer be changed.");
+  }
+
+  if (data.accepted !== true) {
+    throw new Error(
+      "You must accept the Health Declaration to continue."
+    );
+  }
+
+  const now = new Date();
+
+  return prisma.healthSafetyForm.upsert({
+    where: { bookingId },
+    create: {
+      bookingId,
+      userId: booking.userId ?? userId ?? null,
+      accepted: true,
+      declarationVersion: this.HEALTH_DECLARATION_VERSION,
+      notes: data.notes?.trim() || null,
+      acceptedAt: now,
+      submittedAt: now,
+      screeningAnswers: {},
+      consent: [],
+    },
+    update: {
+      userId: booking.userId ?? userId ?? null,
+      accepted: true,
+      declarationVersion: this.HEALTH_DECLARATION_VERSION,
+      notes: data.notes?.trim() || null,
+      acceptedAt: now,
+      submittedAt: now,
+    },
+  });
+}
   // =========================================================
   // ATTACH BOOKING TO ACCOUNT
   // =========================================================
 
-  async attachBookingAccount(
-    bookingId: string,
-    userId: string,
-    bookingFlowToken: string
-  ) {
-    const booking =
-      await this.getBookingByFlowToken(
-        bookingId,
-        bookingFlowToken
-      );
+async attachBookingAccount(
+  bookingId: string,
+  userId: string,
+  bookingFlowToken: string
+) {
+  const booking = await this.getBookingByFlowToken(
+    bookingId,
+    bookingFlowToken
+  );
 
-    if (
-      booking.userId &&
-      booking.userId !== userId
-    ) {
+  if (booking.userId && booking.userId !== userId) {
+    throw new Error("This booking is already attached to another account.");
+  }
+
+  if (booking.paymentStatus !== PaymentStatus.PAID) {
+    throw new Error("Payment has not been completed for this booking.");
+  }
+
+  if (booking.userId === userId) {
+    return {
+      booking,
+      alreadyAttached: true,
+    };
+  }
+
+  if (booking.bookingStatus !== BookingStatus.PENDING) {
+    throw new Error("Only pending bookings can be attached to an account.");
+  }
+
+  const updatedBooking = await prisma.$transaction(async (tx) => {
+    const result = await tx.booking.updateMany({
+      where: {
+        id: booking.id,
+        userId: null,
+        paymentStatus: PaymentStatus.PAID,
+        bookingStatus: BookingStatus.PENDING,
+        bookingFlowTokenHash: booking.bookingFlowTokenHash,
+      },
+      data: {
+        userId,
+        bookingFlowTokenHash: null,
+      },
+    });
+
+    if (result.count !== 1) {
       throw new Error(
-        "This booking is already attached to another account."
+        "This booking has changed or has already been attached. Please try again."
       );
     }
 
-    return await prisma.$transaction(
-      async (tx) => {
-        const updatedBooking =
-          await tx.booking.update({
-            where: {
-              id: booking.id,
-            },
+    await tx.healthSafetyForm.updateMany({
+      where: { bookingId: booking.id },
+      data: { userId },
+    });
 
-            data: {
-              userId,
-            },
+    return tx.booking.findUniqueOrThrow({
+      where: { id: booking.id },
+      include: {
+        membership: true,
+        memberMembership: true,
+        session: {
+          include: { schedule: true },
+        },
+        healthSafetyForm: true,
+      },
+    });
+  });
 
-            include: {
-              membership: true,
-
-              session: {
-                include: {
-                  schedule: true,
-                },
-              },
-
-              healthSafetyForm: true,
-            },
-          });
-
-        await tx.healthSafetyForm.updateMany({
-          where: {
-            bookingId:
-              booking.id,
-          },
-
-          data: {
-            userId,
-          },
-        });
-
-        return updatedBooking;
-      }
-    );
-  }
+  return {
+    booking: updatedBooking,
+    alreadyAttached: false,
+  };
+}
 
 
   async getClassAvailability(
@@ -2139,17 +2138,12 @@ return sessions
                   currentBooking.id,
               },
 
-              data: {
-                bookingStatus:
-                  BookingStatus.CONFIRMED,
-
-                bookingDate:
-                  session.sessionDate,
-
-                preferredStartDate:
-                  session.sessionDate,
-              },
-
+           data: {
+  bookingStatus: BookingStatus.CONFIRMED,
+  bookingDate: session.sessionDate,
+  preferredStartDate: session.sessionDate,
+  memberMembershipId: memberMembership.id,
+},
               include: {
                 membership: true,
 
@@ -2270,208 +2264,150 @@ return sessions
   // CONFIRM PRIVATE BOOKING
   // =========================================================
 
-  private async confirmPrivateBooking(
-    bookingId: string,
-    userId: string
-  ) {
-    return await prisma.$transaction(
-      async (tx) => {
-        await tx.$queryRaw`
-          SELECT id
-          FROM "Booking"
-          WHERE id = ${bookingId}
-          FOR UPDATE
-        `;
 
-        const booking =
-          await tx.booking.findUnique({
-            where: {
-              id: bookingId,
-            },
+private async confirmPrivateBooking(
+  bookingId: string,
+  userId: string
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT id
+      FROM "Booking"
+      WHERE id = ${bookingId}
+      FOR UPDATE
+    `;
 
-   include: {
-  membership: true,
+    const booking = await tx.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        membership: true,
+        memberMembership: true,
+        healthSafetyForm: true,
+        session: {
+          include: { schedule: true },
+        },
+      },
+    });
 
-  memberMembership: true,
+    if (!booking) {
+      throw new Error("Booking not found.");
+    }
 
-  healthSafetyForm: true,
+    if (booking.userId !== userId) {
+      throw new Error(
+        "This booking does not belong to your account."
+      );
+    }
 
-  session: {
-    include: {
-      schedule: true,
-    },
-  },
-},
-          });
+    // Idempotency: do not consume another credit on retry.
+    if (booking.bookingStatus === BookingStatus.CONFIRMED) {
+      return booking;
+    }
 
-        if (!booking) {
-          throw new Error(
-            "Booking not found."
-          );
-        }
+    if (booking.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("This booking has not been paid for.");
+    }
 
-        if (
-          booking.userId !==
-          userId
-        ) {
-          throw new Error(
-            "This booking does not belong to your account."
-          );
-        }
+    if (!booking.healthSafetyForm?.accepted) {
+      throw new Error(
+        "Please complete the Health Declaration before confirming your booking."
+      );
+    }
 
-        if (
-          booking.bookingStatus ===
-          BookingStatus.CONFIRMED
-        ) {
-          return booking;
-        }
+    if (booking.membership.type !== MembershipType.PRIVATE) {
+      throw new Error(
+        "This booking does not have a Private membership."
+      );
+    }
 
-        if (
-          booking.paymentStatus !==
-          PaymentStatus.PAID
-        ) {
-          throw new Error(
-            "This booking has not been paid for."
-          );
-        }
+    if (booking.sessionId) {
+      await tx.$queryRaw`
+        SELECT id
+        FROM "ClassSession"
+        WHERE id = ${booking.sessionId}
+        FOR UPDATE
+      `;
 
-        if (
-          !booking.healthSafetyForm ||
-          !booking.healthSafetyForm
-            .accepted
-        ) {
-          throw new Error(
-            "Please complete the Health Declaration before confirming your booking."
-          );
-        }
+      await this.assertSessionAvailable(
+        tx,
+        booking.sessionId,
+        MembershipType.PRIVATE
+      );
+    }
 
-                if (
-          booking.membership.type !== MembershipType.PRIVATE
-        ) {
-          throw new Error(
-            "This booking does not have a Private membership."
-          );
-        }
+    const membershipStart =
+      booking.preferredStartDate ?? new Date();
 
-        // Preserve the legacy Private purchase flow,
-        // which can confirm a membership without a session.
-        // If a session is selected, enforce exclusivity.
-        if (booking.sessionId) {
-          await tx.$queryRaw`
-            SELECT id
-            FROM "ClassSession"
-            WHERE id = ${booking.sessionId}
-            FOR UPDATE
-          `;
+    const membershipExpiry = this.calculateMembershipExpiry(
+      membershipStart,
+      booking.membership.duration,
+      booking.membership.period
+    );
 
-          await this.assertSessionAvailable(
-            tx,
-            booking.sessionId,
-            MembershipType.PRIVATE
-          );
-        }
-        const creditsTotal =
-          this.getMembershipCredits(
-            booking.membership
-              .classLimit
-          );
+    const creditsTotal = this.getMembershipCredits(
+      booking.membership.classLimit
+    );
 
-        const membershipStart =
-          booking.preferredStartDate ??
-          new Date();
-
-        const membershipExpiry =
-          this.calculateMembershipExpiry(
-            membershipStart,
-            booking.membership
-              .duration,
-            booking.membership
-              .period
-          );
-
-        let memberMembership =
-          booking.memberMembership;
-
-        if (!memberMembership) {
-          memberMembership =
-            await tx.memberMembership.create({
-              data: {
-                userId,
-
-           
-
-                membershipId:
-                  booking.membershipId,
-
-                status:
-                  MembershipStatus.ACTIVE,
-
-                startDate:
-                  membershipStart,
-
-                expiryDate:
-                  membershipExpiry,
-
-                creditsTotal,
-
-                creditsUsed: 0,
-              },
-            });
-        }
-
-        if (
-          !this.hasRemainingCredit(
-            memberMembership
-          )
-        ) {
-          throw new Error(
-            "You do not have any remaining session credits."
-          );
-        }
-
-        if (
-          memberMembership
-            .creditsTotal !==
-          null
-        ) {
-          await tx.memberMembership.update({
-            where: {
-              id:
-                memberMembership.id,
-            },
-
-            data: {
-              creditsUsed: {
-                increment: 1,
-              },
-            },
-          });
-        }
-
-        return await tx.booking.update({
-          where: {
-            id: booking.id,
-          },
-
+    // Create a membership or refresh the existing linked record.
+    const memberMembership = booking.memberMembership
+      ? await tx.memberMembership.update({
+          where: { id: booking.memberMembership.id },
           data: {
-            bookingStatus:
-              BookingStatus.CONFIRMED,
-
-            preferredStartDate:
-              membershipStart,
+            userId,
+            membershipId: booking.membershipId,
+            status: MembershipStatus.ACTIVE,
+            startDate: membershipStart,
+            expiryDate: membershipExpiry,
+            creditsTotal,
           },
-
-          include: {
-            membership: true,
-
-            memberMembership: true,
-
-            healthSafetyForm: true,
+        })
+      : await tx.memberMembership.create({
+          data: {
+            userId,
+            membershipId: booking.membershipId,
+            status: MembershipStatus.ACTIVE,
+            startDate: membershipStart,
+            expiryDate: membershipExpiry,
+            creditsTotal,
+            creditsUsed: 0,
           },
         });
-      }
-    );
-  }
+
+    if (!this.hasRemainingCredit(memberMembership)) {
+      throw new Error(
+        "You do not have any remaining session credits."
+      );
+    }
+
+    // Consume the initial session credit for finite memberships.
+    if (memberMembership.creditsTotal !== null) {
+      await tx.memberMembership.update({
+        where: { id: memberMembership.id },
+        data: {
+          creditsUsed: { increment: 1 },
+        },
+      });
+    }
+
+    return tx.booking.update({
+      where: { id: booking.id },
+      data: {
+        bookingStatus: BookingStatus.CONFIRMED,
+        bookingDate: membershipStart,
+        preferredStartDate: membershipStart,
+        memberMembershipId: memberMembership.id,
+      },
+      include: {
+        membership: true,
+        memberMembership: true,
+        healthSafetyForm: true,
+        session: {
+          include: { schedule: true },
+        },
+      },
+    });
+  });
+}
 
   // =========================================================
   // BOOK ANOTHER SESSION USING EXISTING MEMBERSHIP

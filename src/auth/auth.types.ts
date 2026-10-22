@@ -7,6 +7,7 @@ export interface RegisterDto {
   confirmPassword: string;
   phone?: string;
   bookingReference?: string;
+  
 }
 
 export interface LoginDto {

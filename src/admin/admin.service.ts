@@ -962,12 +962,12 @@ async getAllMembers() {
           activation: true,
         },
         orderBy: {
-          createdAt: 'desc',
+          createdAt: "desc",
         },
       },
     },
     orderBy: {
-      createdAt: 'desc',
+      createdAt: "desc",
     },
   });
 
@@ -979,64 +979,88 @@ async getAllMembers() {
           (!item.expiryDate || item.expiryDate > now),
       ) ?? user.memberships[0];
 
+    const creditsTotal =
+      currentMembership?.creditsTotal ?? null;
+
+    const creditsUsed =
+      currentMembership?.creditsUsed ?? null;
+
+    const classLimit =
+      currentMembership?.membership.classLimit;
+
+    const creditsRemaining =
+      !currentMembership || classLimit === null
+        ? null
+        : creditsTotal !== null && creditsUsed !== null
+          ? creditsTotal - creditsUsed
+          : null;
+
     return {
       id: user.id,
       fullName: user.fullName,
       email: user.email,
       phone: user.phone,
       membership: currentMembership?.membership ?? null,
-      membershipStatus: currentMembership?.status ?? 'NO_MEMBERSHIP',
+      membershipStatus:
+        currentMembership?.status ?? "NO_MEMBERSHIP",
       membershipNumber:
         currentMembership?.activation?.membershipNumber ?? null,
       expiryDate: currentMembership?.expiryDate ?? null,
-      createdAt: currentMembership?.createdAt ?? user.createdAt,
+      createdAt:
+        currentMembership?.createdAt ?? user.createdAt,
+
+      creditsTotal,
+      creditsUsed,
+      creditsRemaining,
     };
   });
 
-  // Offline customers may have memberships without a User account.
-  // Only include memberships linked to paid, confirmed offline bookings.
-  const offlineMemberships = await prisma.memberMembership.findMany({
-    where: {
-      userId: null,
-      bookings: {
-        some: {
-          paymentStatus: PaymentStatus.PAID,
-          bookingStatus: BookingStatus.CONFIRMED,
-          paymentMethod: PaymentMethod.OFFLINE,
+  // Offline customers without a User account.
+  // Include only paid, confirmed offline bookings.
+  const offlineMemberships =
+    await prisma.memberMembership.findMany({
+      where: {
+        userId: null,
+        bookings: {
+          some: {
+            paymentStatus: PaymentStatus.PAID,
+            bookingStatus: BookingStatus.CONFIRMED,
+            paymentMethod: PaymentMethod.OFFLINE,
+          },
         },
       },
-    },
-    include: {
-      membership: true,
-      activation: true,
-      bookings: {
-        where: {
-          paymentStatus: PaymentStatus.PAID,
-          bookingStatus: BookingStatus.CONFIRMED,
-          paymentMethod: PaymentMethod.OFFLINE,
+      include: {
+        membership: true,
+        activation: true,
+        bookings: {
+          where: {
+            paymentStatus: PaymentStatus.PAID,
+            bookingStatus: BookingStatus.CONFIRMED,
+            paymentMethod: PaymentMethod.OFFLINE,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+          take: 1,
         },
-        orderBy: {
-          createdAt: 'desc',
-        },
-        take: 1,
       },
-    },
-    orderBy: {
-      createdAt: 'desc',
-    },
-  });
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
 
   // Deduplicate by email, or phone when email is unavailable.
-  // This prevents the same customer appearing twice if they have
-  // multiple memberships or later register an account.
   const seenCustomers = new Set<string>();
 
   for (const member of registeredMembers) {
     const email = member.email?.trim().toLowerCase();
     const phone = member.phone?.trim();
 
-    if (email) seenCustomers.add(`email:${email}`);
-    else if (phone) seenCustomers.add(`phone:${phone}`);
+    if (email) {
+      seenCustomers.add(`email:${email}`);
+    } else if (phone) {
+      seenCustomers.add(`phone:${phone}`);
+    }
   }
 
   const offlineMembers = [];
@@ -1059,6 +1083,17 @@ async getAllMembers() {
 
     seenCustomers.add(customerKey);
 
+    const creditsTotal = member.creditsTotal ?? null;
+    const creditsUsed = member.creditsUsed;
+    const classLimit = member.membership.classLimit;
+
+    const creditsRemaining =
+      classLimit === null
+        ? null
+        : creditsTotal !== null
+          ? creditsTotal - creditsUsed
+          : null;
+
     offlineMembers.push({
       id: member.id,
       fullName: booking.fullName,
@@ -1066,9 +1101,14 @@ async getAllMembers() {
       phone: booking.phone,
       membership: member.membership,
       membershipStatus: member.status,
-      membershipNumber: member.activation?.membershipNumber ?? null,
+      membershipNumber:
+        member.activation?.membershipNumber ?? null,
       expiryDate: member.expiryDate,
       createdAt: booking.createdAt,
+
+      creditsTotal,
+      creditsUsed,
+      creditsRemaining,
     });
   }
 

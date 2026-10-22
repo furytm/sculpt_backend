@@ -354,6 +354,11 @@ router.post(
   authenticate,
   bookingController.bookMemberSession
 );
+router.patch(
+  "/:bookingId/health-declaration/account",
+  authenticate,
+  bookingController.saveHealthDeclarationForUser
+);
 
 // =========================================================
 // MEMBERSHIP CREDITS
