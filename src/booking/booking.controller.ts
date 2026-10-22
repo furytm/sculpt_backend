@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import bookingService from "./booking.service.js";
 import { bookingDocumentsService } from "./booking-documents.service.js";
+import { MembershipType } from "@prisma/client";
 
 class BookingController {
   // =========================================================
@@ -126,9 +127,10 @@ const result = await bookingService.initializePayment(
   //
   // =========================================================
 
+
   async getClassAvailability(req: Request, res: Response) {
     try {
-     const classId = String(req.params.classId);
+      const classId = String(req.params.classId || "");
 
       if (!classId) {
         return res.status(400).json({
@@ -147,11 +149,27 @@ const result = await bookingService.initializePayment(
           ? req.query.endDate
           : undefined;
 
+      const typeParam =
+        typeof req.query.type === "string"
+          ? req.query.type.toUpperCase()
+          : MembershipType.GROUP;
+
+      if (
+        typeParam !== MembershipType.GROUP &&
+        typeParam !== MembershipType.PRIVATE
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Type must be GROUP or PRIVATE.",
+        });
+      }
+
       const availability =
         await bookingService.getClassAvailability(
           classId,
           startDate,
-          endDate
+          endDate,
+          typeParam as MembershipType
         );
 
       return res.status(200).json({
@@ -164,7 +182,8 @@ const result = await bookingService.initializePayment(
       return res.status(400).json({
         success: false,
         message:
-          error?.message || "Failed to retrieve class availability.",
+          error?.message ||
+          "Failed to retrieve class availability.",
       });
     }
   }
@@ -175,7 +194,7 @@ const result = await bookingService.initializePayment(
 
   async getSessionAvailability(req: Request, res: Response) {
     try {
- const sessionId = String(req.params.sessionId);
+      const sessionId = String(req.params.sessionId || "");
 
       if (!sessionId) {
         return res.status(400).json({
@@ -184,8 +203,26 @@ const result = await bookingService.initializePayment(
         });
       }
 
+      const typeParam =
+        typeof req.query.type === "string"
+          ? req.query.type.toUpperCase()
+          : MembershipType.GROUP;
+
+      if (
+        typeParam !== MembershipType.GROUP &&
+        typeParam !== MembershipType.PRIVATE
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Type must be GROUP or PRIVATE.",
+        });
+      }
+
       const session =
-        await bookingService.getSessionAvailability(sessionId);
+        await bookingService.getSessionAvailability(
+          sessionId,
+          typeParam as MembershipType
+        );
 
       if (!session) {
         return res.status(404).json({
@@ -204,10 +241,12 @@ const result = await bookingService.initializePayment(
       return res.status(400).json({
         success: false,
         message:
-          error?.message || "Failed to retrieve session availability.",
+          error?.message ||
+          "Failed to retrieve session availability.",
       });
     }
   }
+
 
   // =========================================================
   // GET BOOKING CONFIRMATION

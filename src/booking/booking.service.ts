@@ -36,7 +36,7 @@ class BookingService {
   // =========================================================
   // BOOKING FLOW TOKEN
   // =========================================================
-
+ 
   private generateBookingFlowToken() {
     const token = crypto.randomBytes(32).toString("hex");
 
@@ -169,6 +169,147 @@ class BookingService {
     }
 
     return true;
+  }
+
+ 
+  /**
+   * Build the actual class start timestamp.
+   * Assumes sessionDate is stored at UTC midnight and
+   * schedule.startTime is Lagos local time (UTC+1).
+   */
+  private getSessionStartAt(
+    sessionDate: Date,
+    startTime: string
+  ): Date {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(startTime);
+
+    if (!match) {
+      throw new Error(`Invalid session start time: ${startTime}`);
+    }
+
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+
+    if (hours > 23 || minutes > 59) {
+      throw new Error(`Invalid session start time: ${startTime}`);
+    }
+
+    return new Date(
+      Date.UTC(
+        sessionDate.getUTCFullYear(),
+        sessionDate.getUTCMonth(),
+        sessionDate.getUTCDate(),
+        hours - 1,
+        minutes
+      )
+    );
+  }
+
+  /**
+   * A session is bookable/cancellable only when its actual
+   * start time is at least two hours away.
+   */
+  private isSessionAtLeastTwoHoursAhead(
+    sessionDate: Date,
+    startTime: string
+  ): boolean {
+    const sessionStartAt = this.getSessionStartAt(
+      sessionDate,
+      startTime
+    );
+
+    return (
+      sessionStartAt.getTime() >=
+      Date.now() + 2 * 60 * 60 * 1000
+    );
+  }
+
+  
+  private async assertSessionAvailable(
+    tx: Prisma.TransactionClient,
+    sessionId: string,
+    requestedType: MembershipType
+  ) {
+    const session = await tx.classSession.findUnique({
+      where: { id: sessionId },
+      include: {
+        schedule: true,
+      },
+    });
+
+    if (!session) {
+      throw new Error("Class session not found.");
+    }
+
+    if (session.status !== "OPEN") {
+      throw new Error("This class session is no longer available.");
+    }
+
+    if (!session.schedule.isActive) {
+      throw new Error("This class schedule is no longer active.");
+    }
+if (!this.isSessionAtLeastTwoHoursAhead(
+  session.sessionDate,
+  session.schedule.startTime
+)) {
+  throw new Error(
+    "This session must start at least two hours from now."
+  );
+}
+
+    const confirmedGroupCount = await tx.booking.count({
+      where: {
+        sessionId,
+        bookingStatus: BookingStatus.CONFIRMED,
+        membership: {
+          type: MembershipType.GROUP,
+        },
+      },
+    });
+
+    const confirmedPrivateCount = await tx.booking.count({
+      where: {
+        sessionId,
+        bookingStatus: BookingStatus.CONFIRMED,
+        membership: {
+          type: MembershipType.PRIVATE,
+        },
+      },
+    });
+
+ const capacity = Math.min(
+  5,
+  session.capacity ?? session.schedule.capacity
+);
+
+    if (requestedType === MembershipType.PRIVATE) {
+      if (confirmedGroupCount > 0 || confirmedPrivateCount > 0) {
+        throw new Error(
+          "This session is already occupied and cannot be booked privately."
+        );
+      }
+    } else {
+      if (confirmedPrivateCount > 0) {
+        throw new Error(
+          "This session is reserved for a private booking."
+        );
+      }
+
+      if (confirmedGroupCount >= capacity) {
+        throw new Error("This group session is full.");
+      }
+    }
+
+    return {
+      session,
+      capacity,
+      confirmedGroupCount,
+      confirmedPrivateCount,
+      availableSlots:
+        requestedType === MembershipType.PRIVATE
+          ? 1
+          : Math.max(capacity - confirmedGroupCount, 0),
+    };
   }
 
   /**
@@ -480,25 +621,17 @@ class BookingService {
     // SESSION
     // -------------------------------------------------------
 
-    /**
-     * The new flow selects the session BEFORE payment.
-     *
-     * Your updated DTO should contain:
-     *
-     * classSessionId?: string
-     */
-    const classSessionId =
-      (data as any).classSessionId;
+    // A membership may be purchased before the customer
+    // selects a dated session. If a session is supplied,
+    // validate it for either membership type.
+    //
+    // scheduleId is accepted here as a backward-compatible
+    // request field, but its value must be a ClassSession.id.
 
-    if (
-      membership.type ===
-        MembershipType.GROUP &&
-      !classSessionId
-    ) {
-      throw new Error(
-        "Please select an available class session."
-      );
-    }
+    const classSessionId =
+      data.classSessionId?.trim() ||
+      data.scheduleId?.trim() ||
+      undefined;
 
     let classSession = null;
 
@@ -511,17 +644,6 @@ class BookingService {
 
           include: {
             schedule: true,
-
-            _count: {
-              select: {
-                bookings: {
-                  where: {
-                    bookingStatus:
-                      BookingStatus.CONFIRMED,
-                  },
-                },
-              },
-            },
           },
         });
 
@@ -531,18 +653,13 @@ class BookingService {
         );
       }
 
-      if (
-        !classSession.schedule.isActive
-      ) {
+      if (!classSession.schedule.isActive) {
         throw new Error(
           "This class schedule is no longer active."
         );
       }
 
-      if (
-        classSession.status !==
-        "OPEN"
-      ) {
+      if (classSession.status !== "OPEN") {
         throw new Error(
           "This class session is no longer available."
         );
@@ -552,9 +669,14 @@ class BookingService {
       // TOMORROW ONWARD
       // -----------------------------------------------------
 
-      this.validateFutureSessionDate(
-        classSession.sessionDate
-      );
+    if (!this.isSessionAtLeastTwoHoursAhead(
+  classSession.sessionDate,
+  classSession.schedule.startTime
+)) {
+  throw new Error(
+    "This session must start at least two hours from now."
+  );
+}
 
       // -----------------------------------------------------
       // CLASS MATCH
@@ -562,31 +684,11 @@ class BookingService {
 
       if (
         data.classId &&
-        classSession.schedule.className
-          .toLowerCase() !==
+        classSession.schedule.className.toLowerCase() !==
           data.classId.toLowerCase()
       ) {
         throw new Error(
           "The selected session does not belong to the selected class."
-        );
-      }
-
-      // -----------------------------------------------------
-      // CAPACITY
-      // -----------------------------------------------------
-
-      const capacity =
-        classSession.capacity ??
-        classSession.schedule.capacity;
-
-      const bookedCount =
-        classSession._count.bookings;
-
-      if (
-        bookedCount >= capacity
-      ) {
-        throw new Error(
-          "This class session is already full."
         );
       }
     }
@@ -595,15 +697,14 @@ class BookingService {
     // HEALTH DECLARATION
     // -------------------------------------------------------
 
-    const healthDeclaration =
-      (data as any).healthDeclaration;
+    const healthDeclaration = data.healthDeclaration;
 
     if (
-      !healthDeclaration ||
+      healthDeclaration !== undefined &&
       healthDeclaration.accepted !== true
     ) {
       throw new Error(
-        "You must accept the Health Declaration before payment."
+        "You must accept the Health Declaration to continue."
       );
     }
 
@@ -623,8 +724,7 @@ class BookingService {
     const {
       token: bookingFlowToken,
       tokenHash,
-    } =
-      this.generateBookingFlowToken();
+    } = this.generateBookingFlowToken();
 
     // -------------------------------------------------------
     // CREATE BOOKING
@@ -633,7 +733,10 @@ class BookingService {
     const booking =
       await prisma.$transaction(
         async (tx) => {
-          // Recheck session capacity inside transaction.
+          // Pending purchases do not reserve a session.
+          // Lock the session and check its availability
+          // again before creating this pending booking.
+
           if (classSession) {
             await tx.$queryRaw`
               SELECT id
@@ -642,49 +745,22 @@ class BookingService {
               FOR UPDATE
             `;
 
-            const latestSession =
-              await tx.classSession.findUnique({
-                where: {
-                  id: classSession.id,
-                },
-
-                include: {
-                  schedule: true,
-
-                  _count: {
-                    select: {
-                      bookings: {
-                        where: {
-                          bookingStatus:
-                            BookingStatus.CONFIRMED,
-                        },
-                      },
-                    },
-                  },
-                },
-              });
-
-            if (!latestSession) {
-              throw new Error(
-                "Selected class session was not found."
+            const availability =
+              await this.assertSessionAvailable(
+                tx,
+                classSession.id,
+                membership.type
               );
-            }
 
-            this.validateFutureSessionDate(
-              latestSession.sessionDate
-            );
-
-            const capacity =
-              latestSession.capacity ??
-              latestSession.schedule.capacity;
-
-            if (
-              latestSession._count.bookings >=
-              capacity
-            ) {
-              throw new Error(
-                "This class session has just become full. Please select another session."
-              );
+            if (data.classId) {
+              if (
+                availability.session.schedule.className.toLowerCase() !==
+                data.classId.toLowerCase()
+              ) {
+                throw new Error(
+                  "The selected session does not belong to the selected class."
+                );
+              }
             }
           }
 
@@ -706,17 +782,15 @@ class BookingService {
 
                 classId:
                   data.classId ??
-                  classSession?.schedule
-                    .className ??
+                  classSession?.schedule.className ??
                   null,
 
                 sessionId:
                   classSession?.id ??
                   null,
 
-                // Keep old scheduleId populated
-                // for compatibility with existing
-                // Booking relations.
+                // Store the recurring Schedule.id in this
+                // database relation, not the session ID.
                 scheduleId:
                   classSession?.scheduleId ??
                   null,
@@ -736,8 +810,7 @@ class BookingService {
                   membership.price,
 
                 paymentMethod:
-                  data.paymentMethod ===
-                  "OFFLINE"
+                  data.paymentMethod === "OFFLINE"
                     ? PaymentMethod.OFFLINE
                     : PaymentMethod.PAYMISH,
 
@@ -765,38 +838,41 @@ class BookingService {
             });
 
           // -------------------------------------------------
-          // SAVE HEALTH DECLARATION BEFORE PAYMENT
+          // SAVE HEALTH DECLARATION IF ACCEPTED
           // -------------------------------------------------
 
-          await tx.healthSafetyForm.create({
-            data: {
-              bookingId:
-                createdBooking.id,
+          // Membership-first purchases can complete the
+          // declaration later, before confirming a session.
 
-              userId: null,
+          if (healthDeclaration?.accepted === true) {
+            await tx.healthSafetyForm.create({
+              data: {
+                bookingId:
+                  createdBooking.id,
 
-              accepted: true,
+                userId: null,
 
-              declarationVersion:
-                this.HEALTH_DECLARATION_VERSION,
+                accepted: true,
 
-              notes:
-                healthDeclaration.notes
-                  ?.trim() || null,
+                declarationVersion:
+                  this.HEALTH_DECLARATION_VERSION,
 
-              acceptedAt:
-                new Date(),
+                notes:
+                  healthDeclaration.notes?.trim() ||
+                  null,
 
-              submittedAt:
-                new Date(),
+                acceptedAt:
+                  new Date(),
 
-              screeningAnswers:
-                {},
+                submittedAt:
+                  new Date(),
 
-              consent:
-                [],
-            },
-          });
+                screeningAnswers: {},
+
+                consent: [],
+              },
+            });
+          }
 
           return createdBooking;
         }
@@ -806,10 +882,7 @@ class BookingService {
     // OFFLINE
     // -------------------------------------------------------
 
-    if (
-      data.paymentMethod ===
-      "OFFLINE"
-    ) {
+    if (data.paymentMethod === "OFFLINE") {
       return {
         booking,
 
@@ -827,22 +900,22 @@ class BookingService {
     // -------------------------------------------------------
 
     if (!booking.email) {
-  throw new Error(
-    "Email is required before initializing payment."
-  );
-}
+      throw new Error(
+        "Email is required before initializing payment."
+      );
+    }
+
     const payment =
-      await paymentService
-        .initializeTransaction({
-          email:
-            booking.email,
+      await paymentService.initializeTransaction({
+        email:
+          booking.email,
 
-          amount:
-            booking.amount,
+        amount:
+          booking.amount,
 
-          reference:
-            paymentReference,
-        });
+        reference:
+          paymentReference,
+      });
 
     return {
       booking,
@@ -1419,311 +1492,250 @@ async resumeBookingForUser(
     );
   }
 
-  // =========================================================
-  // GET CLASS AVAILABILITY
-  // =========================================================
 
-  /**
-   * Returns actual future sessions.
-   *
-   * IMPORTANT:
-   *
-   * Today is excluded.
-   * Tomorrow is the first selectable date.
-   */
   async getClassAvailability(
     classId: string,
     fromDate?: string,
-    toDate?: string
+    toDate?: string,
+    requestedType: MembershipType = MembershipType.GROUP
   ) {
     if (!classId) {
-      throw new Error(
-        "Class is required."
-      );
-    }
-
-    // -------------------------------------------------------
-    // START DATE
-    // -------------------------------------------------------
-
-    let startDate =
-      this.getTomorrowStart();
-
-    if (fromDate) {
-      const requestedStart =
-        new Date(fromDate);
-
-      if (
-        Number.isNaN(
-          requestedStart.getTime()
-        )
-      ) {
-        throw new Error(
-          "Invalid from date."
-        );
-      }
-
-      this.validateFutureSessionDate(
-        requestedStart
-      );
-
-      requestedStart.setHours(
-        0,
-        0,
-        0,
-        0
-      );
-
-      startDate =
-        requestedStart;
-    }
-
-    // -------------------------------------------------------
-    // END DATE
-    // -------------------------------------------------------
-
-    let endDate =
-      new Date(startDate);
-
-    if (toDate) {
-      const requestedEnd =
-        new Date(toDate);
-
-      if (
-        Number.isNaN(
-          requestedEnd.getTime()
-        )
-      ) {
-        throw new Error(
-          "Invalid to date."
-        );
-      }
-
-      requestedEnd.setHours(
-        23,
-        59,
-        59,
-        999
-      );
-
-      endDate =
-        requestedEnd;
-    } else {
-      endDate.setDate(
-        endDate.getDate() +
-          this.AVAILABILITY_DAYS
-      );
-
-      endDate.setHours(
-        23,
-        59,
-        59,
-        999
-      );
+      throw new Error("Class is required.");
     }
 
     if (
-      endDate < startDate
+      requestedType !== MembershipType.GROUP &&
+      requestedType !== MembershipType.PRIVATE
     ) {
+      throw new Error("Membership type must be GROUP or PRIVATE.");
+    }
+
+const startDate = fromDate
+  ? new Date(fromDate)
+  : new Date();
+
+startDate.setHours(0, 0, 0, 0);
+
+    if (Number.isNaN(startDate.getTime())) {
+      throw new Error("Invalid from date.");
+    }
+
+  
+
+    const endDate = toDate
+      ? new Date(toDate)
+      : new Date(startDate);
+
+    if (Number.isNaN(endDate.getTime())) {
+      throw new Error("Invalid to date.");
+    }
+
+    if (toDate) {
+      endDate.setHours(23, 59, 59, 999);
+    } else {
+      endDate.setDate(
+        endDate.getDate() + this.AVAILABILITY_DAYS
+      );
+      endDate.setHours(23, 59, 59, 999);
+    }
+
+    if (endDate < startDate) {
       throw new Error(
         "The end date cannot be before the start date."
       );
     }
 
-    // -------------------------------------------------------
-    // SESSIONS
-    // -------------------------------------------------------
-
-    const sessions =
-      await prisma.classSession.findMany({
-        where: {
-          sessionDate: {
-            gte: startDate,
-            lte: endDate,
-          },
-
-          status: "OPEN",
-
-          schedule: {
-            className: {
-              equals: classId,
-              mode: "insensitive",
-            },
-
-            isActive: true,
-          },
+    const sessions = await prisma.classSession.findMany({
+      where: {
+        sessionDate: {
+          gte: startDate,
+          lte: endDate,
         },
-
-        include: {
-          schedule: true,
-
-          _count: {
-            select: {
-              bookings: {
-                where: {
-                  bookingStatus:
-                    BookingStatus.CONFIRMED,
-                },
+        status: "OPEN",
+        schedule: {
+          className: {
+            equals: classId,
+            mode: "insensitive",
+          },
+          isActive: true,
+        },
+      },
+      include: {
+        schedule: true,
+        bookings: {
+          where: {
+            bookingStatus: BookingStatus.CONFIRMED,
+          },
+          select: {
+            membership: {
+              select: {
+                type: true,
               },
             },
           },
         },
+      },
+      orderBy: {
+        sessionDate: "asc",
+      },
+    });
 
-        orderBy: {
-          sessionDate: "asc",
-        },
-      });
+return sessions
+.filter((session) =>
+  this.isSessionAtLeastTwoHoursAhead(
+    session.sessionDate,
+    session.schedule.startTime
+  )
+)
+  .map((session) => {
+    const capacity = Math.min(
+  5,
+  session.capacity ?? session.schedule.capacity
+);
 
-    // -------------------------------------------------------
-    // FORMAT AVAILABILITY
-    // -------------------------------------------------------
+      const groupBookedCount = session.bookings.filter(
+        (booking) =>
+          booking.membership.type === MembershipType.GROUP
+      ).length;
 
-    return sessions.map(
-      (session) => {
-        const capacity =
-          session.capacity ??
-          session.schedule.capacity;
+      const privateBookedCount = session.bookings.filter(
+        (booking) =>
+          booking.membership.type === MembershipType.PRIVATE
+      ).length;
 
-        const bookedCount =
-          session._count.bookings;
+      const bookedCount =
+        groupBookedCount + privateBookedCount;
 
-        const availableSlots =
-          Math.max(
-            capacity -
-              bookedCount,
-            0
-          );
+      const availableSlots =
+        requestedType === MembershipType.PRIVATE
+          ? bookedCount === 0
+            ? 1
+            : 0
+          : privateBookedCount > 0
+            ? 0
+            : Math.max(capacity - groupBookedCount, 0);
 
-        return {
-          id: session.id,
-
-          classId:
-            session.schedule.className,
-
-          className:
-            session.schedule.className,
-
-          tutorName:
-            session.schedule.tutorName,
-
-          code:
-            session.schedule.code,
-
-          sessionDate:
-            session.sessionDate,
-
-          dayOfWeek:
-            session.schedule.dayOfWeek,
-
-          startTime:
-            session.schedule.startTime,
-
-          endTime:
-            session.schedule.endTime,
-
-          capacity,
-
-          bookedCount,
-
-          availableSlots,
-
-          isAvailable:
-            availableSlots > 0,
-
-          status:
-            session.status,
-        };
-      }
-    );
+      return {
+        id: session.id,
+        classId: session.schedule.className,
+        className: session.schedule.className,
+        tutorName: session.schedule.tutorName,
+        code: session.schedule.code,
+        sessionDate: session.sessionDate,
+        dayOfWeek: session.schedule.dayOfWeek,
+        startTime: session.schedule.startTime,
+        endTime: session.schedule.endTime,
+        capacity:
+          requestedType === MembershipType.PRIVATE
+            ? 1
+            : capacity,
+        bookedCount,
+        groupBookedCount,
+        privateBookedCount,
+        availableSlots,
+        isAvailable: availableSlots > 0,
+        status: session.status,
+        membershipType: requestedType,
+      };
+    });
   }
 
-  // =========================================================
-  // GET SINGLE SESSION AVAILABILITY
-  // =========================================================
-
   async getSessionAvailability(
-    sessionId: string
+    sessionId: string,
+    requestedType: MembershipType = MembershipType.GROUP
   ) {
-    const session =
-      await prisma.classSession.findUnique({
-        where: {
-          id: sessionId,
-        },
+    if (
+      requestedType !== MembershipType.GROUP &&
+      requestedType !== MembershipType.PRIVATE
+    ) {
+      throw new Error("Membership type must be GROUP or PRIVATE.");
+    }
 
-        include: {
-          schedule: true,
-
-          _count: {
-            select: {
-              bookings: {
-                where: {
-                  bookingStatus:
-                    BookingStatus.CONFIRMED,
-                },
+    const session = await prisma.classSession.findUnique({
+      where: {
+        id: sessionId,
+      },
+      include: {
+        schedule: true,
+        bookings: {
+          where: {
+            bookingStatus: BookingStatus.CONFIRMED,
+          },
+          select: {
+            membership: {
+              select: {
+                type: true,
               },
             },
           },
         },
-      });
+      },
+    });
 
     if (!session) {
-      throw new Error(
-        "Class session not found."
-      );
+      throw new Error("Class session not found.");
     }
 
-    this.validateFutureSessionDate(
-      session.sessionDate
-    );
+  if (!this.isSessionAtLeastTwoHoursAhead(
+  session.sessionDate,
+  session.schedule.startTime
+)) {
+  throw new Error(
+    "This session must start at least two hours from now."
+  );
+}
 
-    const capacity =
-      session.capacity ??
-      session.schedule.capacity;
+    const groupBookedCount = session.bookings.filter(
+      (booking) =>
+        booking.membership.type === MembershipType.GROUP
+    ).length;
+
+    const privateBookedCount = session.bookings.filter(
+      (booking) =>
+        booking.membership.type === MembershipType.PRIVATE
+    ).length;
 
     const bookedCount =
-      session._count.bookings;
+      groupBookedCount + privateBookedCount;
+
+  const groupCapacity = Math.min(
+  5,
+  session.capacity ?? session.schedule.capacity
+);
 
     const availableSlots =
-      Math.max(
-        capacity -
-          bookedCount,
-        0
-      );
+      requestedType === MembershipType.PRIVATE
+        ? bookedCount === 0
+          ? 1
+          : 0
+        : privateBookedCount > 0
+          ? 0
+          : Math.max(groupCapacity - groupBookedCount, 0);
 
     return {
       id: session.id,
-
-      className:
-        session.schedule.className,
-
-      tutorName:
-        session.schedule.tutorName,
-
-      sessionDate:
-        session.sessionDate,
-
-      dayOfWeek:
-        session.schedule.dayOfWeek,
-
-      startTime:
-        session.schedule.startTime,
-
-      endTime:
-        session.schedule.endTime,
-
-      capacity,
-
+      classId: session.schedule.className,
+      className: session.schedule.className,
+      tutorName: session.schedule.tutorName,
+      code: session.schedule.code,
+      sessionDate: session.sessionDate,
+      dayOfWeek: session.schedule.dayOfWeek,
+      startTime: session.schedule.startTime,
+      endTime: session.schedule.endTime,
+      capacity:
+        requestedType === MembershipType.PRIVATE
+          ? 1
+          : groupCapacity,
       bookedCount,
-
+      groupBookedCount,
+      privateBookedCount,
       availableSlots,
-
       isAvailable:
-        session.status ===
-          "OPEN" &&
+        session.status === "OPEN" &&
+        session.schedule.isActive &&
         availableSlots > 0,
-
-      status:
-        session.status,
+      status: session.status,
+      membershipType: requestedType,
     };
   }
 
@@ -1928,9 +1940,14 @@ async resumeBookingForUser(
           // SESSION MUST STILL BE FUTURE
           // -------------------------------------------------
 
-          this.validateFutureSessionDate(
-            session.sessionDate
-          );
+       if (!this.isSessionAtLeastTwoHoursAhead(
+  session.sessionDate,
+  session.schedule.startTime
+)) {
+  throw new Error(
+    "This session must start at least two hours from now."
+  );
+}
 
           // -------------------------------------------------
           // SESSION MUST BE OPEN
@@ -1968,28 +1985,24 @@ async resumeBookingForUser(
           // RECOUNT BOOKINGS
           // -------------------------------------------------
 
-          const bookedCount =
-            await tx.booking.count({
-              where: {
-                sessionId:
-                  session.id,
-
-                bookingStatus:
-                  BookingStatus.CONFIRMED,
-              },
-            });
-
-          const capacity =
-            session.capacity ??
-            session.schedule.capacity;
+                // -------------------------------------------------
+          // CHECK GROUP SESSION AVAILABILITY
+          // -------------------------------------------------
 
           if (
-            bookedCount >= capacity
+            currentBooking.membership.type !==
+            MembershipType.GROUP
           ) {
             throw new Error(
-              "This class session has just become full. Please select another session."
+              "This booking does not have a Group membership."
             );
           }
+
+          await this.assertSessionAvailable(
+            tx,
+            session.id,
+            MembershipType.GROUP
+          );
 
           // -------------------------------------------------
           // MEMBERSHIP EXPIRY
@@ -2276,13 +2289,19 @@ async resumeBookingForUser(
               id: bookingId,
             },
 
-            include: {
-              membership: true,
+   include: {
+  membership: true,
 
-              memberMembership: true,
+  memberMembership: true,
 
-              healthSafetyForm: true,
-            },
+  healthSafetyForm: true,
+
+  session: {
+    include: {
+      schedule: true,
+    },
+  },
+},
           });
 
         if (!booking) {
@@ -2326,6 +2345,31 @@ async resumeBookingForUser(
           );
         }
 
+                if (
+          booking.membership.type !== MembershipType.PRIVATE
+        ) {
+          throw new Error(
+            "This booking does not have a Private membership."
+          );
+        }
+
+        // Preserve the legacy Private purchase flow,
+        // which can confirm a membership without a session.
+        // If a session is selected, enforce exclusivity.
+        if (booking.sessionId) {
+          await tx.$queryRaw`
+            SELECT id
+            FROM "ClassSession"
+            WHERE id = ${booking.sessionId}
+            FOR UPDATE
+          `;
+
+          await this.assertSessionAvailable(
+            tx,
+            booking.sessionId,
+            MembershipType.PRIVATE
+          );
+        }
         const creditsTotal =
           this.getMembershipCredits(
             booking.membership
@@ -2581,9 +2625,14 @@ async bookMemberSession(
         // TOMORROW ONWARD
         // -----------------------------------------------------
 
-        this.validateFutureSessionDate(
-          session.sessionDate
-        );
+   if (!this.isSessionAtLeastTwoHoursAhead(
+  session.sessionDate,
+  session.schedule.startTime
+)) {
+  throw new Error(
+    "This session must start at least two hours from now."
+  );
+}
 
         // -----------------------------------------------------
         // OPEN
@@ -2603,23 +2652,6 @@ async bookMemberSession(
         ) {
           throw new Error(
             "This class schedule is no longer active."
-          );
-        }
-
-        // -----------------------------------------------------
-        // CAPACITY
-        // -----------------------------------------------------
-
-        const capacity =
-          session.capacity ??
-          session.schedule.capacity;
-
-        if (
-          session._count.bookings >=
-          capacity
-        ) {
-          throw new Error(
-            "This class session is full."
           );
         }
 
@@ -2681,6 +2713,24 @@ async bookMemberSession(
           );
         }
 
+        // -----------------------------------------------------
+// CHECK MEMBERSHIP TYPE AND SESSION AVAILABILITY
+// -----------------------------------------------------
+
+if (
+  membership.membership.type !== MembershipType.GROUP &&
+  membership.membership.type !== MembershipType.PRIVATE
+) {
+  throw new Error(
+    "Unsupported membership type."
+  );
+}
+
+await this.assertSessionAvailable(
+  tx,
+  session.id,
+  membership.membership.type
+);
         // -----------------------------------------------------
         // CHECK CREDIT
         // -----------------------------------------------------
@@ -3322,20 +3372,16 @@ async cancelBooking(bookingId: string, userId: string) {
         );
       }
 
-      const now = new Date();
-
-      const sessionDate = new Date(
-        booking.session.sessionDate
-      );
-
-      /**
-       * Do not allow cancellation after the session has started.
-       */
-      if (sessionDate <= now) {
-        throw new Error(
-          "This booking can no longer be cancelled because the session has started or already passed."
-        );
-      }
+if (
+  !this.isSessionAtLeastTwoHoursAhead(
+    booking.session.sessionDate,
+    booking.session.schedule.startTime
+  )
+) {
+  throw new Error(
+    "Bookings can only be cancelled at least two hours before the session starts."
+  );
+}
 
       /**
        * Cancel the booking.

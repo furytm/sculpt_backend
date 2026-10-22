@@ -1,6 +1,12 @@
 import { PrismaClient, AuthProvider, UserRole, PaymentStatus ,BookingStatus} from "@prisma/client";
 import prisma from "../config/prisma.js";
 import bookingService from "../booking/booking.service.js";
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+  sendPaymentConfirmationEmail,
+} from "../utils/mailer.js";
+import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
 
 import {
   RegisterDto,
@@ -24,10 +30,7 @@ import {
   hashToken,
 } from "../utils/auth-token.js";
 
-import {
 
-  sendPasswordResetEmail,
-} from "../utils/mailer.js";
 
 import {
   generateAccessToken,
@@ -70,6 +73,8 @@ async register(data: RegisterDto) {
   const hashedPassword = await hashPassword(password);
 
   // Create user
+
+  // Create user
   const user = await prisma.user.create({
     data: {
       fullName,
@@ -81,6 +86,17 @@ async register(data: RegisterDto) {
     },
   });
 
+  // Send email verification link
+try {
+  await this.sendVerificationEmailForUser(user.id);
+} catch (error) {
+  console.error(
+    `Failed to send registration verification email to ${user.email}:`,
+    error
+  );
+}
+
+
   // Generate JWT tokens
   const payload: JwtPayload = {
     userId: user.id,
@@ -88,19 +104,19 @@ async register(data: RegisterDto) {
     role: user.role,
   };
 
-  const accessToken = generateAccessToken(payload);
-  const refreshToken = generateRefreshToken(payload);
+  // const accessToken = generateAccessToken(payload);
+  // const refreshToken = generateRefreshToken(payload);
 
-  // Save refresh token
-  await prisma.refreshToken.create({
-    data: {
-      token: refreshToken,
-      userId: user.id,
-      expiresAt: new Date(
-        Date.now() + 1000 * 60 * 60 * 24 * 30
-      ),
-    },
-  });
+  // // Save refresh token
+  // await prisma.refreshToken.create({
+  //   data: {
+  //     token: refreshToken,
+  //     userId: user.id,
+  //     expiresAt: new Date(
+  //       Date.now() + 1000 * 60 * 60 * 24 * 30
+  //     ),
+  //   },
+  // });
 
   // Return
   return {
@@ -113,8 +129,8 @@ async register(data: RegisterDto) {
       role: user.role,
       isEmailVerified: user.isEmailVerified,
     },
-    accessToken,
-    refreshToken,
+    // accessToken,
+    // refreshToken,
   };
 }
 
@@ -548,72 +564,170 @@ async googleCallback(code: string) {
   };
 }
 
-// async sendVerificationEmailForUser(
-//   userId: string
-// ) {
-//   const user =
-//     await prisma.user.findUnique({
-//       where: {
-//         id: userId,
-//       },
-//     });
 
-//   if (!user) {
-//     throw new Error("User not found.");
-//   }
+async sendVerificationEmailForUser(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+  });
 
-//   if (user.isEmailVerified) {
-//     return {
-//       success: true,
-//       message: "Email is already verified.",
-//     };
-//   }
+  if (!user) {
+    throw new Error("User not found.");
+  }
 
-//   /*
-//    * Delete old verification tokens.
-//    */
-//   await prisma.emailVerificationToken.deleteMany({
-//     where: {
-//       userId: user.id,
-//     },
-//   });
+  if (user.isEmailVerified) {
+    return {
+      success: true,
+      message: "Email is already verified. Please proceed to login.",
+    };
+  }
 
-//   const token =
-//     generateSecureToken();
+  await prisma.emailVerificationToken.deleteMany({
+    where: { userId: user.id },
+  });
 
-//   const tokenHash =
-//     hashToken(token);
+  const token = generateSecureToken();
+  const tokenHash = hashToken(token);
 
-//   const expiresAt =
-//     new Date(
-//       Date.now() +
-//         60 * 60 * 1000
-//     );
+  const expiresAt = new Date(
+    Date.now() + 60 * 60 * 1000
+  );
 
-//   await prisma.emailVerificationToken.create({
-//     data: {
-//       tokenHash,
-//       userId: user.id,
-//       expiresAt,
-//     },
-//   });
+  await prisma.emailVerificationToken.create({
+    data: {
+      tokenHash,
+      userId: user.id,
+      expiresAt,
+    },
+  });
 
-//   const verificationUrl =
-//     `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
-// console.log("📧 About to send verification email:", user.email);
-//   await sendVerificationEmail(
-//     user.email,
-//     user.fullName,
-//     verificationUrl
-//   );
-//   console.log("✅ Verification email sent successfully");
+  const verificationUrl =
+    `${process.env.FRONTEND_URL}/verify-email?token=${encodeURIComponent(token)}`;
 
-//   return {
-//     success: true,
-//     message:
-//       "Verification email sent successfully.",
-//   };
-// }
+  try {
+    await sendVerificationEmail(
+      user.email,
+      user.fullName,
+      verificationUrl
+    );
+  } catch (error) {
+    await prisma.emailVerificationToken.deleteMany({
+      where: { userId: user.id },
+    });
+
+    throw error;
+  }
+
+  return {
+    success: true,
+    message: "Verification email sent successfully.",
+  };
+}
+
+async resendRegistrationEmail(email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const user = await prisma.user.findUnique({
+    where: { email: normalizedEmail },
+  });
+
+  // Existing verified accounts should proceed to login.
+  if (user?.isEmailVerified) {
+    return {
+      success: true,
+      message: "Your account is already verified. Please proceed to login.",
+    };
+  }
+
+  // Resend verification for an existing unverified account.
+  if (user) {
+    try {
+      await this.sendVerificationEmailForUser(user.id);
+    } catch (error) {
+      console.error(
+        "Failed to resend registration verification email:",
+        normalizedEmail,
+        error
+      );
+    }
+
+    return {
+      success: true,
+      message: "Request received. Please check your email.",
+    };
+  }
+
+  // Try the existing offline membership activation.
+  const activation =
+    await membershipActivationService.resendActivationForEmail(
+      normalizedEmail
+    );
+
+
+  if (activation.found) {
+    return {
+      success: true,
+      message: "Request received. Please check your email.",
+    };
+  }
+
+  // Find an existing paid online booking without an account.
+  const booking = await prisma.booking.findFirst({
+    where: {
+      email: {
+        equals: normalizedEmail,
+        mode: "insensitive",
+      },
+      paymentStatus: PaymentStatus.PAID,
+      paymentMethod: { not: "OFFLINE" },
+      bookingStatus: BookingStatus.PENDING,
+      userId: null,
+      
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  if (booking?.paymentReference) {
+    const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
+
+    if (!frontendUrl) {
+      console.error("FRONTEND_URL is not configured.");
+      return {
+        success: true,
+        message: "Request received. Please check your email.",
+      };
+    }
+
+    try {
+      await sendPaymentConfirmationEmail({
+        email: normalizedEmail,
+        fullName: booking.fullName || "Sculpt LAB customer",
+        bookingReference: booking.paymentReference,
+        registrationUrl:
+          `${frontendUrl}/register?reference=${encodeURIComponent(booking.paymentReference)}`,
+        loginUrl:
+          `${frontendUrl}/login?reference=${encodeURIComponent(booking.paymentReference)}`,
+      });
+    } catch (error) {
+      console.error(
+        "Failed to resend paid booking email:",
+        normalizedEmail,
+        error
+      );
+    }
+  }
+
+
+ 
+  return {
+    success: true,
+    message:
+      "If a matching registration exists, an email will be sent. If you already have an account, please proceed to login.",
+  };
+}
+
+
 
 async verifyEmail(token: string) {
   if (!token) {

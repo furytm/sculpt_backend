@@ -362,6 +362,7 @@ async deleteBooking(req: Request, res: Response) {
   }
 }
 
+
 async createOfflineMember(req: Request, res: Response) {
   try {
     const {
@@ -369,6 +370,7 @@ async createOfflineMember(req: Request, res: Response) {
       email,
       phone,
       membershipId,
+      remainingCredits,
     } = req.body;
 
     if (!membershipId) {
@@ -378,13 +380,27 @@ async createOfflineMember(req: Request, res: Response) {
       });
     }
 
-    const result =
-      await adminService.createOfflineMember({
-        fullName,
-        email,
-        phone,
-        membershipId,
+    if (
+      remainingCredits !== undefined &&
+      (
+        typeof remainingCredits !== "number" ||
+        !Number.isInteger(remainingCredits) ||
+        remainingCredits < 0
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Remaining credits must be a non-negative integer.",
       });
+    }
+
+    const result = await adminService.createOfflineMember({
+      fullName,
+      email,
+      phone,
+      membershipId,
+      remainingCredits,
+    });
 
     return res.status(201).json({
       success: true,
@@ -394,19 +410,16 @@ async createOfflineMember(req: Request, res: Response) {
       data: result,
     });
   } catch (error: any) {
-    console.error(
-      "Create Offline Member Error:",
-      error
-    );
+    console.error("Create Offline Member Error:", error);
 
     const message =
-      error?.message ||
-      "Failed to create offline member.";
+      error?.message || "Failed to create offline member.";
 
     if (
       message === "Membership ID is required." ||
       message === "Membership not found." ||
-      message === "This membership is not active."
+      message === "This membership is not active." ||
+      message.startsWith("Remaining credits") 
     ) {
       return res.status(400).json({
         success: false,
@@ -420,6 +433,7 @@ async createOfflineMember(req: Request, res: Response) {
     });
   }
 }
+
 
 
 async getAllMembers(req: Request, res: Response) {
@@ -442,6 +456,8 @@ async getAllMembers(req: Request, res: Response) {
     });
   }
 }
+
+
 
 }
 

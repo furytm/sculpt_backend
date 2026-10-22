@@ -40,7 +40,7 @@ export async function sendPaymentConfirmationEmail({
   const safeLoginUrl = escapeHtml(loginUrl);
 
   const { error } = await resend.emails.send({
-    from: "Sculpt Lab <onboarding@resend.dev>",
+   from: "Sculpt LAB <enquiriess@sculptlab.com.ng>",
     to: email,
     subject: "Your Sculpt LAB payment confirmation",
     html: `
@@ -145,5 +145,48 @@ export async function sendPasswordResetEmail(
   if (error) {
     console.error("Password reset email error:", error);
     throw new Error("Unable to send password reset email.");
+  }
+}
+
+
+export async function sendVerificationEmail(
+  email: string,
+  fullName: string,
+  verificationUrl: string
+) {
+  const safeName = escapeHtml(fullName);
+  const safeUrl = escapeHtml(verificationUrl);
+
+  const { error } = await resend.emails.send({
+    from: "Sculpt LAB <enquiriess@sculptlab.com.ng>",
+    to: email,
+    subject: "Complete your Sculpt LAB registration",
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.7;color:#222;max-width:600px;margin:auto;">
+        <h2>Welcome to Sculpt LAB, ${safeName}!</h2>
+
+        <p>Thank you for completing your registration form.</p>
+
+        <p>Click below to verify your email address and complete your registration.</p>
+
+        <p>
+          <a href="${safeUrl}"
+             style="display:inline-block;padding:12px 20px;background:#000;color:#fff;text-decoration:none;border-radius:6px;">
+            Verify My Email
+          </a>
+        </p>
+
+        <p>This link expires after one hour.</p>
+
+        <p>If you have already completed registration, you can ignore this email and proceed to login.</p>
+
+        <p>Sculpt LAB</p>
+      </div>
+    `,
+  });
+
+  if (error) {
+    console.error("Verification email error:", error);
+    throw new Error("Unable to send verification email.");
   }
 }

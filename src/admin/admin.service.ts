@@ -147,15 +147,17 @@ async getDashboard() {
       ],
     }),
   ]);
-  console.log("DASHBOARD DEBUG:", {
-  membersListLength: membersList.length,
-  sampleMembers: membersList.slice(0, 3).map((member) => ({
-    id: member.id,
-    fullName: member.fullName,
-    email: member.email,
-    membershipStatus: member.membershipStatus,
-  })),
-});
+
+
+//   console.log("DASHBOARD DEBUG:", {
+//   membersListLength: membersList.length,
+//   sampleMembers: membersList.slice(0, 3).map((member) => ({
+//     id: member.id,
+//     fullName: member.fullName,
+//     email: member.email,
+//     membershipStatus: member.membershipStatus,
+//   })),
+// });
 
   // Calculate unique customers returned by getAllMembers().
   const totalMembers = membersList.length;
@@ -819,6 +821,7 @@ async createOfflineMember(data: {
   email?: string;
   phone?: string;
   membershipId: string;
+  remainingCredits?: number;
 }) {
   const fullName = data.fullName?.trim() || null;
   const email = data.email?.trim().toLowerCase() || null;
@@ -846,6 +849,28 @@ async createOfflineMember(data: {
     throw new Error("This membership is not active.");
   }
 
+  
+if (membership.classLimit === null) {
+  if (data.remainingCredits !== undefined) {
+    throw new Error(
+      "Remaining credits cannot be set for an unlimited membership."
+    );
+  }
+} else {
+  const remainingCredits =
+    data.remainingCredits ?? membership.classLimit;
+
+  if (
+    !Number.isInteger(remainingCredits) ||
+    remainingCredits < 0 ||
+    remainingCredits > membership.classLimit
+  ) {
+    throw new Error(
+      `Remaining credits must be between 0 and ${membership.classLimit}.`
+    );
+  }
+}
+
   // =====================================================
   // CREATE OFFLINE BOOKING
   // =====================================================
@@ -872,10 +897,11 @@ async createOfflineMember(data: {
     // CREATE MEMBERSHIP + ACTIVATION
     // =====================================================
 
-    const activation =
-      await membershipActivationService.createActivationForBooking(
-        booking.id
-      );
+const activation =
+  await membershipActivationService.createActivationForBooking(
+    booking.id,
+    data.remainingCredits ?? membership.classLimit ?? undefined
+  );
 
     // =====================================================
     // RETURN RESULT

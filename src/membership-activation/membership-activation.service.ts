@@ -297,7 +297,10 @@ function escapeHtml(value: string): string {
 }
 
 class MembershipActivationService {
-  async createActivationForBooking(bookingId: string) {
+async createActivationForBooking(
+  bookingId: string,
+  remainingCredits?: number
+) {
     const booking = await prisma.booking.findUnique({
       where: { id: bookingId },
       include: {
@@ -336,22 +339,28 @@ class MembershipActivationService {
       booking.membership.duration
     );
 
-    if (!memberMembership) {
-      memberMembership = await prisma.memberMembership.create({
-        data: {
-          userId: booking.userId ?? null,
-          membershipId: booking.membershipId,
-          status: MembershipStatus.ACTIVE,
-          startDate,
-          expiryDate,
+ 
+if (!memberMembership) {
+  const classLimit = booking.membership.classLimit;
 
-          // Membership.classLimit becomes the member's total credits.
-          // null means unlimited.
-          creditsTotal: booking.membership.classLimit,
-          creditsUsed: 0,
-        },
-      });
-    }
+  const creditsUsed =
+    classLimit === null || remainingCredits === undefined
+      ? 0
+      : classLimit - remainingCredits;
+
+  memberMembership = await prisma.memberMembership.create({
+    data: {
+      userId: booking.userId ?? null,
+      membershipId: booking.membershipId,
+      status: MembershipStatus.ACTIVE,
+      startDate,
+      expiryDate,
+      creditsTotal: classLimit,
+      creditsUsed,
+    },
+  });
+}
+
 await prisma.booking.update({
   where: { id: booking.id },
   data: {
@@ -680,6 +689,78 @@ if (
       refreshToken,
     };
   }
+
+  
+  async resendActivationForEmail(email: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const activation = await prisma.membershipActivation.findFirst({
+      where: {
+        usedAt: null,
+        booking: {
+          email: {
+            equals: normalizedEmail,
+            mode: "insensitive",
+          },
+          paymentStatus: "PAID",
+          paymentMethod: "OFFLINE",
+        },
+      },
+      include: {
+        booking: {
+          include: {
+            membership: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    if (!activation) {
+      return { found: false, emailSent: false };
+    }
+
+    const activationToken = generateActivationToken();
+    const tokenHash = hashActivationToken(activationToken);
+    const expiresAt = new Date();
+    expiresAt.setDate(
+      expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS
+    );
+
+    await prisma.membershipActivation.update({
+      where: { id: activation.id },
+      data: {
+        tokenHash,
+        expiresAt,
+      },
+    });
+
+    try {
+      await sendActivationEmail({
+        email: normalizedEmail,
+        fullName: activation.booking.fullName || "Sculpt LAB Member",
+        membershipName: activation.booking.membership.name,
+        membershipNumber: activation.membershipNumber,
+        activationToken,
+        amount: activation.booking.amount,
+      });
+
+      console.log("Membership activation email resent:", normalizedEmail);
+
+      return { found: true, emailSent: true };
+    } catch (error) {
+      console.error(
+        "Failed to resend membership activation email:",
+        normalizedEmail,
+        error
+      );
+
+      return { found: true, emailSent: false };
+    }
+  }
+
 }
 
 export const membershipActivationService =

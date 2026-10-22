@@ -1,3 +1,4 @@
+
 import { Booking } from "@prisma/client";
 
 export enum PaymentStatus {
@@ -6,7 +7,9 @@ export enum PaymentStatus {
   FAILED = "FAILED",
 }
 
-export type PaymentMethod = "PAYMISH"  | "OFFLINE";
+export type PaymentMethod = "PAYMISH" | "OFFLINE" | "PAYSTACK";
+
+export type BookingClassType = "GROUP" | "PRIVATE";
 
 export interface HealthDeclarationDto {
   accepted: boolean;
@@ -17,33 +20,37 @@ export interface CreateBookingDto {
   fullName: string;
   email: string;
   phone: string;
-
   membershipId: string;
 
   /**
-   * Selected group class.
-   * Required for GROUP memberships.
+   * Optional class name, e.g. "Reformer".
    */
   classId?: string;
 
   /**
-   * Selected dated/available session.
-   * Required for GROUP memberships in the new booking flow.
+   * ID of the actual dated ClassSession.
+   * Optional because a membership may be purchased
+   * before the customer selects a session.
+   */
+  classSessionId?: string;
+
+  /**
+   * Backward-compatible field for clients that send
+   * the dated session using scheduleId.
+   * This must contain a ClassSession ID, not a Schedule ID.
    */
   scheduleId?: string;
 
-  /**
-   * The date of the selected class session.
-   */
   bookingDate?: string;
 
   paymentMethod: PaymentMethod;
 
   /**
-   * Health & Safety acknowledgement is completed
-   * before payment.
+   * Optional at purchase time for the new
+   * membership-first flow. Required before booking
+   * confirmation.
    */
-  healthDeclaration: HealthDeclarationDto;
+  healthDeclaration?: HealthDeclarationDto;
 }
 
 export interface BookingResponse {
@@ -70,11 +77,10 @@ export interface ConfirmBookingDto {
 
 export interface ScheduleAvailability {
   id: string;
-
+  classId?: string;
   className: string;
   tutorName: string;
   code: string;
-
   dayOfWeek:
     | "MONDAY"
     | "TUESDAY"
@@ -83,68 +89,44 @@ export interface ScheduleAvailability {
     | "FRIDAY"
     | "SATURDAY"
     | "SUNDAY";
-
   startTime: string;
   endTime: string;
-
-  /**
-   * Actual date of this available class session.
-   */
-  sessionDate: string;
-
+  sessionDate: string | Date;
   capacity: number;
   bookedCount: number;
   availableSlots: number;
   isAvailable: boolean;
+  status?: "OPEN" | "FULL" | "CANCELLED" | "COMPLETED";
 }
 
 export interface BookingFlowResponse {
   booking: Booking | any;
-
   healthDeclaration: HealthDeclarationResponse | null;
-
   selectedSchedule: ScheduleAvailability | null;
-
   bookingFlowToken?: string;
 }
 
-/**
- * Used when a logged-in member wants to book
- * another class using an existing membership.
- */
 export interface CreateMemberClassBookingDto {
-  scheduleId: string;
-  bookingDate: string;
+  classSessionId: string;
 }
 
-/**
- * Used for the existing/legacy Health & Safety
- * form fields. Keep this because your database
- * still contains those fields.
- */
 export interface HealthSafetyFormDto {
   dateOfBirth?: string;
   age?: number;
-
   emergencyContactName?: string;
   emergencyContactRelationship?: string;
   emergencyContactPhone?: string;
-
   pregnancy?: string;
   pregnancyWeeks?: number;
   dueDate?: string;
   pregnancyClearance?: string;
-
   postpartum?: string;
   deliveryDate?: string;
   postpartumClearance?: string;
-
   screeningAnswers?: Record<string, any>;
-
   surgery?: string;
   surgeryDetails?: string;
   surgeryClearance?: string;
-
   consent?: Record<string, any>;
   signature?: string;
 }

@@ -67,6 +67,13 @@ router.get(
   adminController.getDashboard
 );
 
+router.post(
+  "/sessions/:sessionId/offline-attendees",
+  authenticate,
+  requireAdmin,
+  adminSessionController.addOfflineAttendee
+);
+
 // =====================================================
 // PENDING OFFLINE PAYMENTS
 // =====================================================
