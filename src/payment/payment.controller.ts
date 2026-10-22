@@ -187,9 +187,9 @@ async callback(req: Request, res: Response) {
     }
 
     // 5. Return to the booking confirmation page.
-    return res.redirect(
-      `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
-    );
+ return res.redirect(
+  `${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`
+);
   } catch (error) {
     console.error("Paymish Callback Error:", error);
 
