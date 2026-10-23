@@ -1,5 +1,6 @@
 import { Router } from "express";
 import authenticate from "../middleware/authenticate.js";
+import optionalAuthenticate from "../middleware/Optionalauthenticat.js";
 import membershipController, {purchaseNewMembership} from "./membership.controller.js";
 
 const router = Router();
@@ -32,7 +33,11 @@ router.post(
   authenticate,
   membershipController.renewMembership
 );
-router.post("/purchase", purchaseNewMembership);
+router.post(
+  "/purchase",
+  optionalAuthenticate,
+  purchaseNewMembership
+);
 /**
  * @openapi
  * /api/memberships:

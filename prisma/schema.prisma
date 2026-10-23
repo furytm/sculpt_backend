@@ -95,6 +95,7 @@ model MembershipPurchase {
   previousMembershipId String?
   fullName String?
 phone    String?
+memberMembership MemberMembership?
   type                 MembershipPurchaseType
 
   amount           Int
@@ -371,6 +372,8 @@ model Membership {
 
 model MemberMembership {
   id String @id @default(cuid())
+  membershipPurchaseId String?             @unique
+membershipPurchase   MembershipPurchase? @relation(fields: [membershipPurchaseId], references: [id], onDelete: SetNull)
 
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)

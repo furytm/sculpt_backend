@@ -332,13 +332,14 @@ export const purchaseNewMembership = async (
       });
     }
 
-    const result =
-      await membershipService.initiateNewMembershipPurchase({
-        membershipId,
-        fullName,
-        email,
-        phone,
-      });
+   const result =
+  await membershipService.initiateNewMembershipPurchase({
+    membershipId,
+    fullName,
+    email,
+    phone,
+userId: req.user?.userId ?? null,
+  });
 
     return res.status(201).json({
       success: true,

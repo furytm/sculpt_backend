@@ -66,20 +66,30 @@ class PaymentController {
                 return res.redirect(`${frontendUrl}/confirmation?payment=failed&reference=${encodeURIComponent(reference)}`);
             }
             console.log("Payment successfully verified:", reference);
-            // 2. Check membership renewal/upgrade purchases.
+            // 2. Check whether this is a membership purchase.
             const membershipPurchase = await prisma.membershipPurchase.findUnique({
                 where: {
                     paymentReference: reference,
                 },
             });
             if (membershipPurchase) {
+                // Complete activation after verified payment.
                 await membershipService.completeMembershipPurchase(reference);
-                const mode = membershipPurchase.type === "UPGRADE"
-                    ? "upgrade"
-                    : "renew";
-                return res.redirect(`${frontendUrl}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(reference)}`);
+                // NEW purchases should not be labelled as renewals.
+                if (membershipPurchase.type === "NEW") {
+                    return res.redirect(`${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`);
+                }
+                // Renewals and upgrades get their appropriate mode.
+                if (membershipPurchase.type === "UPGRADE" ||
+                    membershipPurchase.type === "RENEWAL") {
+                    const mode = membershipPurchase.type === "UPGRADE"
+                        ? "upgrade"
+                        : "renew";
+                    return res.redirect(`${frontendUrl}/confirmation?status=success&mode=${mode}&reference=${encodeURIComponent(reference)}`);
+                }
+                throw new Error(`Unsupported membership purchase type: ${membershipPurchase.type}`);
             }
-            // 3. Mark the specific booking as paid.
+            // 3. This is a booking payment, so mark the booking as paid.
             await bookingService.markBookingPaid(reference);
             // 4. Send the customer an email with registration/login links.
             // Email failure must not turn a verified payment into a failure.
@@ -103,7 +113,7 @@ class PaymentController {
             catch (emailError) {
                 console.error("Payment confirmed, but continuation email could not be sent:", reference, emailError);
             }
-            // 5. Return to the confirmation page.
+            // 5. Return to the booking confirmation page.
             return res.redirect(`${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`);
         }
         catch (error) {

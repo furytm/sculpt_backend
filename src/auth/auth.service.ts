@@ -179,28 +179,59 @@ async register(data: RegisterDto) {
       });
     }
 
-    if (paidPurchase) {
-      const result = await tx.membershipPurchase.updateMany({
-        where: {
-          id: paidPurchase.id,
-          paymentReference: normalizedReference!,
-          paymentStatus: PaymentStatus.PAID,
-          userId: null,
-          email: normalizedEmail,
-        },
-        data: {
-          userId: createdUser.id,
-          fullName,
-          phone: phone || null,
-        },
-      });
 
-      if (result.count !== 1) {
-        throw new Error(
-          "This membership purchase has already been attached or is no longer available."
-        );
-      }
-    }
+if (paidPurchase) {
+  const result = await tx.membershipPurchase.updateMany({
+    where: {
+      id: paidPurchase.id,
+      paymentReference: normalizedReference!,
+      paymentStatus: PaymentStatus.PAID,
+      userId: null,
+      email: normalizedEmail,
+    },
+    data: {
+      userId: createdUser.id,
+      fullName,
+      phone: phone || null,
+    },
+  });
+
+  if (result.count !== 1) {
+    throw new Error(
+      "This membership purchase has already been attached or is no longer available."
+    );
+  }
+
+  // If payment activation already created a membership
+  // for this purchase, attach it to the newly created account.
+  const linkedMembership =
+    await tx.memberMembership.findUnique({
+      where: {
+        membershipPurchaseId: paidPurchase.id,
+      },
+    });
+
+  if (
+    linkedMembership &&
+    linkedMembership.userId === null
+  ) {
+    await tx.memberMembership.update({
+      where: {
+        id: linkedMembership.id,
+      },
+      data: {
+        userId: createdUser.id,
+      },
+    });
+  } else if (
+    linkedMembership &&
+    linkedMembership.userId !== createdUser.id
+  ) {
+    throw new Error(
+      "This membership is already attached to a different account."
+    );
+  }
+}
 
     return createdUser;
   });

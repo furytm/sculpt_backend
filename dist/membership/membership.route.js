@@ -37,6 +37,7 @@ router.post("/purchase", purchaseNewMembership);
  */
 router.get("/", membershipController.getMemberships);
 router.get("/purchase/:reference", authenticate, membershipController.getMembershipPurchase);
+router.get("/confirmation/:reference", membershipController.getPublicMembershipConfirmation);
 /**
  * @openapi
  * /api/memberships/{id}:

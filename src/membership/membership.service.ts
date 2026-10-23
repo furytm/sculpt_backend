@@ -657,18 +657,63 @@ async completeMembershipPurchase(
         );
       }
 
-      /*
-       * Idempotency.
-       *
-       * If Paymish callback/webhook reaches us twice,
-       * don't create two memberships.
-       */
-      if (
-        purchase.paymentStatus ===
-        PaymentStatus.PAID
-      ) {
-        return purchase;
-      }
+// Return the membership linked to this exact purchase.
+// A PAID purchase without a linked membership must be
+// allowed to continue through activation.
+const linkedMembership = await tx.memberMembership.findUnique({
+  where: {
+    membershipPurchaseId: purchase.id,
+  },
+  include: {
+    membership: true,
+  },
+});
+
+
+if (linkedMembership) {
+  // Attach a guest membership to the purchaser's account
+  // once the purchase has been associated with that account.
+  if (
+    purchase.userId &&
+    !linkedMembership.userId
+  ) {
+    const updatedMembership =
+      await tx.memberMembership.update({
+        where: {
+          id: linkedMembership.id,
+        },
+        data: {
+          userId: purchase.userId,
+        },
+        include: {
+          membership: true,
+        },
+      });
+
+    return {
+      purchase,
+      membership: updatedMembership,
+    };
+  }
+
+  // Never silently attach a membership belonging
+  // to a different user.
+  if (
+    purchase.userId &&
+    linkedMembership.userId &&
+    linkedMembership.userId !== purchase.userId
+  ) {
+    throw new Error(
+      "Membership purchase is linked to a different user."
+    );
+  }
+
+  return {
+    purchase,
+    membership: linkedMembership,
+  };
+}
+
 
       /*
        * Mark payment as paid.
@@ -774,6 +819,7 @@ async completeMembershipPurchase(
             data: {
               userId:
                 purchase.userId,
+                membershipPurchaseId: purchase.id,
 
               membershipId:
                 purchase.membershipId,
@@ -885,6 +931,7 @@ async completeMembershipPurchase(
           data: {
             userId:
               purchase.userId,
+              membershipPurchaseId: purchase.id,
 
             membershipId:
               purchase.membershipId,
@@ -923,6 +970,7 @@ async completeMembershipPurchase(
   );
 }
 
+
 async getMembershipPurchase(
   userId: string,
   paymentReference: string
@@ -943,54 +991,45 @@ async getMembershipPurchase(
   }
 
   const memberMembership =
-    await prisma.memberMembership.findFirst({
+    await prisma.memberMembership.findUnique({
       where: {
-        userId,
-        membershipId: purchase.membershipId,
-        startDate: {
-          gte: purchase.createdAt,
-        },
-      },
-      orderBy: {
-        startDate: "desc",
+        membershipPurchaseId: purchase.id,
       },
     });
+
+  // Ensure the linked membership belongs to this user.
+  const ownedMembership =
+    memberMembership?.userId === userId
+      ? memberMembership
+      : null;
 
   return {
     purchase: {
       id: purchase.id,
-      paymentReference:
-        purchase.paymentReference,
+      paymentReference: purchase.paymentReference,
       type: purchase.type,
       amount: purchase.amount,
-      paymentStatus:
-        purchase.paymentStatus,
-      carriedCredits:
-        purchase.carriedCredits,
-      createdAt:
-        purchase.createdAt,
+      paymentStatus: purchase.paymentStatus,
+      carriedCredits: purchase.carriedCredits,
+      createdAt: purchase.createdAt,
     },
 
     membership: purchase.membership,
 
-    memberMembership: memberMembership
+    memberMembership: ownedMembership
       ? {
-          id: memberMembership.id,
-          status: memberMembership.status,
-          startDate:
-            memberMembership.startDate,
-          expiryDate:
-            memberMembership.expiryDate,
-          creditsTotal:
-            memberMembership.creditsTotal,
-          creditsUsed:
-            memberMembership.creditsUsed,
+          id: ownedMembership.id,
+          status: ownedMembership.status,
+          startDate: ownedMembership.startDate,
+          expiryDate: ownedMembership.expiryDate,
+          creditsTotal: ownedMembership.creditsTotal,
+          creditsUsed: ownedMembership.creditsUsed,
           remainingCredits:
-            memberMembership.creditsTotal === null
+            ownedMembership.creditsTotal === null
               ? null
               : Math.max(
-                  memberMembership.creditsTotal -
-                    memberMembership.creditsUsed,
+                  ownedMembership.creditsTotal -
+                    ownedMembership.creditsUsed,
                   0
                 ),
         }
@@ -1075,6 +1114,7 @@ async initiateNewMembershipPurchase(data: {
   fullName: string;
   email: string;
   phone: string;
+  userId: string | null;
 }) {
   const email = data.email.trim().toLowerCase();
 
@@ -1098,7 +1138,7 @@ async initiateNewMembershipPurchase(data: {
 
   const purchase = await prisma.membershipPurchase.create({
     data: {
-      userId: null,
+   userId: data.userId,
       email,
       membershipId: membership.id,
       type: MembershipPurchaseType.NEW,

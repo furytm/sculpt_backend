@@ -341,11 +341,36 @@ class MembershipService {
     }
     calculateMembershipExpiry(startDate, duration, period) {
         const expiryDate = new Date(startDate);
-        const durationValue = Number(duration);
-        if (Number.isNaN(durationValue)) {
-            throw new Error(`Invalid membership duration: ${duration}`);
+        // Support existing labels such as "Monthly", "Weekly",
+        // and numeric durations such as "1" with period "month".
+        const normalizedDuration = duration.trim().toLowerCase();
+        const normalizedPeriod = period.trim().toLowerCase();
+        let durationValue = Number(normalizedDuration);
+        let effectivePeriod = normalizedPeriod;
+        if (!Number.isFinite(durationValue) || durationValue <= 0) {
+            const labelMatch = normalizedDuration.match(/^(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|quarter|quarters|year|years|daily|weekly|monthly|quarterly|yearly)$/);
+            if (labelMatch) {
+                durationValue = Number(labelMatch[1]);
+                effectivePeriod = labelMatch[2];
+            }
+            else {
+                const labels = {
+                    daily: { duration: 1, period: "day" },
+                    weekly: { duration: 1, period: "week" },
+                    monthly: { duration: 1, period: "month" },
+                    quarterly: { duration: 3, period: "month" },
+                    yearly: { duration: 1, period: "year" },
+                    annually: { duration: 1, period: "year" },
+                };
+                const label = labels[normalizedDuration];
+                if (!label) {
+                    throw new Error(`Invalid membership duration: ${duration}`);
+                }
+                durationValue = label.duration;
+                effectivePeriod = label.period;
+            }
         }
-        switch (period.toLowerCase()) {
+        switch (effectivePeriod) {
             case "day":
             case "days":
                 expiryDate.setDate(expiryDate.getDate() + durationValue);
@@ -396,9 +421,21 @@ class MembershipService {
              * If Paymish callback/webhook reaches us twice,
              * don't create two memberships.
              */
-            if (purchase.paymentStatus ===
-                PaymentStatus.PAID) {
-                return purchase;
+            const existingMembership = await tx.memberMembership.findFirst({
+                where: {
+                    userId: purchase.userId ?? undefined,
+                    membershipId: purchase.membershipId,
+                    startDate: {
+                        gte: purchase.createdAt,
+                    },
+                },
+            });
+            if (purchase.paymentStatus === PaymentStatus.PAID &&
+                existingMembership) {
+                return {
+                    purchase,
+                    membership: existingMembership,
+                };
             }
             /*
              * Mark payment as paid.
@@ -596,6 +633,66 @@ class MembershipService {
             memberMembership: memberMembership
                 ? {
                     id: memberMembership.id,
+                    status: memberMembership.status,
+                    startDate: memberMembership.startDate,
+                    expiryDate: memberMembership.expiryDate,
+                    creditsTotal: memberMembership.creditsTotal,
+                    creditsUsed: memberMembership.creditsUsed,
+                    remainingCredits: memberMembership.creditsTotal === null
+                        ? null
+                        : Math.max(memberMembership.creditsTotal -
+                            memberMembership.creditsUsed, 0),
+                }
+                : null,
+        };
+    }
+    async getPublicMembershipConfirmation(paymentReference) {
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                paymentReference,
+            },
+            include: {
+                membership: true,
+            },
+        });
+        if (!purchase) {
+            return null;
+        }
+        const memberMembership = purchase.userId
+            ? await prisma.memberMembership.findFirst({
+                where: {
+                    userId: purchase.userId,
+                    membershipId: purchase.membershipId,
+                    startDate: {
+                        gte: purchase.createdAt,
+                    },
+                },
+                orderBy: {
+                    startDate: "desc",
+                },
+            })
+            : null;
+        return {
+            purchase: {
+                paymentReference: purchase.paymentReference,
+                fullName: purchase.fullName,
+                email: purchase.email,
+                phone: purchase.phone,
+                type: purchase.type,
+                amount: purchase.amount,
+                paymentStatus: purchase.paymentStatus,
+                carriedCredits: purchase.carriedCredits,
+                createdAt: purchase.createdAt,
+            },
+            membership: {
+                name: purchase.membership.name,
+                price: purchase.membership.price,
+                classLimit: purchase.membership.classLimit,
+                duration: purchase.membership.duration,
+                period: purchase.membership.period,
+            },
+            memberMembership: memberMembership
+                ? {
                     status: memberMembership.status,
                     startDate: memberMembership.startDate,
                     expiryDate: memberMembership.expiryDate,

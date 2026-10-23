@@ -23,29 +23,46 @@ class AuthService {
         if (existingUser) {
             throw new Error("An account with this email already exists.");
         }
-        // Validate the existing purchase before creating the user.
         let paidBooking = null;
+        let paidPurchase = null;
         if (normalizedReference) {
+            // First check whether this reference belongs to a booking.
             paidBooking = await prisma.booking.findUnique({
-                where: {
-                    paymentReference: normalizedReference,
-                },
+                where: { paymentReference: normalizedReference },
             });
+            // If no booking exists, check membership purchases.
             if (!paidBooking) {
-                throw new Error("Booking not found for this reference.");
+                paidPurchase = await prisma.membershipPurchase.findUnique({
+                    where: { paymentReference: normalizedReference },
+                });
+                if (!paidPurchase) {
+                    throw new Error("No booking or membership purchase was found for this reference.");
+                }
+                if (paidPurchase.email.toLowerCase().trim() !== normalizedEmail) {
+                    throw new Error("The membership purchase email does not match your registration email.");
+                }
+                if (paidPurchase.paymentStatus !== PaymentStatus.PAID) {
+                    throw new Error("This membership purchase has not been paid for.");
+                }
+                if (paidPurchase.userId) {
+                    throw new Error("This membership purchase is already attached to an account.");
+                }
             }
-            if (!paidBooking.email) {
-                throw new Error("This booking has no email address. Please contact support.");
-            }
-            if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
-                throw new Error("The booking email does not match your registration email.");
-            }
-            if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
-                throw new Error("This booking has not been paid for.");
-            }
-            if (paidBooking.bookingStatus !== BookingStatus.PENDING ||
-                paidBooking.userId) {
-                throw new Error("This booking is already attached or can no longer be continued.");
+            else {
+                // Preserve the existing booking validation.
+                if (!paidBooking.email) {
+                    throw new Error("This booking has no email address. Please contact support.");
+                }
+                if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
+                    throw new Error("The booking email does not match your registration email.");
+                }
+                if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
+                    throw new Error("This booking has not been paid for.");
+                }
+                if (paidBooking.bookingStatus !== BookingStatus.PENDING ||
+                    paidBooking.userId) {
+                    throw new Error("This booking is already attached or can no longer be continued.");
+                }
             }
         }
         const hashedPassword = await hashPassword(password);
@@ -61,8 +78,6 @@ class AuthService {
                 },
             });
             if (paidBooking) {
-                // Recheck ownership/status atomically to avoid attaching
-                // a booking that another request has already claimed.
                 const result = await tx.booking.updateMany({
                     where: {
                         id: paidBooking.id,
@@ -79,13 +94,28 @@ class AuthService {
                     throw new Error("This booking has already been attached or is no longer available.");
                 }
                 await tx.healthSafetyForm.updateMany({
+                    where: { bookingId: paidBooking.id },
+                    data: { userId: createdUser.id },
+                });
+            }
+            if (paidPurchase) {
+                const result = await tx.membershipPurchase.updateMany({
                     where: {
-                        bookingId: paidBooking.id,
+                        id: paidPurchase.id,
+                        paymentReference: normalizedReference,
+                        paymentStatus: PaymentStatus.PAID,
+                        userId: null,
+                        email: normalizedEmail,
                     },
                     data: {
                         userId: createdUser.id,
+                        fullName,
+                        phone: phone || null,
                     },
                 });
+                if (result.count !== 1) {
+                    throw new Error("This membership purchase has already been attached or is no longer available.");
+                }
             }
             return createdUser;
         });

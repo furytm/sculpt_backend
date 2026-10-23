@@ -1,0 +1,458 @@
+ generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Booking {
+  id String @id @default(cuid())
+
+  fullName String?
+  email    String?
+  phone    String?
+
+  classId    String?
+  scheduleId String?
+  schedule   Schedule?     @relation(fields: [scheduleId], references: [id])
+  sessionId  String?
+  session    ClassSession? @relation(fields: [sessionId], references: [id])
+
+  membershipId         String
+  membership           Membership @relation(fields: [membershipId], references: [id])
+  bookingFlowTokenHash String?    @unique
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id])
+
+  membershipActivation MembershipActivation?
+  bookingDate          DateTime?
+  calendarEventId      String?
+  calendarEventUrl     String?
+
+  amount Int
+
+  paymentReference   String            @unique
+  paymentStatus      PaymentStatus     @default(PENDING)
+  memberMembershipId String?
+  memberMembership   MemberMembership? @relation(fields: [memberMembershipId], references: [id])
+  memberSchedules    MemberSchedule[]
+
+  preferredStartDate DateTime?
+  availableDays      String[]
+  preferredTimes     String[]
+  bookingStatus      BookingStatus     @default(PENDING)
+  paymentMethod      PaymentMethod     @default(PAYMISH)
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  healthSafetyForm   HealthSafetyForm?
+
+  @@index([sessionId])
+  @@index([memberMembershipId])
+  @@index([userId])
+  @@index([bookingStatus])
+}
+
+enum MembershipPurchaseType {
+  NEW
+  RENEWAL
+  UPGRADE
+}
+
+enum JournalStatus {
+  DRAFT
+  PUBLISHED
+}
+
+
+
+model Journal {
+  id          String        @id @default(cuid())
+  title       String
+  slug        String        @unique
+  excerpt     String        @db.Text
+  content     String        @db.Text
+  coverImage  String
+  authorName  String        @default("Sculpt LAB")
+  status      JournalStatus @default(DRAFT)
+  isFeatured  Boolean       @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status, publishedAt])
+  @@index([isFeatured, status])
+  @@map("journals")
+}
+
+model MembershipPurchase {
+  id                   String                 @id @default(cuid())
+  userId               String?
+  email                String
+  membershipId         String
+  previousMembershipId String?
+  fullName String?
+phone    String?
+  type                 MembershipPurchaseType
+
+  amount           Int
+  paymentReference String        @unique
+  paymentStatus    PaymentStatus @default(PENDING)
+
+  carriedCredits Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  membership Membership @relation(fields: [membershipId], references: [id])
+
+  @@index([userId])
+  @@index([email])
+}
+model HealthSafetyForm {
+  id String @id @default(cuid())
+
+  userId    String?
+  user      User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  accepted           Boolean   @default(false)
+  declarationVersion String?
+  notes              String?
+  acceptedAt         DateTime?
+
+  // Keep your existing legacy fields for now.
+  dateOfBirth DateTime?
+  age         Int?
+
+  emergencyContactName         String?
+  emergencyContactRelationship String?
+  emergencyContactPhone        String?
+
+  pregnancy          String?
+  pregnancyWeeks     Int?
+  dueDate            DateTime?
+  pregnancyClearance String?
+
+  postpartum          String?
+  deliveryDate        DateTime?
+  postpartumClearance String?
+
+  screeningAnswers Json?
+
+  surgery          String?
+  surgeryDetails   String?
+  surgeryClearance String?
+
+  consent   Json?
+  signature String?
+
+  submittedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model Schedule {
+  id String @id @default(cuid())
+
+  className String
+  tutorName String
+  code      String @unique
+
+  dayOfWeek DayOfWeek
+
+  startTime String
+  endTime   String
+
+  isActive Boolean @default(true)
+  capacity Int     @default(5)
+
+  sessions ClassSession[]
+
+  bookings        Booking[]
+  memberSchedules MemberSchedule[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([dayOfWeek])
+  @@index([tutorName])
+  @@index([className])
+  @@index([isActive])
+}
+
+model ClassSession {
+  id String @id @default(cuid())
+
+  scheduleId String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  /**
+   * Actual calendar date of this class session.
+   * Example:
+   * 2026-09-24
+   */
+  sessionDate DateTime
+
+  /**
+   * Capacity can inherit from Schedule.
+   * If null, Schedule.capacity is used.
+   */
+  capacity Int?
+
+  status SessionStatus @default(OPEN)
+
+  bookings Booking[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([scheduleId, sessionDate])
+  @@index([sessionDate])
+  @@index([status])
+  @@index([scheduleId])
+}
+
+enum SessionStatus {
+  OPEN
+  FULL
+  CANCELLED
+  COMPLETED
+}
+
+model MemberSchedule {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bookingId String
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  scheduleId String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  classId String
+
+  startDate DateTime?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([bookingId, scheduleId])
+  @@index([userId])
+  @@index([bookingId])
+  @@index([scheduleId])
+  @@index([classId])
+  @@index([isActive])
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+model User {
+  id String @id @default(cuid())
+
+  fullName String
+
+  email    String  @unique
+  password String?
+
+  phone String?
+
+  provider AuthProvider @default(LOCAL)
+
+  role UserRole @default(MEMBER)
+
+  isEmailVerified Boolean @default(false)
+
+  avatar String?
+
+  bookings Booking[]
+
+  refreshTokens RefreshToken[]
+
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+
+  memberSchedules     MemberSchedule[]
+  memberships         MemberMembership[]
+  healthSafetyForms   HealthSafetyForm[]
+  membershipPurchases MembershipPurchase[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MembershipActivation {
+  id String @id @default(cuid())
+
+  bookingId String  @unique
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  memberMembershipId String           @unique
+  memberMembership   MemberMembership @relation(fields: [memberMembershipId], references: [id], onDelete: Cascade)
+
+  membershipNumber String @unique
+
+  tokenHash String @unique
+
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id String @id @default(cuid())
+
+  token String @unique
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+}
+
+enum MembershipType {
+  GROUP
+  PRIVATE
+}
+
+model Membership {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String?
+
+  type MembershipType
+
+  price      Int
+  period     String
+  classLimit Int?
+  duration   String
+
+  features Json
+
+  highlighted Boolean @default(false)
+  badge       String?
+
+  displayOrder Int     @default(0)
+  autoRenew    Boolean @default(false)
+  isActive     Boolean @default(true)
+
+  bookings            Booking[]
+  memberMemberships   MemberMembership[]
+  membershipPurchases MembershipPurchase[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MemberMembership {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  membershipId String
+  membership   Membership @relation(fields: [membershipId], references: [id])
+
+  bookings Booking[]
+
+  status     MembershipStatus @default(ACTIVE)
+  startDate  DateTime?
+  expiryDate DateTime?
+
+  creditsTotal Int?
+  creditsUsed  Int  @default(0)
+
+  activation MembershipActivation?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiryDate])
+}
+
+model EmailVerificationToken {
+  id        String @id @default(cuid())
+  tokenHash String @unique
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String @id @default(cuid())
+  tokenHash String @unique
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum UserRole {
+  MEMBER
+  ADMIN
+}
+
+enum AuthProvider {
+  LOCAL
+  GOOGLE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  PAYMISH
+  OFFLINE
+  PAYSTACK
+}
