@@ -612,31 +612,35 @@ async resumeBookingForUser(req: Request, res: Response) {
         });
       }
 
-      const { classSessionId } = req.body;
+   
+const { classSessionId, healthDeclaration } = req.body;
 
-      if (
-        !classSessionId ||
-        typeof classSessionId !== "string"
-      ) {
-        return res.status(400).json({
-          success: false,
-          message: "Class session ID is required.",
-        });
-      }
+if (!classSessionId || typeof classSessionId !== "string") {
+  return res.status(400).json({
+    success: false,
+    message: "Class session ID is required.",
+  });
+}
 
-      const booking =
-        await bookingService.bookMemberSession(
-          userId,
-          classSessionId
-        );
+if (!healthDeclaration || healthDeclaration.accepted !== true) {
+  return res.status(400).json({
+    success: false,
+    message: "You must accept the Health Declaration to continue.",
+  });
+}
 
-      return res.status(201).json({
-        success: true,
-        message: "Class session booked successfully.",
-        data: {
-          booking,
-        },
-      });
+const booking = await bookingService.bookMemberSession(
+  userId,
+  classSessionId,
+  healthDeclaration
+);
+
+return res.status(201).json({
+  success: true,
+  message: "Class session booked successfully.",
+  data: { booking },
+});
+
     } catch (error: any) {
       console.error(
         "Book Member Session Error:",

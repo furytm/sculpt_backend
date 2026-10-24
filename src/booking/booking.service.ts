@@ -2499,10 +2499,16 @@ private async confirmPrivateBooking(
  *
  * They can book another session.
  */
+
 async bookMemberSession(
   userId: string,
-  sessionId: string
-) {
+  sessionId: string,
+  healthDeclaration: {
+    accepted: boolean;
+    notes?: string;
+  }
+)
+{
   if (!userId) {
     throw new Error(
       "Authentication is required."
@@ -2514,6 +2520,12 @@ async bookMemberSession(
       "Class session is required."
     );
   }
+
+if (healthDeclaration?.accepted !== true) {
+  throw new Error(
+    "You must accept the Health Declaration to continue."
+  );
+}
 
   const booking =
     await prisma.$transaction(
@@ -2801,6 +2813,21 @@ await this.assertSessionAvailable(
               },
             },
           });
+
+          
+await tx.healthSafetyForm.create({
+  data: {
+    bookingId: createdBooking.id,
+    userId,
+    accepted: true,
+    declarationVersion: this.HEALTH_DECLARATION_VERSION,
+    notes: healthDeclaration.notes?.trim() || null,
+    acceptedAt: new Date(),
+    submittedAt: new Date(),
+    screeningAnswers: {},
+    consent: [],
+  },
+});
 
         // -----------------------------------------------------
         // CONSUME CREDIT
