@@ -33,3 +33,5 @@ FOREIGN KEY ("userId")
 REFERENCES "User"("id")
 ON DELETE SET NULL
 ON UPDATE CASCADE;
+CREATE INDEX "MembershipPurchase_email_idx"
+ON "MembershipPurchase"("email");

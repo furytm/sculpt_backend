@@ -242,6 +242,7 @@ export const purchaseNewMembership = async (req, res) => {
             fullName,
             email,
             phone,
+            userId: req.user?.userId ?? null,
         });
         return res.status(201).json({
             success: true,

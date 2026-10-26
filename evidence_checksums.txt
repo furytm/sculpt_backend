@@ -1,0 +1,31 @@
+﻿=== _prisma_migrations ===
+                   migration_name                    |                             checksum                             |          finished_at          | rolled_back_at 
+-----------------------------------------------------+------------------------------------------------------------------+-------------------------------+----------------
+ 20260924090136_init                                 | a9d3abdec638b8344df32b50ee65c8a4a4f078696117d1f59391e4a7a1652976 | 2026-10-22 15:51:35.753317+01 | 
+ 20260927194020_add_membership_purchases             | 02889a25bdd562163e898a853bb31621804f848d04ea84b177bfe7b57269eb7e | 2026-10-22 15:51:35.836405+01 | 
+ 20260930080254_make_booking_contact_fields_optional | 056b6a20ca4871369b34e893b13b0302ad0b0c5300ff405588d0be4eb2bed5bb | 2026-10-22 15:51:35.846874+01 | 
+ 20261001095641_add_legacy_paystack_payment_method   | 5b008c3e64ce2bedc9420648a2b0daeebe7cb8cfc8dcec2595c1873f8d6e7496 | 2026-10-22 15:51:35.855347+01 | 
+ 20261022150000_guest_membership_purchase_fields     | 39a23dc52a075f5dee04837439996d8bc64b5645c2ac96e6ceada2cdafdf4046 | 2026-10-22 15:51:35.888329+01 | 
+ 20261022145205_add_guest_membership_contact_fields  | 641d4405a90518cad05a669bc6ac5c76bef9c73686b6c9cd2cf5e8fa384a2803 | 2026-10-22 15:52:06.027584+01 | 
+ 20261023090000_link_membership_purchase             | 700e8a4416695e176e1ebfb4764ab58f051243d831446d2f3935b5502d803a22 | 2026-10-23 05:30:48.498688+01 | 
+(7 rows)
+
+
+
+=== 20261022145205_add_guest_membership_contact_fields ===
+working file      : 913abc7e8da225489be9025f03bc7ba9b6153df51ccf8bf6daf518763ca15e5a
+commit 10e4a30 LF  : 836e815e0de9798ed4614f850b864a4af1605b00a0b60843c023b53acaa4f775
+commit 10e4a30 CRLF: 1ecbee0202d13c505f9bbbcbb03939852e5766aba2f63c7f4849cfb5b0d72cd3
+commit 323ed60 LF  : 641d4405a90518cad05a669bc6ac5c76bef9c73686b6c9cd2cf5e8fa384a2803
+commit 323ed60 CRLF: a5ac14d763521d8ae569787689ed8f2635914c2b78aa7fc380bf3e94b8c13810
+
+=== 20261022150000_guest_membership_purchase_fields ===
+working file      : 1b58246fd678e01d5904c0aced697525bb367695c4ae3fe53e94362799a18c63
+commit 10e4a30 LF  : 7f30ab508d1b6f7e7eabd16cb6380f6f354997fdcebdb68e0f5d2c28a1a21b96
+commit 10e4a30 CRLF: 39a23dc52a075f5dee04837439996d8bc64b5645c2ac96e6ceada2cdafdf4046
+commit eefa31f LF  : 836e815e0de9798ed4614f850b864a4af1605b00a0b60843c023b53acaa4f775
+commit eefa31f CRLF: 1ecbee0202d13c505f9bbbcbb03939852e5766aba2f63c7f4849cfb5b0d72cd3
+commit e7199a6 LF  : 7f30ab508d1b6f7e7eabd16cb6380f6f354997fdcebdb68e0f5d2c28a1a21b96
+commit e7199a6 CRLF: 39a23dc52a075f5dee04837439996d8bc64b5645c2ac96e6ceada2cdafdf4046
+
+=== live schema vs schema.prisma (empty output = no drift) ===

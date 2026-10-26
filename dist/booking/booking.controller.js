@@ -443,21 +443,24 @@ class BookingController {
                     message: "Unauthorized.",
                 });
             }
-            const { classSessionId } = req.body;
-            if (!classSessionId ||
-                typeof classSessionId !== "string") {
+            const { classSessionId, healthDeclaration } = req.body;
+            if (!classSessionId || typeof classSessionId !== "string") {
                 return res.status(400).json({
                     success: false,
                     message: "Class session ID is required.",
                 });
             }
-            const booking = await bookingService.bookMemberSession(userId, classSessionId);
+            if (!healthDeclaration || healthDeclaration.accepted !== true) {
+                return res.status(400).json({
+                    success: false,
+                    message: "You must accept the Health Declaration to continue.",
+                });
+            }
+            const booking = await bookingService.bookMemberSession(userId, classSessionId, healthDeclaration);
             return res.status(201).json({
                 success: true,
                 message: "Class session booked successfully.",
-                data: {
-                    booking,
-                },
+                data: { booking },
             });
         }
         catch (error) {

@@ -415,26 +415,48 @@ class MembershipService {
             if (!purchase) {
                 throw new Error("Membership purchase not found.");
             }
-            /*
-             * Idempotency.
-             *
-             * If Paymish callback/webhook reaches us twice,
-             * don't create two memberships.
-             */
-            const existingMembership = await tx.memberMembership.findFirst({
+            // Return the membership linked to this exact purchase.
+            // A PAID purchase without a linked membership must be
+            // allowed to continue through activation.
+            const linkedMembership = await tx.memberMembership.findUnique({
                 where: {
-                    userId: purchase.userId ?? undefined,
-                    membershipId: purchase.membershipId,
-                    startDate: {
-                        gte: purchase.createdAt,
-                    },
+                    membershipPurchaseId: purchase.id,
+                },
+                include: {
+                    membership: true,
                 },
             });
-            if (purchase.paymentStatus === PaymentStatus.PAID &&
-                existingMembership) {
+            if (linkedMembership) {
+                // Attach a guest membership to the purchaser's account
+                // once the purchase has been associated with that account.
+                if (purchase.userId &&
+                    !linkedMembership.userId) {
+                    const updatedMembership = await tx.memberMembership.update({
+                        where: {
+                            id: linkedMembership.id,
+                        },
+                        data: {
+                            userId: purchase.userId,
+                        },
+                        include: {
+                            membership: true,
+                        },
+                    });
+                    return {
+                        purchase,
+                        membership: updatedMembership,
+                    };
+                }
+                // Never silently attach a membership belonging
+                // to a different user.
+                if (purchase.userId &&
+                    linkedMembership.userId &&
+                    linkedMembership.userId !== purchase.userId) {
+                    throw new Error("Membership purchase is linked to a different user.");
+                }
                 return {
                     purchase,
-                    membership: existingMembership,
+                    membership: linkedMembership,
                 };
             }
             /*
@@ -506,6 +528,7 @@ class MembershipService {
                 const newMembership = await tx.memberMembership.create({
                     data: {
                         userId: purchase.userId,
+                        membershipPurchaseId: purchase.id,
                         membershipId: purchase.membershipId,
                         status: MembershipStatus.ACTIVE,
                         startDate,
@@ -574,6 +597,7 @@ class MembershipService {
             const renewedMembership = await tx.memberMembership.create({
                 data: {
                     userId: purchase.userId,
+                    membershipPurchaseId: purchase.id,
                     membershipId: purchase.membershipId,
                     status: MembershipStatus.ACTIVE,
                     startDate,
@@ -607,18 +631,15 @@ class MembershipService {
         if (!purchase) {
             return null;
         }
-        const memberMembership = await prisma.memberMembership.findFirst({
+        const memberMembership = await prisma.memberMembership.findUnique({
             where: {
-                userId,
-                membershipId: purchase.membershipId,
-                startDate: {
-                    gte: purchase.createdAt,
-                },
-            },
-            orderBy: {
-                startDate: "desc",
+                membershipPurchaseId: purchase.id,
             },
         });
+        // Ensure the linked membership belongs to this user.
+        const ownedMembership = memberMembership?.userId === userId
+            ? memberMembership
+            : null;
         return {
             purchase: {
                 id: purchase.id,
@@ -630,18 +651,18 @@ class MembershipService {
                 createdAt: purchase.createdAt,
             },
             membership: purchase.membership,
-            memberMembership: memberMembership
+            memberMembership: ownedMembership
                 ? {
-                    id: memberMembership.id,
-                    status: memberMembership.status,
-                    startDate: memberMembership.startDate,
-                    expiryDate: memberMembership.expiryDate,
-                    creditsTotal: memberMembership.creditsTotal,
-                    creditsUsed: memberMembership.creditsUsed,
-                    remainingCredits: memberMembership.creditsTotal === null
+                    id: ownedMembership.id,
+                    status: ownedMembership.status,
+                    startDate: ownedMembership.startDate,
+                    expiryDate: ownedMembership.expiryDate,
+                    creditsTotal: ownedMembership.creditsTotal,
+                    creditsUsed: ownedMembership.creditsUsed,
+                    remainingCredits: ownedMembership.creditsTotal === null
                         ? null
-                        : Math.max(memberMembership.creditsTotal -
-                            memberMembership.creditsUsed, 0),
+                        : Math.max(ownedMembership.creditsTotal -
+                            ownedMembership.creditsUsed, 0),
                 }
                 : null,
         };
@@ -723,8 +744,10 @@ class MembershipService {
         const paymentReference = `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
         const purchase = await prisma.membershipPurchase.create({
             data: {
-                userId: null,
+                userId: data.userId,
+                fullName: data.fullName.trim(),
                 email,
+                phone: data.phone.trim(),
                 membershipId: membership.id,
                 type: MembershipPurchaseType.NEW,
                 amount: membership.price,

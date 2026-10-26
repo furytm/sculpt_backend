@@ -1540,12 +1540,15 @@ class BookingService {
      *
      * They can book another session.
      */
-    async bookMemberSession(userId, sessionId) {
+    async bookMemberSession(userId, sessionId, healthDeclaration) {
         if (!userId) {
             throw new Error("Authentication is required.");
         }
         if (!sessionId) {
             throw new Error("Class session is required.");
+        }
+        if (healthDeclaration?.accepted !== true) {
+            throw new Error("You must accept the Health Declaration to continue.");
         }
         const booking = await prisma.$transaction(async (tx) => {
             // -----------------------------------------------------
@@ -1709,6 +1712,19 @@ class BookingService {
                             schedule: true,
                         },
                     },
+                },
+            });
+            await tx.healthSafetyForm.create({
+                data: {
+                    bookingId: createdBooking.id,
+                    userId,
+                    accepted: true,
+                    declarationVersion: this.HEALTH_DECLARATION_VERSION,
+                    notes: healthDeclaration.notes?.trim() || null,
+                    acceptedAt: new Date(),
+                    submittedAt: new Date(),
+                    screeningAnswers: {},
+                    consent: [],
                 },
             });
             // -----------------------------------------------------

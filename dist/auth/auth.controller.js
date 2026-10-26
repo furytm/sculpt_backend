@@ -18,7 +18,7 @@ class AuthController {
             const result = await authService.register(value);
             return res.status(201).json({
                 success: true,
-                message: 'Account created successfully. Please check your email for the next steps.',
+                message: 'message: "Account created successfully. You can now log in.",',
                 data: {
                     user: result.user,
                 },
@@ -262,29 +262,6 @@ class AuthController {
                 return res.redirect(`${frontendUrl || ""}/login?error=LOCAL_ACCOUNT_EXISTS`);
             }
             return res.redirect(`${frontendUrl || ""}/login?error=GOOGLE_AUTH_FAILED`);
-        }
-    }
-    /**
-     * GET /api/auth/verify-email?token=...
-     */
-    async verifyEmail(req, res) {
-        try {
-            const token = req.query.token;
-            if (!token) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Verification token is required.",
-                });
-            }
-            const result = await authService.verifyEmail(token);
-            return res.status(200).json(result);
-        }
-        catch (error) {
-            return res.status(400).json({
-                success: false,
-                message: error.message ||
-                    "Email verification failed.",
-            });
         }
     }
     /**

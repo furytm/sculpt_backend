@@ -1,7 +1,7 @@
 import prisma from "../config/prisma.js";
 import membershipService from "../membership/membership.service.js";
 import paymentService from "./payment.service.js";
-import { sendPaymentConfirmationEmail } from "../utils/mailer.js";
+import { sendPaymentConfirmationEmail, sendAdminPaymentNotificationEmail, } from "../utils/mailer.js";
 import bookingService from "../booking/booking.service.js";
 class PaymentController {
     // =========================================================
@@ -46,16 +46,15 @@ class PaymentController {
         const reference = typeof req.query.reference === "string"
             ? req.query.reference.trim()
             : "";
+        let paymentVerified = false;
         try {
-            console.log("========== PAYMISH CALLBACK ==========");
-            console.log("REFERENCE:", reference);
             if (!frontendUrl) {
                 throw new Error("FRONTEND_URL is not configured.");
             }
             if (!reference) {
                 return res.redirect(`${frontendUrl}/confirmation?payment=failed`);
             }
-            // 1. Verify payment directly with Paymish.
+            // Verify directly with Paymish before sending notifications.
             const verification = await paymentService.verifyTransaction(reference);
             const transaction = verification?.data;
             const isVerified = verification?.status === "success" &&
@@ -65,21 +64,50 @@ class PaymentController {
                 console.warn("Payment not verified:", reference);
                 return res.redirect(`${frontendUrl}/confirmation?payment=failed&reference=${encodeURIComponent(reference)}`);
             }
+            paymentVerified = true;
             console.log("Payment successfully verified:", reference);
-            // 2. Check whether this is a membership purchase.
             const membershipPurchase = await prisma.membershipPurchase.findUnique({
-                where: {
-                    paymentReference: reference,
-                },
+                where: { paymentReference: reference },
+                include: { membership: true },
             });
+            // --------------------------------------------------
+            // MEMBERSHIP PURCHASE: NEW, RENEWAL OR UPGRADE
+            // --------------------------------------------------
             if (membershipPurchase) {
-                // Complete activation after verified payment.
                 await membershipService.completeMembershipPurchase(reference);
-                // NEW purchases should not be labelled as renewals.
+                const customerName = membershipPurchase.fullName || "Sculpt LAB customer";
+                // Send registration/login email for new memberships.
+                if (membershipPurchase.type === "NEW" &&
+                    membershipPurchase.email) {
+                    try {
+                        await sendPaymentConfirmationEmail({
+                            email: membershipPurchase.email,
+                            fullName: customerName,
+                            bookingReference: reference,
+                            registrationUrl: `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`,
+                            loginUrl: `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`,
+                        });
+                    }
+                    catch (error) {
+                        console.error("Membership paid, but customer email failed:", reference, error);
+                    }
+                }
+                // Alert admin for all membership payment types.
+                try {
+                    await sendAdminPaymentNotificationEmail({
+                        fullName: customerName,
+                        email: membershipPurchase.email,
+                        amount: membershipPurchase.amount,
+                        paymentReference: reference,
+                        paymentType: `Membership ${membershipPurchase.type}`,
+                    });
+                }
+                catch (error) {
+                    console.error("Membership paid, but admin email failed:", reference, error);
+                }
                 if (membershipPurchase.type === "NEW") {
                     return res.redirect(`${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`);
                 }
-                // Renewals and upgrades get their appropriate mode.
                 if (membershipPurchase.type === "UPGRADE" ||
                     membershipPurchase.type === "RENEWAL") {
                     const mode = membershipPurchase.type === "UPGRADE"
@@ -89,31 +117,39 @@ class PaymentController {
                 }
                 throw new Error(`Unsupported membership purchase type: ${membershipPurchase.type}`);
             }
-            // 3. This is a booking payment, so mark the booking as paid.
+            // --------------------------------------------------
+            // BOOKING PAYMENT
+            // --------------------------------------------------
             await bookingService.markBookingPaid(reference);
-            // 4. Send the customer an email with registration/login links.
-            // Email failure must not turn a verified payment into a failure.
-            try {
-                const continuation = await bookingService.continueGuestBooking(reference);
-                const booking = continuation.booking;
-                if (!booking.email) {
-                    throw new Error("The paid booking has no customer email address.");
-                }
-                const registrationUrl = `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`;
-                const loginUrl = `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`;
-                await sendPaymentConfirmationEmail({
+            const continuation = await bookingService.continueGuestBooking(reference);
+            const booking = continuation.booking;
+            // Send customer and admin emails independently.
+            const emailTasks = [];
+            if (booking.email) {
+                emailTasks.push(sendPaymentConfirmationEmail({
                     email: booking.email,
                     fullName: booking.fullName || "Sculpt LAB customer",
                     bookingReference: reference,
-                    registrationUrl,
-                    loginUrl,
-                });
-                console.log("Payment confirmation email sent:", reference);
+                    registrationUrl: `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`,
+                    loginUrl: `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`,
+                }));
+                emailTasks.push(sendAdminPaymentNotificationEmail({
+                    fullName: booking.fullName || "Sculpt LAB customer",
+                    email: booking.email,
+                    amount: booking.amount,
+                    paymentReference: reference,
+                    paymentType: "Booking",
+                }));
             }
-            catch (emailError) {
-                console.error("Payment confirmed, but continuation email could not be sent:", reference, emailError);
+            else {
+                console.error("Verified booking has no customer email:", reference);
             }
-            // 5. Return to the booking confirmation page.
+            const emailResults = await Promise.allSettled(emailTasks);
+            emailResults.forEach((result, index) => {
+                if (result.status === "rejected") {
+                    console.error(`Payment notification email ${index + 1} failed:`, reference, result.reason);
+                }
+            });
             return res.redirect(`${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`);
         }
         catch (error) {
@@ -124,7 +160,7 @@ class PaymentController {
                     message: "Payment callback configuration error.",
                 });
             }
-            return res.redirect(`${frontendUrl}/confirmation?payment=failed${reference
+            return res.redirect(`${frontendUrl}/confirmation?${paymentVerified ? "status=success" : "payment=failed"}${reference
                 ? `&reference=${encodeURIComponent(reference)}`
                 : ""}`);
         }

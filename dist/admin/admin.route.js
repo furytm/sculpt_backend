@@ -3,6 +3,7 @@ import authenticate from "../middleware/authenticate.js";
 import requireAdmin from "../middleware/requireAdmin.js";
 import { adminController } from "./admin.controller.js";
 import adminSessionController from "./admin-session.controller.js";
+import adminNotificationController from "./admin-notification.controller.js";
 const router = Router();
 console.log("🔥 ADMIN ROUTES LOADED");
 // =====================================================
@@ -27,6 +28,14 @@ router.get("/payments/test-activation-service", (_req, res) => {
         message: "TEST ROUTE WORKS",
     });
 });
+// =====================================================
+// ADMIN NOTIFICATIONS
+// =====================================================
+router.get("/notifications", authenticate, requireAdmin, adminNotificationController.getNotifications);
+router.patch("/notifications/:id/read", authenticate, requireAdmin, adminNotificationController.markAsRead);
+router.patch("/notifications/read-all", authenticate, requireAdmin, adminNotificationController.markAllAsRead);
+router.post("/notifications/push-subscription", authenticate, requireAdmin, adminNotificationController.savePushSubscription);
+router.delete("/notifications/push-subscription", authenticate, requireAdmin, adminNotificationController.deletePushSubscription);
 // =====================================================
 // DASHBOARD
 // =====================================================

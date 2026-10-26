@@ -162,28 +162,6 @@ router.get("/google", authController.google);
 router.get("/google/callback", authController.googleCallback);
 /**
  * @openapi
- * /api/auth/verify-email:
- *   get:
- *     tags:
- *       - Authentication
- *     summary: Verify email address
- *     description: Verifies a user's email address using the verification token sent by email.
- *     parameters:
- *       - in: query
- *         name: token
- *         required: true
- *         schema:
- *           type: string
- *         description: Email verification token
- *     responses:
- *       200:
- *         description: Email verified successfully
- *       400:
- *         description: Invalid or expired verification token
- */
-router.get("/verify-email", authController.verifyEmail);
-/**
- * @openapi
  * /api/auth/forgot-password:
  *   post:
  *     tags:

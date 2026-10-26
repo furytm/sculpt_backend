@@ -1,4 +1,4 @@
- generator client {
+generator client {
   provider = "prisma-client-js"
 }
 
@@ -66,8 +66,6 @@ enum JournalStatus {
   PUBLISHED
 }
 
-
-
 model Journal {
   id          String        @id @default(cuid())
   title       String
@@ -93,9 +91,9 @@ model MembershipPurchase {
   email                String
   membershipId         String
   previousMembershipId String?
-  fullName String?
-phone    String?
-memberMembership MemberMembership?
+  fullName             String?
+  phone                String?
+  memberMembership     MemberMembership?
   type                 MembershipPurchaseType
 
   amount           Int
@@ -113,6 +111,7 @@ memberMembership MemberMembership?
   @@index([userId])
   @@index([email])
 }
+
 model HealthSafetyForm {
   id String @id @default(cuid())
 
@@ -278,7 +277,9 @@ model User {
 
   provider AuthProvider @default(LOCAL)
 
-  role UserRole @default(MEMBER)
+  role               UserRole                @default(MEMBER)
+  adminNotifications AdminNotification[]
+  pushSubscriptions  AdminPushSubscription[]
 
   isEmailVerified Boolean @default(false)
 
@@ -371,9 +372,9 @@ model Membership {
 }
 
 model MemberMembership {
-  id String @id @default(cuid())
+  id                   String              @id @default(cuid())
   membershipPurchaseId String?             @unique
-membershipPurchase   MembershipPurchase? @relation(fields: [membershipPurchaseId], references: [id], onDelete: SetNull)
+  membershipPurchase   MembershipPurchase? @relation(fields: [membershipPurchaseId], references: [id], onDelete: SetNull)
 
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -411,6 +412,41 @@ model EmailVerificationToken {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+model AdminNotification {
+  id      String @id @default(cuid())
+  adminId String
+  admin   User   @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  eventKey String
+  type     String
+  title    String
+  message  String
+  data     Json?
+  readAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([adminId, eventKey])
+  @@index([adminId, readAt, createdAt])
+  @@map("admin_notifications")
+}
+
+model AdminPushSubscription {
+  id      String @id @default(cuid())
+  adminId String
+  admin   User   @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  endpoint String @unique
+  p256dh   String
+  auth     String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([adminId])
+  @@map("admin_push_subscriptions")
 }
 
 model PasswordResetToken {

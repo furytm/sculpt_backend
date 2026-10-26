@@ -1,0 +1,76 @@
+﻿Pager usage is off.
+                                     Table "public.MembershipPurchase"
+        Column        |              Type              | Collation | Nullable |          Default           
+----------------------+--------------------------------+-----------+----------+----------------------------
+ id                   | text                           |           | not null | 
+ userId               | text                           |           |          | 
+ membershipId         | text                           |           | not null | 
+ previousMembershipId | text                           |           |          | 
+ type                 | "MembershipPurchaseType"       |           | not null | 
+ amount               | integer                        |           | not null | 
+ paymentReference     | text                           |           | not null | 
+ paymentStatus        | "PaymentStatus"                |           | not null | 'PENDING'::"PaymentStatus"
+ carriedCredits       | integer                        |           | not null | 0
+ createdAt            | timestamp(3) without time zone |           | not null | CURRENT_TIMESTAMP
+ updatedAt            | timestamp(3) without time zone |           | not null | 
+ email                | text                           |           | not null | 
+ fullName             | text                           |           |          | 
+ phone                | text                           |           |          | 
+Indexes:
+    "MembershipPurchase_pkey" PRIMARY KEY, btree (id)
+    "MembershipPurchase_email_idx" btree (email)
+    "MembershipPurchase_paymentReference_key" UNIQUE, btree ("paymentReference")
+    "MembershipPurchase_userId_idx" btree ("userId")
+Foreign-key constraints:
+    "MembershipPurchase_membershipId_fkey" FOREIGN KEY ("membershipId") REFERENCES "Membership"(id) ON UPDATE CASCADE ON DELETE RESTRICT
+    "MembershipPurchase_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"(id) ON UPDATE CASCADE ON DELETE SET NULL
+Referenced by:
+    TABLE ""MemberMembership"" CONSTRAINT "MemberMembership_membershipPurchaseId_fkey" FOREIGN KEY ("membershipPurchaseId") REFERENCES "MembershipPurchase"(id) ON UPDATE CASCADE ON DELETE SET NULL
+
+                                           List of data types
+ Schema |      Name       | Internal name | Size | Elements |  Owner   | Access privileges | Description 
+--------+-----------------+---------------+------+----------+----------+-------------------+-------------
+ public | "PaymentMethod" | PaymentMethod | 4    | PAYMISH +| postgres |                   | 
+        |                 |               |      | OFFLINE +|          |                   | 
+        |                 |               |      | PAYSTACK |          |                   | 
+(1 row)
+
+                                    Table "public.journals"
+   Column    |              Type              | Collation | Nullable |         Default          
+-------------+--------------------------------+-----------+----------+--------------------------
+ id          | text                           |           | not null | 
+ title       | text                           |           | not null | 
+ slug        | text                           |           | not null | 
+ excerpt     | text                           |           | not null | 
+ content     | text                           |           | not null | 
+ coverImage  | text                           |           | not null | 
+ authorName  | text                           |           | not null | 'Sculpt LAB'::text
+ status      | "JournalStatus"                |           | not null | 'DRAFT'::"JournalStatus"
+ isFeatured  | boolean                        |           | not null | false
+ publishedAt | timestamp(3) without time zone |           |          | 
+ createdAt   | timestamp(3) without time zone |           | not null | CURRENT_TIMESTAMP
+ updatedAt   | timestamp(3) without time zone |           | not null | 
+Indexes:
+    "journals_pkey" PRIMARY KEY, btree (id)
+    "journals_isFeatured_status_idx" btree ("isFeatured", status)
+    "journals_slug_key" UNIQUE, btree (slug)
+    "journals_status_publishedAt_idx" btree (status, "publishedAt")
+
+                                            List of data types
+ Schema |      Name       | Internal name | Size | Elements  |  Owner   | Access privileges | Description 
+--------+-----------------+---------------+------+-----------+----------+-------------------+-------------
+ public | "JournalStatus" | JournalStatus | 4    | DRAFT    +| postgres |                   | 
+        |                 |               |      | PUBLISHED |          |                   | 
+(1 row)
+
+                   migration_name                    |          finished_at          | rolled_back_at 
+-----------------------------------------------------+-------------------------------+----------------
+ 20260924090136_init                                 | 2026-10-22 15:51:35.753317+01 | 
+ 20260927194020_add_membership_purchases             | 2026-10-22 15:51:35.836405+01 | 
+ 20260930080254_make_booking_contact_fields_optional | 2026-10-22 15:51:35.846874+01 | 
+ 20261001095641_add_legacy_paystack_payment_method   | 2026-10-22 15:51:35.855347+01 | 
+ 20261022150000_guest_membership_purchase_fields     | 2026-10-22 15:51:35.888329+01 | 
+ 20261022145205_add_guest_membership_contact_fields  | 2026-10-22 15:52:06.027584+01 | 
+ 20261023090000_link_membership_purchase             | 2026-10-23 05:30:48.498688+01 | 
+(7 rows)
+

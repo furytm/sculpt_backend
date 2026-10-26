@@ -39,7 +39,7 @@ const result = await authService.register(value)
 
 return res.status(201).json({
   success: true,
-  message: 'Account created successfully. Please check your email for the next steps.',
+  message: 'message: "Account created successfully. You can now log in.",',
   data: {
     user: result.user,
   },
@@ -421,42 +421,7 @@ async googleCallback(req: Request, res: Response) {
   }
 }
 
-  /**
-   * GET /api/auth/verify-email?token=...
-   */
-  async verifyEmail(
-    req: Request,
-    res: Response
-  ) {
-    try {
-      const token =
-        req.query.token as string;
 
-      if (!token) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Verification token is required.",
-        });
-      }
-
-      const result =
-        await authService.verifyEmail(
-          token
-        );
-
-      return res.status(200).json(
-        result
-      );
-    } catch (error: any) {
-      return res.status(400).json({
-        success: false,
-        message:
-          error.message ||
-          "Email verification failed.",
-      });
-    }
-  }
 
   /**
    * POST /api/auth/forgot-password

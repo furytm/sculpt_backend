@@ -12,6 +12,44 @@ function escapeHtml(value) {
         return entities[character];
     });
 }
+export async function sendAdminPaymentNotificationEmail({ fullName, email, amount, paymentReference, paymentType, }) {
+    const adminEmail = process.env.ADMIN_PAYMENT_EMAIL;
+    if (!adminEmail) {
+        throw new Error("ADMIN_PAYMENT_EMAIL is not configured.");
+    }
+    const safeName = escapeHtml(fullName);
+    const safeEmail = escapeHtml(email);
+    const safeReference = escapeHtml(paymentReference);
+    const safePaymentType = escapeHtml(paymentType);
+    const formattedAmount = new Intl.NumberFormat("en-NG", {
+        style: "currency",
+        currency: "NGN",
+    }).format(amount);
+    const { error } = await resend.emails.send({
+        from: "Sculpt LAB <enquiriess@sculptlab.com.ng>",
+        to: adminEmail,
+        subject: `New Sculpt LAB payment received — ${paymentReference}`,
+        html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.7;color:#222;">
+        <h2>New Payment Received</h2>
+
+        <p>A payment has been successfully verified by Sculpt LAB.</p>
+
+        <p><strong>Customer:</strong> ${safeName}</p>
+        <p><strong>Email:</strong> ${safeEmail}</p>
+        <p><strong>Amount:</strong> ${formattedAmount}</p>
+        <p><strong>Payment type:</strong> ${safePaymentType}</p>
+        <p><strong>Payment reference:</strong> ${safeReference}</p>
+
+        <p>Sculpt LAB Payment Notifications</p>
+      </div>
+    `,
+    });
+    if (error) {
+        console.error("Admin payment notification email error:", error);
+        throw new Error("Unable to send admin payment notification.");
+    }
+}
 export async function sendPaymentConfirmationEmail({ email, fullName, bookingReference, registrationUrl, loginUrl, }) {
     const safeName = escapeHtml(fullName);
     const safeReference = escapeHtml(bookingReference);

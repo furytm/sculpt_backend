@@ -236,14 +236,7 @@ if (paidPurchase) {
     return createdUser;
   });
 
-  try {
-    await this.sendVerificationEmailForUser(user.id);
-  } catch (error) {
-    console.error(
-      `Failed to send registration verification email to ${user.email}:`,
-      error
-    );
-  }
+
 
   return {
     user: {

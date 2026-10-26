@@ -2,8 +2,13 @@ import prisma  from "../config/prisma.js";
 import  membershipService  from "../membership/membership.service.js";
 import { Request, Response } from "express";
 import paymentService from "./payment.service.js";
-import {sendPaymentConfirmationEmail} from "../utils/mailer.js"
+import {
+  sendPaymentConfirmationEmail,
+  sendAdminPaymentNotificationEmail,
+} from "../utils/mailer.js";
 import bookingService from "../booking/booking.service.js";
+import { adminNotificationService } from "../admin/admin-notification.service.js";
+
 
 interface VerifyParams {
   reference: string;
@@ -15,6 +20,11 @@ class PaymentController {
   // =========================================================
 
   async initializePayment(req: Request, res: Response) {
+    console.log("========== INITIALIZE PAYMENT HIT ==========", {
+  method: req.method,
+  url: req.originalUrl,
+  time: new Date().toISOString(),
+});
     try {
       const payment =
         await paymentService.initializeTransaction(req.body);
@@ -61,7 +71,15 @@ class PaymentController {
   }
 
 
+
+
 async callback(req: Request, res: Response) {
+  console.log("========== PAYMISH CALLBACK HIT ==========", {
+  method: req.method,
+  url: req.originalUrl,
+  reference: req.query.reference,
+  time: new Date().toISOString(),
+});
   const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
 
   const reference =
@@ -69,10 +87,9 @@ async callback(req: Request, res: Response) {
       ? req.query.reference.trim()
       : "";
 
-  try {
-    console.log("========== PAYMISH CALLBACK ==========");
-    console.log("REFERENCE:", reference);
+  let paymentVerified = false;
 
+  try {
     if (!frontendUrl) {
       throw new Error("FRONTEND_URL is not configured.");
     }
@@ -83,7 +100,7 @@ async callback(req: Request, res: Response) {
       );
     }
 
-    // 1. Verify payment directly with Paymish.
+    // Verify the transaction directly with Paymish.
     const verification =
       await paymentService.verifyTransaction(reference);
 
@@ -102,30 +119,95 @@ async callback(req: Request, res: Response) {
       );
     }
 
+    paymentVerified = true;
+
     console.log("Payment successfully verified:", reference);
 
-    // 2. Check whether this is a membership purchase.
+    // Check whether this is a membership purchase.
     const membershipPurchase =
       await prisma.membershipPurchase.findUnique({
-        where: {
-          paymentReference: reference,
-        },
+        where: { paymentReference: reference },
+        include: { membership: true },
       });
 
+    // --------------------------------------------------
+    // MEMBERSHIP PURCHASE: NEW, RENEWAL OR UPGRADE
+    // --------------------------------------------------
     if (membershipPurchase) {
-      // Complete activation after verified payment.
       await membershipService.completeMembershipPurchase(reference);
 
-      // NEW purchases should not be labelled as renewals.
-  
-if (membershipPurchase.type === "NEW") {
-  return res.redirect(
-    `${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`
-  );
-}
+      const customerName =
+        membershipPurchase.fullName || "Sculpt LAB customer";
 
+      // Create the admin database notification.
+      // Notification failures must not interrupt a successful payment.
+      try {
+        await adminNotificationService.createForAllAdmins({
+          eventKey: `paymish:${reference}`,
+          type: "PAYMENT",
+          title: "Membership payment received",
+          message: `${customerName} completed a ${membershipPurchase.type.toLowerCase()} membership payment.`,
+          data: {
+            reference,
+            paymentType: `Membership ${membershipPurchase.type}`,
+            amount: String(membershipPurchase.amount),
+          },
+        });
+      } catch (notificationError) {
+        console.error(
+          "Membership paid, but admin database notification failed:",
+          reference,
+          notificationError
+        );
+      }
 
-      // Renewals and upgrades get their appropriate mode.
+      // Preserve the existing customer email for new memberships.
+      if (
+        membershipPurchase.type === "NEW" &&
+        membershipPurchase.email
+      ) {
+        try {
+          await sendPaymentConfirmationEmail({
+            email: membershipPurchase.email,
+            fullName: customerName,
+            bookingReference: reference,
+            registrationUrl:
+              `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`,
+            loginUrl:
+              `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`,
+          });
+        } catch (error) {
+          console.error(
+            "Membership paid, but customer email failed:",
+            reference,
+            error
+          );
+        }
+      }
+
+      // Preserve the existing admin payment email.
+      try {
+        await sendAdminPaymentNotificationEmail({
+          fullName: customerName,
+          email: membershipPurchase.email,
+          amount: membershipPurchase.amount,
+          paymentReference: reference,
+          paymentType: `Membership ${membershipPurchase.type}`,
+        });
+      } catch (error) {
+        console.error(
+          "Membership paid, but admin email failed:",
+          reference,
+          error
+        );
+      }
+
+      if (membershipPurchase.type === "NEW") {
+        return res.redirect(
+          `${frontendUrl}/confirmation?status=success&type=membership&reference=${encodeURIComponent(reference)}`
+        );
+      }
+
       if (
         membershipPurchase.type === "UPGRADE" ||
         membershipPurchase.type === "RENEWAL"
@@ -145,55 +227,86 @@ if (membershipPurchase.type === "NEW") {
       );
     }
 
-    // 3. This is a booking payment, so mark the booking as paid.
+    // --------------------------------------------------
+    // BOOKING PAYMENT
+    // --------------------------------------------------
+
     await bookingService.markBookingPaid(reference);
 
-    // 4. Send the customer an email with registration/login links.
-    // Email failure must not turn a verified payment into a failure.
+    const continuation =
+      await bookingService.continueGuestBooking(reference);
+
+    const booking = continuation.booking;
+
+    // Create the admin database notification after payment
+    // and guest booking continuation have succeeded.
     try {
-      const continuation =
-        await bookingService.continueGuestBooking(reference);
-
-      const booking = continuation.booking;
-
-      if (!booking.email) {
-        throw new Error(
-          "The paid booking has no customer email address."
-        );
-      }
-
-      const registrationUrl =
-        `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`;
-
-      const loginUrl =
-        `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`;
-
-      await sendPaymentConfirmationEmail({
-        email: booking.email,
-        fullName: booking.fullName || "Sculpt LAB customer",
-        bookingReference: reference,
-        registrationUrl,
-        loginUrl,
+      await adminNotificationService.createForAllAdmins({
+        eventKey: `paymish:${reference}`,
+        type: "PAYMENT",
+        title: "Booking payment received",
+        message: `${booking.fullName || "A customer"} completed a booking payment.`,
+        data: {
+          reference,
+          paymentType: "Booking",
+          amount: String(booking.amount),
+        },
       });
-
-      console.log(
-        "Payment confirmation email sent:",
-        reference
-      );
-    } catch (emailError) {
+    } catch (notificationError) {
       console.error(
-        "Payment confirmed, but continuation email could not be sent:",
+        "Booking paid, but admin database notification failed:",
         reference,
-        emailError
+        notificationError
       );
     }
 
-    // 5. Return to the booking confirmation page.
+    // Send customer and admin emails independently.
+    const emailTasks: Promise<unknown>[] = [];
 
-return res.redirect(
-  `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
-);
+    if (booking.email) {
+      emailTasks.push(
+        sendPaymentConfirmationEmail({
+          email: booking.email,
+          fullName: booking.fullName || "Sculpt LAB customer",
+          bookingReference: reference,
+          registrationUrl:
+            `${frontendUrl}/register?reference=${encodeURIComponent(reference)}`,
+          loginUrl:
+            `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`,
+        })
+      );
 
+      emailTasks.push(
+        sendAdminPaymentNotificationEmail({
+          fullName: booking.fullName || "Sculpt LAB customer",
+          email: booking.email,
+          amount: booking.amount,
+          paymentReference: reference,
+          paymentType: "Booking",
+        })
+      );
+    } else {
+      console.error(
+        "Verified booking has no customer email:",
+        reference
+      );
+    }
+
+    const emailResults = await Promise.allSettled(emailTasks);
+
+    emailResults.forEach((result, index) => {
+      if (result.status === "rejected") {
+        console.error(
+          `Payment notification email ${index + 1} failed:`,
+          reference,
+          result.reason
+        );
+      }
+    });
+
+    return res.redirect(
+      `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
+    );
   } catch (error) {
     console.error("Paymish Callback Error:", error);
 
@@ -205,7 +318,9 @@ return res.redirect(
     }
 
     return res.redirect(
-      `${frontendUrl}/confirmation?payment=failed${
+      `${frontendUrl}/confirmation?${
+        paymentVerified ? "status=success" : "payment=failed"
+      }${
         reference
           ? `&reference=${encodeURIComponent(reference)}`
           : ""
@@ -213,6 +328,7 @@ return res.redirect(
     );
   }
 }
+
 
 
   // =========================================================
