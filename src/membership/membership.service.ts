@@ -1055,20 +1055,12 @@ async getPublicMembershipConfirmation(
     return null;
   }
 
-  const memberMembership = purchase.userId
-    ? await prisma.memberMembership.findFirst({
-        where: {
-          userId: purchase.userId,
-          membershipId: purchase.membershipId,
-          startDate: {
-            gte: purchase.createdAt,
-          },
-        },
-        orderBy: {
-          startDate: "desc",
-        },
-      })
-    : null;
+ const memberMembership =
+  await prisma.memberMembership.findUnique({
+    where: {
+      membershipPurchaseId: purchase.id,
+    },
+  });
 
   return {
 purchase: {

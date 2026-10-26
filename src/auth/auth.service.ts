@@ -7,7 +7,7 @@ import {
   sendPaymentConfirmationEmail,
 } from "../utils/mailer.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
-
+import membershipService from "../membership/membership.service.js";
 import {
   RegisterDto,
   LoginDto,
@@ -238,6 +238,14 @@ if (paidPurchase) {
 
 
 
+  
+  // If this was a paid membership purchase, ensure its enrollment exists.
+  // Run after the registration transaction has committed.
+ if (paidPurchase && normalizedReference) {
+  await membershipService.completeMembershipPurchase(
+    normalizedReference
+  );
+}
   return {
     user: {
       id: user.id,
@@ -249,6 +257,7 @@ if (paidPurchase) {
       isEmailVerified: user.isEmailVerified,
     },
   };
+
 }
 
 
