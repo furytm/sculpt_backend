@@ -1,4 +1,4 @@
-import { PrismaClient, AuthProvider, UserRole, PaymentStatus ,BookingStatus} from "@prisma/client";
+import { PrismaClient, AuthProvider, UserRole, PaymentStatus ,BookingStatus,PaymentMethod} from "@prisma/client";
 import prisma from "../config/prisma.js";
 import bookingService from "../booking/booking.service.js";
 import {
@@ -48,6 +48,7 @@ class AuthService {
  */
 
 
+
 async register(data: RegisterDto) {
   const {
     fullName,
@@ -65,19 +66,19 @@ async register(data: RegisterDto) {
   });
 
   if (existingUser) {
-    throw new Error("An account with this email already exists.");
+    throw new Error(
+      "An account with this email already exists. Please log in."
+    );
   }
 
   let paidBooking: any = null;
   let paidPurchase: any = null;
 
   if (normalizedReference) {
-    // First check whether this reference belongs to a booking.
     paidBooking = await prisma.booking.findUnique({
       where: { paymentReference: normalizedReference },
     });
 
-    // If no booking exists, check membership purchases.
     if (!paidBooking) {
       paidPurchase = await prisma.membershipPurchase.findUnique({
         where: { paymentReference: normalizedReference },
@@ -90,7 +91,7 @@ async register(data: RegisterDto) {
       }
 
       if (
-        paidPurchase.email.toLowerCase().trim() !== normalizedEmail
+        paidPurchase.email.trim().toLowerCase() !== normalizedEmail
       ) {
         throw new Error(
           "The membership purchase email does not match your registration email."
@@ -105,11 +106,10 @@ async register(data: RegisterDto) {
 
       if (paidPurchase.userId) {
         throw new Error(
-          "This membership purchase is already attached to an account."
+          "This membership purchase is already attached to an account. Please log in."
         );
       }
     } else {
-      // Preserve the existing booking validation.
       if (!paidBooking.email) {
         throw new Error(
           "This booking has no email address. Please contact support."
@@ -117,7 +117,7 @@ async register(data: RegisterDto) {
       }
 
       if (
-        paidBooking.email.toLowerCase().trim() !== normalizedEmail
+        paidBooking.email.trim().toLowerCase() !== normalizedEmail
       ) {
         throw new Error(
           "The booking email does not match your registration email."
@@ -128,13 +128,55 @@ async register(data: RegisterDto) {
         throw new Error("This booking has not been paid for.");
       }
 
-      if (
-        paidBooking.bookingStatus !== BookingStatus.PENDING ||
-        paidBooking.userId
-      ) {
+      const isOfflineBooking =
+        paidBooking.paymentMethod === PaymentMethod.OFFLINE &&
+        paidBooking.bookingStatus === BookingStatus.CONFIRMED;
+
+      const isOnlineBooking =
+        paidBooking.paymentMethod !== PaymentMethod.OFFLINE &&
+        paidBooking.bookingStatus === BookingStatus.PENDING;
+
+      if (!isOfflineBooking && !isOnlineBooking) {
         throw new Error(
-          "This booking is already attached or can no longer be continued."
+          "This booking can no longer be attached to an account."
         );
+      }
+
+      if (paidBooking.userId) {
+        throw new Error(
+          "This booking is already attached to an account. Please log in."
+        );
+      }
+
+      // Offline memberships must already exist before registration.
+      if (isOfflineBooking) {
+        if (!paidBooking.memberMembershipId) {
+          throw new Error(
+            "No membership is linked to this offline booking. Please contact Sculpt LAB."
+          );
+        }
+
+        const existingMembership =
+          await prisma.memberMembership.findUnique({
+            where: {
+              id: paidBooking.memberMembershipId,
+            },
+          });
+
+        if (!existingMembership) {
+          throw new Error(
+            "The membership linked to this booking could not be found. Please contact Sculpt LAB."
+          );
+        }
+
+        if (
+          existingMembership.userId &&
+          existingMembership.userId !== null
+        ) {
+          throw new Error(
+            "This membership is already attached to an account. Please contact Sculpt LAB."
+          );
+        }
       }
     }
   }
@@ -154,11 +196,16 @@ async register(data: RegisterDto) {
     });
 
     if (paidBooking) {
+      const isOfflineBooking =
+        paidBooking.paymentMethod === PaymentMethod.OFFLINE &&
+        paidBooking.bookingStatus === BookingStatus.CONFIRMED;
+
       const result = await tx.booking.updateMany({
         where: {
           id: paidBooking.id,
           paymentStatus: PaymentStatus.PAID,
-          bookingStatus: BookingStatus.PENDING,
+          bookingStatus: paidBooking.bookingStatus,
+          paymentMethod: paidBooking.paymentMethod,
           userId: null,
           email: normalizedEmail,
         },
@@ -177,75 +224,80 @@ async register(data: RegisterDto) {
         where: { bookingId: paidBooking.id },
         data: { userId: createdUser.id },
       });
+
+      if (isOfflineBooking) {
+        const membershipResult =
+          await tx.memberMembership.updateMany({
+            where: {
+              id: paidBooking.memberMembershipId,
+              userId: null,
+            },
+            data: {
+              userId: createdUser.id,
+            },
+          });
+
+        if (membershipResult.count !== 1) {
+          throw new Error(
+            "The membership could not be attached to this account. Please contact Sculpt LAB."
+          );
+        }
+      }
     }
 
+    if (paidPurchase) {
+      const result = await tx.membershipPurchase.updateMany({
+        where: {
+          id: paidPurchase.id,
+          paymentReference: normalizedReference!,
+          paymentStatus: PaymentStatus.PAID,
+          userId: null,
+          email: normalizedEmail,
+        },
+        data: {
+          userId: createdUser.id,
+          fullName,
+          phone: phone || null,
+        },
+      });
 
-if (paidPurchase) {
-  const result = await tx.membershipPurchase.updateMany({
-    where: {
-      id: paidPurchase.id,
-      paymentReference: normalizedReference!,
-      paymentStatus: PaymentStatus.PAID,
-      userId: null,
-      email: normalizedEmail,
-    },
-    data: {
-      userId: createdUser.id,
-      fullName,
-      phone: phone || null,
-    },
-  });
+      if (result.count !== 1) {
+        throw new Error(
+          "This membership purchase has already been attached or is no longer available."
+        );
+      }
 
-  if (result.count !== 1) {
-    throw new Error(
-      "This membership purchase has already been attached or is no longer available."
-    );
-  }
+      const linkedMembership =
+        await tx.memberMembership.findUnique({
+          where: {
+            membershipPurchaseId: paidPurchase.id,
+          },
+        });
 
-  // If payment activation already created a membership
-  // for this purchase, attach it to the newly created account.
-  const linkedMembership =
-    await tx.memberMembership.findUnique({
-      where: {
-        membershipPurchaseId: paidPurchase.id,
-      },
-    });
-
-  if (
-    linkedMembership &&
-    linkedMembership.userId === null
-  ) {
-    await tx.memberMembership.update({
-      where: {
-        id: linkedMembership.id,
-      },
-      data: {
-        userId: createdUser.id,
-      },
-    });
-  } else if (
-    linkedMembership &&
-    linkedMembership.userId !== createdUser.id
-  ) {
-    throw new Error(
-      "This membership is already attached to a different account."
-    );
-  }
-}
+      if (linkedMembership && linkedMembership.userId === null) {
+        await tx.memberMembership.update({
+          where: { id: linkedMembership.id },
+          data: { userId: createdUser.id },
+        });
+      } else if (
+        linkedMembership &&
+        linkedMembership.userId !== createdUser.id
+      ) {
+        throw new Error(
+          "This membership is already attached to a different account."
+        );
+      }
+    }
 
     return createdUser;
   });
 
+  if (paidPurchase && normalizedReference) {
+    await membershipService.completeMembershipPurchase(
+      normalizedReference
+    );
+  }
 
-
-  
-  // If this was a paid membership purchase, ensure its enrollment exists.
-  // Run after the registration transaction has committed.
- if (paidPurchase && normalizedReference) {
-  await membershipService.completeMembershipPurchase(
-    normalizedReference
-  );
-}
   return {
     user: {
       id: user.id,
@@ -257,8 +309,8 @@ if (paidPurchase) {
       isEmailVerified: user.isEmailVerified,
     },
   };
-
 }
+
 
 
   /**

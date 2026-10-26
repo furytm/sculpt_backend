@@ -1,5 +1,6 @@
 import { UserRole } from "@prisma/client";
 
+
 export interface RegisterDto {
   fullName: string;
   email: string;
@@ -7,8 +8,10 @@ export interface RegisterDto {
   confirmPassword: string;
   phone?: string;
   bookingReference?: string;
-  
+  membership?: string;
+  activationToken?: string;
 }
+
 
 export interface LoginDto {
   email: string;
