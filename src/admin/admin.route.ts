@@ -105,6 +105,12 @@ router.get(
   requireAdmin,
   adminController.getDashboard
 );
+router.post(
+  "/resend-registration-email",
+   authenticate,
+  requireAdmin,
+  adminController.resendRegistrationEmail
+);
 
 router.post(
   "/sessions/:sessionId/offline-attendees",

@@ -46,10 +46,10 @@ const router = Router();
  */
 router.post("/register", authController.register);
 
-router.post(
-  "/resend-registration-email",
-  authController.resendRegistrationEmail
-);
+// router.post(
+//   "/resend-registration-email",
+//   authController.resendRegistrationEmail
+// );
 
 /**
  * @openapi

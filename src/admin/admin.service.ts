@@ -6,6 +6,11 @@ import {
   UserRole,MembershipStatus,
 } from "@prisma/client";
 import prisma from "../config/prisma.js";
+import {
+  sendPasswordResetEmail,
+  sendVerificationEmail,
+  sendPaymentConfirmationEmail,
+} from "../utils/mailer.js";
 
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
 import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
@@ -236,6 +241,63 @@ async getAllBookings() {
 
   return bookings;
 }
+
+
+async resendRegistrationEmail(email: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+
+  const frontendUrl = process.env.FRONTEND_URL?.replace(/\/+$/, "");
+
+  if (!frontendUrl) {
+    throw new Error("FRONTEND_URL is not configured.");
+  }
+
+  // Find the latest paid online booking for this email.
+  // Do not exclude customers who already have an account.
+  const booking = await prisma.booking.findFirst({
+    where: {
+      email: {
+        equals: normalizedEmail,
+        mode: "insensitive",
+      },
+      paymentStatus: PaymentStatus.PAID,
+      paymentMethod: { not: "OFFLINE" },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+
+  const bookingReference = booking?.paymentReference ?? "";
+
+  try {
+    await sendPaymentConfirmationEmail({
+      email: normalizedEmail,
+      fullName: booking?.fullName || "Sculpt LAB customer",
+      bookingReference,
+      registrationUrl: bookingReference
+        ? `${frontendUrl}/register?reference=${encodeURIComponent(bookingReference)}`
+        : `${frontendUrl}/register`,
+      loginUrl: bookingReference
+        ? `${frontendUrl}/login?reference=${encodeURIComponent(bookingReference)}`
+        : `${frontendUrl}/login`,
+    });
+
+    return {
+      success: true,
+      message: "Registration email sent successfully.",
+    };
+  } catch (error) {
+    console.error(
+      "Failed to resend registration email:",
+      normalizedEmail,
+      error
+    );
+
+    throw new Error("Unable to send registration email.");
+  }
+}
+
 
 
   /**

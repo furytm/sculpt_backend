@@ -750,109 +750,109 @@ async sendVerificationEmailForUser(userId: string) {
   };
 }
 
-async resendRegistrationEmail(email: string) {
-  const normalizedEmail = email.trim().toLowerCase();
+// async resendRegistrationEmail(email: string) {
+//   const normalizedEmail = email.trim().toLowerCase();
 
-  const user = await prisma.user.findUnique({
-    where: { email: normalizedEmail },
-  });
+//   const user = await prisma.user.findUnique({
+//     where: { email: normalizedEmail },
+//   });
 
-  // Existing verified accounts should proceed to login.
-  if (user?.isEmailVerified) {
-    return {
-      success: true,
-      message: "Your account is already verified. Please proceed to login.",
-    };
-  }
+//   // Existing verified accounts should proceed to login.
+//   if (user?.isEmailVerified) {
+//     return {
+//       success: true,
+//       message: "Your account is already verified. Please proceed to login.",
+//     };
+//   }
 
-  // Resend verification for an existing unverified account.
-  if (user) {
-    try {
-      await this.sendVerificationEmailForUser(user.id);
-    } catch (error) {
-      console.error(
-        "Failed to resend registration verification email:",
-        normalizedEmail,
-        error
-      );
-    }
+//   // Resend verification for an existing unverified account.
+//   if (user) {
+//     try {
+//       await this.sendVerificationEmailForUser(user.id);
+//     } catch (error) {
+//       console.error(
+//         "Failed to resend registration verification email:",
+//         normalizedEmail,
+//         error
+//       );
+//     }
 
-    return {
-      success: true,
-      message: "Request received. Please check your email.",
-    };
-  }
+//     return {
+//       success: true,
+//       message: "Request received. Please check your email.",
+//     };
+//   }
 
-  // Try the existing offline membership activation.
-  const activation =
-    await membershipActivationService.resendActivationForEmail(
-      normalizedEmail
-    );
+//   // Try the existing offline membership activation.
+//   const activation =
+//     await membershipActivationService.resendActivationForEmail(
+//       normalizedEmail
+//     );
 
 
-  if (activation.found) {
-    return {
-      success: true,
-      message: "Request received. Please check your email.",
-    };
-  }
+//   if (activation.found) {
+//     return {
+//       success: true,
+//       message: "Request received. Please check your email.",
+//     };
+//   }
 
-  // Find an existing paid online booking without an account.
-  const booking = await prisma.booking.findFirst({
-    where: {
-      email: {
-        equals: normalizedEmail,
-        mode: "insensitive",
-      },
-      paymentStatus: PaymentStatus.PAID,
-      paymentMethod: { not: "OFFLINE" },
-      bookingStatus: BookingStatus.PENDING,
-      userId: null,
+//   // Find an existing paid online booking without an account.
+//   const booking = await prisma.booking.findFirst({
+//     where: {
+//       email: {
+//         equals: normalizedEmail,
+//         mode: "insensitive",
+//       },
+//       paymentStatus: PaymentStatus.PAID,
+//       paymentMethod: { not: "OFFLINE" },
+//       bookingStatus: BookingStatus.PENDING,
+//       userId: null,
       
-    },
-    orderBy: {
-      createdAt: "desc",
-    },
-  });
+//     },
+//     orderBy: {
+//       createdAt: "desc",
+//     },
+//   });
 
-  if (booking?.paymentReference) {
-    const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
+//   if (booking?.paymentReference) {
+//     const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
 
-    if (!frontendUrl) {
-      console.error("FRONTEND_URL is not configured.");
-      return {
-        success: true,
-        message: "Request received. Please check your email.",
-      };
-    }
+//     if (!frontendUrl) {
+//       console.error("FRONTEND_URL is not configured.");
+//       return {
+//         success: true,
+//         message: "Request received. Please check your email.",
+//       };
+//     }
 
-    try {
-      await sendPaymentConfirmationEmail({
-        email: normalizedEmail,
-        fullName: booking.fullName || "Sculpt LAB customer",
-        bookingReference: booking.paymentReference,
-        registrationUrl:
-          `${frontendUrl}/register?reference=${encodeURIComponent(booking.paymentReference)}`,
-        loginUrl:
-          `${frontendUrl}/login?reference=${encodeURIComponent(booking.paymentReference)}`,
-      });
-    } catch (error) {
-      console.error(
-        "Failed to resend paid booking email:",
-        normalizedEmail,
-        error
-      );
-    }
-  }
+//     try {
+//       await sendPaymentConfirmationEmail({
+//         email: normalizedEmail,
+//         fullName: booking.fullName || "Sculpt LAB customer",
+//         bookingReference: booking.paymentReference,
+//         registrationUrl:
+//           `${frontendUrl}/register?reference=${encodeURIComponent(booking.paymentReference)}`,
+//         loginUrl:
+//           `${frontendUrl}/login?reference=${encodeURIComponent(booking.paymentReference)}`,
+//       });
+//     } catch (error) {
+//       console.error(
+//         "Failed to resend paid booking email:",
+//         normalizedEmail,
+//         error
+//       );
+//     }
+//   }
 
 
  
-  return {
-    success: true,
-    message:
-      "If a matching registration exists, an email will be sent. If you already have an account, please proceed to login.",
-  };
-}
+//   return {
+//     success: true,
+//     message:
+//       "If a matching registration exists, an email will be sent. If you already have an account, please proceed to login.",
+//   };
+// }
 
 
 
