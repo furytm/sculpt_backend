@@ -1127,6 +1127,12 @@ async initiateNewMembershipPurchase(data: {
 
   const paymentReference =
     `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+    console.log("[MEMBERSHIP] Creating purchase", {
+  membershipId: membership.id,
+  email,
+  userId: data.userId,
+  paymentReference,
+});
 const purchase = await prisma.membershipPurchase.create({
   data: {
     userId: data.userId,
@@ -1140,7 +1146,11 @@ const purchase = await prisma.membershipPurchase.create({
     paymentStatus: PaymentStatus.PENDING,
   },
 });
-
+console.log("[MEMBERSHIP] Purchase created", {
+  purchaseId: purchase.id,
+  paymentReference: purchase.paymentReference,
+  paymentStatus: purchase.paymentStatus,
+});
   try {
     const payment = await paymentService.initializeTransaction({
       email,
