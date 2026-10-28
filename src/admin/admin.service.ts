@@ -243,17 +243,34 @@ async getAllBookings() {
 }
 
 
+
 async resendRegistrationEmail(email: string) {
   const normalizedEmail = email.trim().toLowerCase();
 
+  // First, try to resend an offline membership activation email.
+  const activation =
+    await membershipActivationService.resendActivationForEmail(
+      normalizedEmail
+    );
+
+  if (activation.found) {
+    if (!activation.emailSent) {
+      throw new Error("Failed to send membership activation email.");
+    }
+
+    return {
+      success: true,
+      message: "Membership activation email resent successfully.",
+    };
+  }
+
+  // Preserve the existing online booking email flow.
   const frontendUrl = process.env.FRONTEND_URL?.replace(/\/+$/, "");
 
   if (!frontendUrl) {
     throw new Error("FRONTEND_URL is not configured.");
   }
 
-  // Find the latest paid online booking for this email.
-  // Do not exclude customers who already have an account.
   const booking = await prisma.booking.findFirst({
     where: {
       email: {

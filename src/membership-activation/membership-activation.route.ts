@@ -65,5 +65,9 @@ router.post(
   "/complete",
   membershipActivationController.complete
 );
+router.post(
+  "/resend",
+  membershipActivationController.resend
+);
 
 export default router;

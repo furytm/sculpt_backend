@@ -119,6 +119,50 @@ class MembershipActivationController {
       });
     }
   }
+  
+  async resend(req: Request, res: Response) {
+    try {
+      const { email } = req.body;
+
+      if (!email || typeof email !== "string" || !email.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "A valid email address is required.",
+        });
+      }
+
+      const result =
+        await membershipActivationService.resendActivationForEmail(email);
+
+      if (!result.found) {
+        return res.status(404).json({
+          success: false,
+          message:
+            "No pending offline membership activation was found for this email.",
+        });
+      }
+
+      if (!result.emailSent) {
+        return res.status(500).json({
+          success: false,
+          message: "Failed to resend the activation email. Please try again.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Membership activation email resent successfully.",
+      });
+    } catch (error) {
+      console.error("Resend Activation Email Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "An error occurred while resending the activation email.",
+      });
+    }
+  }
+
 }
 
 export const membershipActivationController =
