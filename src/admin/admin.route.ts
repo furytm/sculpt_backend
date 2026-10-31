@@ -619,5 +619,12 @@ router.get(
   adminController.getAllMembers.bind(adminController),
 );
 
+router.delete(
+  "/members/:memberId",
+  authenticate,
+  requireAdmin,
+  adminController.deleteMember.bind(adminController)
+);
+
 
 export default router;

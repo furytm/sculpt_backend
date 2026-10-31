@@ -663,6 +663,242 @@ async getPaymentDetails(bookingId: string) {
 
   return booking;
 }
+
+
+async deleteMember(memberId: string) {
+  // =====================================================
+  // 1. CHECK IF THIS IS A REGISTERED MEMBER
+  // =====================================================
+
+  const user = await prisma.user.findUnique({
+    where: { id: memberId },
+    include: {
+      memberships: true,
+    },
+  });
+
+  let memberType: "REGISTERED" | "OFFLINE";
+  let bookings: Array<{
+    id: string;
+    calendarEventId: string | null;
+    sessionId: string | null;
+    bookingStatus: BookingStatus;
+  }> = [];
+
+  let membershipIds: string[] = [];
+
+  if (user) {
+    if (user.role !== UserRole.MEMBER) {
+      throw new Error("Only member accounts can be deleted.");
+    }
+
+    memberType = "REGISTERED";
+
+    membershipIds = user.memberships.map(
+      (membership) => membership.id
+    );
+
+    // Get all bookings belonging to this member.
+    bookings = await prisma.booking.findMany({
+      where: {
+        OR: [
+          { userId: user.id },
+          ...(membershipIds.length
+            ? [{ memberMembershipId: { in: membershipIds } }]
+            : []),
+        ],
+      },
+      select: {
+        id: true,
+        calendarEventId: true,
+        sessionId: true,
+        bookingStatus: true,
+      },
+    });
+  } else {
+    // =====================================================
+    // 2. CHECK IF THIS IS AN OFFLINE MEMBER
+    // =====================================================
+
+    const offlineMember =
+      await prisma.memberMembership.findFirst({
+        where: {
+          id: memberId,
+          userId: null,
+        },
+        include: {
+          bookings: {
+            select: {
+              id: true,
+              calendarEventId: true,
+              sessionId: true,
+              bookingStatus: true,
+            },
+          },
+        },
+      });
+
+    if (!offlineMember) {
+      throw new Error("Member not found.");
+    }
+
+    memberType = "OFFLINE";
+    membershipIds = [offlineMember.id];
+    bookings = offlineMember.bookings;
+  }
+
+  // =====================================================
+  // 3. COLLECT BOOKING AND SESSION INFORMATION
+  // =====================================================
+
+  const bookingIds = bookings.map((booking) => booking.id);
+
+  const calendarEventIds = bookings
+    .map((booking) => booking.calendarEventId)
+    .filter((id): id is string => Boolean(id));
+
+  const sessionIds = [
+    ...new Set(
+      bookings
+        .map((booking) => booking.sessionId)
+        .filter((id): id is string => Boolean(id))
+    ),
+  ];
+
+  // =====================================================
+  // 4. DELETE MEMBER AND RELATED RECORDS
+  // =====================================================
+
+  await prisma.$transaction(async (tx) => {
+    // Delete booking-related health and safety forms.
+    if (bookingIds.length > 0) {
+      await tx.healthSafetyForm.deleteMany({
+        where: {
+          bookingId: { in: bookingIds },
+        },
+      });
+
+      // Delete schedules attached to these bookings.
+      await tx.memberSchedule.deleteMany({
+        where: {
+          bookingId: { in: bookingIds },
+        },
+      });
+
+      // Delete membership activations attached to bookings.
+      await tx.membershipActivation.deleteMany({
+        where: {
+          bookingId: { in: bookingIds },
+        },
+      });
+
+      // Delete all bookings belonging to this member.
+      await tx.booking.deleteMany({
+        where: {
+          id: { in: bookingIds },
+        },
+      });
+    }
+
+    // Delete activations attached to the member's memberships.
+    if (membershipIds.length > 0) {
+      await tx.membershipActivation.deleteMany({
+        where: {
+          memberMembershipId: {
+            in: membershipIds,
+          },
+        },
+      });
+    }
+
+    if (memberType === "REGISTERED") {
+      // Delete the registered member's account.
+      // Related tokens, health forms and memberships
+      // are handled by the configured Prisma relations.
+      await tx.user.delete({
+        where: {
+          id: memberId,
+        },
+      });
+    } else {
+      // Delete the offline membership record.
+      // Its linked membership purchase is preserved
+      // because the schema uses onDelete: SetNull.
+      await tx.memberMembership.delete({
+        where: {
+          id: memberId,
+        },
+      });
+    }
+
+    // ===================================================
+    // 5. REOPEN FULL SESSIONS WHERE SPACES ARE AVAILABLE
+    // ===================================================
+
+    for (const sessionId of sessionIds) {
+      const session = await tx.classSession.findUnique({
+        where: { id: sessionId },
+        include: {
+          schedule: true,
+        },
+      });
+
+      if (!session || session.status !== "FULL") {
+        continue;
+      }
+
+      const confirmedBookings = await tx.booking.count({
+        where: {
+          sessionId,
+          bookingStatus: BookingStatus.CONFIRMED,
+        },
+      });
+
+      const capacity =
+        session.capacity ?? session.schedule.capacity;
+
+      if (confirmedBookings < capacity) {
+        await tx.classSession.update({
+          where: { id: sessionId },
+          data: {
+            status: "OPEN",
+          },
+        });
+      }
+    }
+  });
+
+  // =====================================================
+  // 6. REMOVE ASSOCIATED GOOGLE CALENDAR EVENTS
+  // =====================================================
+
+  for (const calendarEventId of calendarEventIds) {
+    try {
+      await googleCalendarService.deleteBookingEvent(
+        calendarEventId
+      );
+    } catch (calendarError) {
+      console.error(
+        "Failed to remove Google Calendar event:",
+        calendarEventId,
+        calendarError
+      );
+    }
+  }
+
+  // =====================================================
+  // 7. RETURN RESULT
+  // =====================================================
+
+  return {
+    success: true,
+    memberId,
+    memberType,
+    deletedBookings: bookingIds.length,
+    message: "Member deleted successfully.",
+  };
+}
+
 async deleteBooking(bookingId: string) {
   const booking = await prisma.booking.findUnique({
     where: {

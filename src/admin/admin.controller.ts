@@ -391,6 +391,55 @@ async deleteBooking(req: Request, res: Response) {
 }
 
 
+async deleteMember(req: Request, res: Response) {
+  try {
+    const memberId = Array.isArray(req.params.memberId)
+      ? req.params.memberId[0]
+      : req.params.memberId;
+
+    if (!memberId) {
+      return res.status(400).json({
+        success: false,
+        message: "Member ID is required.",
+      });
+    }
+
+    const result = await adminService.deleteMember(memberId);
+
+    return res.status(200).json({
+      success: true,
+      message: "Member deleted successfully.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error("Delete Admin Member Error:", error);
+
+    const message =
+      error?.message || "Failed to delete member.";
+
+    if (message === "Member not found.") {
+      return res.status(404).json({
+        success: false,
+        message,
+      });
+    }
+
+    if (message === "Only member accounts can be deleted.") {
+      return res.status(403).json({
+        success: false,
+        message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+}
+
+
+
 async createOfflineMember(req: Request, res: Response) {
   try {
     const {
