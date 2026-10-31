@@ -3,11 +3,17 @@ import membershipService from "../membership/membership.service.js";
 import paymentService from "./payment.service.js";
 import { sendPaymentConfirmationEmail, sendAdminPaymentNotificationEmail, } from "../utils/mailer.js";
 import bookingService from "../booking/booking.service.js";
+import { adminNotificationService } from "../admin/admin-notification.service.js";
 class PaymentController {
     // =========================================================
     // INITIALIZE PAYMENT
     // =========================================================
     async initializePayment(req, res) {
+        console.log("========== INITIALIZE PAYMENT HIT ==========", {
+            method: req.method,
+            url: req.originalUrl,
+            time: new Date().toISOString(),
+        });
         try {
             const payment = await paymentService.initializeTransaction(req.body);
             return res.status(200).json(payment);
@@ -42,6 +48,12 @@ class PaymentController {
         }
     }
     async callback(req, res) {
+        console.log("========== PAYMISH CALLBACK HIT ==========", {
+            method: req.method,
+            url: req.originalUrl,
+            reference: req.query.reference,
+            time: new Date().toISOString(),
+        });
         const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
         const reference = typeof req.query.reference === "string"
             ? req.query.reference.trim()
@@ -54,7 +66,7 @@ class PaymentController {
             if (!reference) {
                 return res.redirect(`${frontendUrl}/confirmation?payment=failed`);
             }
-            // Verify directly with Paymish before sending notifications.
+            // Verify the transaction directly with Paymish.
             const verification = await paymentService.verifyTransaction(reference);
             const transaction = verification?.data;
             const isVerified = verification?.status === "success" &&
@@ -66,6 +78,7 @@ class PaymentController {
             }
             paymentVerified = true;
             console.log("Payment successfully verified:", reference);
+            // Check whether this is a membership purchase.
             const membershipPurchase = await prisma.membershipPurchase.findUnique({
                 where: { paymentReference: reference },
                 include: { membership: true },
@@ -76,7 +89,25 @@ class PaymentController {
             if (membershipPurchase) {
                 await membershipService.completeMembershipPurchase(reference);
                 const customerName = membershipPurchase.fullName || "Sculpt LAB customer";
-                // Send registration/login email for new memberships.
+                // Create the admin database notification.
+                // Notification failures must not interrupt a successful payment.
+                try {
+                    await adminNotificationService.createForAllAdmins({
+                        eventKey: `paymish:${reference}`,
+                        type: "PAYMENT",
+                        title: "Membership payment received",
+                        message: `${customerName} completed a ${membershipPurchase.type.toLowerCase()} membership payment.`,
+                        data: {
+                            reference,
+                            paymentType: `Membership ${membershipPurchase.type}`,
+                            amount: String(membershipPurchase.amount),
+                        },
+                    });
+                }
+                catch (notificationError) {
+                    console.error("Membership paid, but admin database notification failed:", reference, notificationError);
+                }
+                // Preserve the existing customer email for new memberships.
                 if (membershipPurchase.type === "NEW" &&
                     membershipPurchase.email) {
                     try {
@@ -92,7 +123,7 @@ class PaymentController {
                         console.error("Membership paid, but customer email failed:", reference, error);
                     }
                 }
-                // Alert admin for all membership payment types.
+                // Preserve the existing admin payment email.
                 try {
                     await sendAdminPaymentNotificationEmail({
                         fullName: customerName,
@@ -123,6 +154,24 @@ class PaymentController {
             await bookingService.markBookingPaid(reference);
             const continuation = await bookingService.continueGuestBooking(reference);
             const booking = continuation.booking;
+            // Create the admin database notification after payment
+            // and guest booking continuation have succeeded.
+            try {
+                await adminNotificationService.createForAllAdmins({
+                    eventKey: `paymish:${reference}`,
+                    type: "PAYMENT",
+                    title: "Booking payment received",
+                    message: `${booking.fullName || "A customer"} completed a booking payment.`,
+                    data: {
+                        reference,
+                        paymentType: "Booking",
+                        amount: String(booking.amount),
+                    },
+                });
+            }
+            catch (notificationError) {
+                console.error("Booking paid, but admin database notification failed:", reference, notificationError);
+            }
             // Send customer and admin emails independently.
             const emailTasks = [];
             if (booking.email) {

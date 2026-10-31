@@ -356,6 +356,88 @@ async login(data: LoginDto) {
   if (!passwordMatches) {
     throw new Error("Invalid email or password.");
   }
+  const normalizedReference = data.bookingReference?.trim();
+
+if (normalizedReference) {
+  const purchase = await prisma.membershipPurchase.findUnique({
+    where: {
+      paymentReference: normalizedReference,
+    },
+  });
+
+  if (purchase) {
+    // The reference belongs to a membership purchase.
+    if (purchase.paymentStatus !== PaymentStatus.PAID) {
+      throw new Error("This membership purchase has not been paid for.");
+    }
+
+    if (purchase.email.trim().toLowerCase() !== normalizedEmail) {
+      throw new Error(
+        "The membership purchase email does not match your account email."
+      );
+    }
+
+    if (purchase.userId && purchase.userId !== user.id) {
+      throw new Error(
+        "This membership purchase is already attached to another account."
+      );
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (!purchase.userId) {
+        const attachedPurchase = await tx.membershipPurchase.updateMany({
+          where: {
+            id: purchase.id,
+            paymentStatus: PaymentStatus.PAID,
+            userId: null,
+            email: normalizedEmail,
+          },
+          data: {
+            userId: user.id,
+            fullName: user.fullName,
+            phone: user.phone,
+          },
+        });
+
+        if (attachedPurchase.count !== 1) {
+          throw new Error(
+            "This membership purchase has already been attached or is no longer available."
+          );
+        }
+      }
+
+      const linkedMembership = await tx.memberMembership.findUnique({
+        where: {
+          membershipPurchaseId: purchase.id,
+        },
+      });
+
+      if (linkedMembership && linkedMembership.userId === null) {
+        await tx.memberMembership.update({
+          where: {
+            id: linkedMembership.id,
+          },
+          data: {
+            userId: user.id,
+          },
+        });
+      } else if (
+        linkedMembership &&
+        linkedMembership.userId !== user.id
+      ) {
+        throw new Error(
+          "This membership is already attached to another account."
+        );
+      }
+    });
+
+    // Complete the purchase after attaching it to the account.
+    // This also creates the first booking when firstSessionId exists.
+    await membershipService.completeMembershipPurchase(
+      normalizedReference
+    );
+  }
+}
 
   // Generate JWT tokens
   const payload: JwtPayload = {

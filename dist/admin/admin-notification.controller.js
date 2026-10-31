@@ -1,7 +1,20 @@
-import prisma from "../config/prisma.js";
+import { adminNotificationService, AdminNotificationServiceError, } from "./admin-notification.service.js";
 class AdminNotificationController {
     getAdminId(req) {
         return req.user?.userId ?? req.user?.id ?? null;
+    }
+    handleError(res, error, operation, fallbackMessage) {
+        console.error(`[Admin Notifications] ${operation}:`, error);
+        if (error instanceof AdminNotificationServiceError) {
+            return res.status(error.statusCode).json({
+                success: false,
+                message: error.message,
+            });
+        }
+        return res.status(500).json({
+            success: false,
+            message: fallbackMessage,
+        });
     }
     // GET /api/admin/notifications
     getNotifications = async (req, res) => {
@@ -13,30 +26,14 @@ class AdminNotificationController {
                     message: "Authenticated admin ID was not found.",
                 });
             }
-            const [notifications, unreadCount] = await Promise.all([
-                prisma.adminNotification.findMany({
-                    where: { adminId },
-                    orderBy: { createdAt: "desc" },
-                    take: 50,
-                }),
-                prisma.adminNotification.count({
-                    where: { adminId, readAt: null },
-                }),
-            ]);
+            const data = await adminNotificationService.getNotifications(adminId);
             return res.status(200).json({
                 success: true,
-                data: {
-                    notifications,
-                    unreadCount,
-                },
+                data,
             });
         }
         catch (error) {
-            console.error("Get Admin Notifications Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: "Failed to retrieve notifications.",
-            });
+            return this.handleError(res, error, "Get notifications", "Failed to retrieve notifications.");
         }
     };
     // PATCH /api/admin/notifications/:id/read
@@ -56,43 +53,15 @@ class AdminNotificationController {
                     message: "A valid notification ID is required.",
                 });
             }
-            const result = await prisma.adminNotification.updateMany({
-                where: {
-                    id: notificationId,
-                    adminId,
-                    readAt: null,
-                },
-                data: {
-                    readAt: new Date(),
-                },
-            });
-            if (result.count === 0) {
-                const existing = await prisma.adminNotification.findFirst({
-                    where: { id: notificationId, adminId },
-                    select: { id: true, readAt: true },
-                });
-                if (!existing) {
-                    return res.status(404).json({
-                        success: false,
-                        message: "Notification not found.",
-                    });
-                }
-            }
-            const unreadCount = await prisma.adminNotification.count({
-                where: { adminId, readAt: null },
-            });
+            const data = await adminNotificationService.markAsRead(adminId, notificationId);
             return res.status(200).json({
                 success: true,
                 message: "Notification marked as read.",
-                data: { unreadCount },
+                data,
             });
         }
         catch (error) {
-            console.error("Mark Notification Read Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: "Failed to mark notification as read.",
-            });
+            return this.handleError(res, error, "Mark notification as read", "Failed to mark notification as read.");
         }
     };
     // PATCH /api/admin/notifications/read-all
@@ -105,30 +74,15 @@ class AdminNotificationController {
                     message: "Authenticated admin ID was not found.",
                 });
             }
-            const result = await prisma.adminNotification.updateMany({
-                where: {
-                    adminId,
-                    readAt: null,
-                },
-                data: {
-                    readAt: new Date(),
-                },
-            });
+            const data = await adminNotificationService.markAllAsRead(adminId);
             return res.status(200).json({
                 success: true,
                 message: "All notifications marked as read.",
-                data: {
-                    updatedCount: result.count,
-                    unreadCount: 0,
-                },
+                data,
             });
         }
         catch (error) {
-            console.error("Mark All Notifications Read Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: "Failed to mark all notifications as read.",
-            });
+            return this.handleError(res, error, "Mark all notifications as read", "Failed to mark all notifications as read.");
         }
     };
     // POST /api/admin/notifications/push-subscription
@@ -153,37 +107,19 @@ class AdminNotificationController {
                     message: "A valid push endpoint and subscription keys are required.",
                 });
             }
-            const subscription = await prisma.adminPushSubscription.upsert({
-                where: { endpoint },
-                create: {
-                    adminId,
-                    endpoint,
-                    p256dh: keys.p256dh,
-                    auth: keys.auth,
-                },
-                update: {
-                    adminId,
-                    p256dh: keys.p256dh,
-                    auth: keys.auth,
-                },
-                select: {
-                    id: true,
-                    createdAt: true,
-                    updatedAt: true,
-                },
+            const data = await adminNotificationService.savePushSubscription(adminId, {
+                endpoint,
+                p256dh: keys.p256dh,
+                auth: keys.auth,
             });
             return res.status(200).json({
                 success: true,
                 message: "Push subscription saved.",
-                data: subscription,
+                data,
             });
         }
         catch (error) {
-            console.error("Save Push Subscription Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: "Failed to save push subscription.",
-            });
+            return this.handleError(res, error, "Save push subscription", "Failed to save push subscription.");
         }
     };
     // DELETE /api/admin/notifications/push-subscription
@@ -203,26 +139,15 @@ class AdminNotificationController {
                     message: "The push subscription endpoint is required.",
                 });
             }
-            const result = await prisma.adminPushSubscription.deleteMany({
-                where: {
-                    adminId,
-                    endpoint,
-                },
-            });
+            const data = await adminNotificationService.deletePushSubscription(adminId, endpoint);
             return res.status(200).json({
                 success: true,
                 message: "Push subscription removed.",
-                data: {
-                    deletedCount: result.count,
-                },
+                data,
             });
         }
         catch (error) {
-            console.error("Delete Push Subscription Error:", error);
-            return res.status(500).json({
-                success: false,
-                message: "Failed to remove push subscription.",
-            });
+            return this.handleError(res, error, "Delete push subscription", "Failed to remove push subscription.");
         }
     };
 }

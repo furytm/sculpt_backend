@@ -19,6 +19,17 @@ console.log(
   "🔥 ACTIVATION SERVICE IMPORT:",
   membershipActivationService
 );
+
+function hasSessionEnded(sessionDate: Date, endTime: string): boolean {
+  // Sculpt LAB operates in Nigeria (WAT = UTC+1).
+  const date = new Date(sessionDate).toISOString().slice(0, 10);
+
+  const endDateTime = new Date(
+    `${date}T${endTime}:00+01:00`,
+  );
+
+  return endDateTime.getTime() <= Date.now();
+}
 class AdminService {
   async getPendingOfflinePayments() {
     return prisma.booking.findMany({
@@ -1051,12 +1062,18 @@ async getAllMembers() {
   });
 
   const registeredMembers = users.map((user) => {
-    const currentMembership =
-      user.memberships.find(
-        (item) =>
-          item.status === MembershipStatus.ACTIVE &&
-          (!item.expiryDate || item.expiryDate > now),
-      ) ?? user.memberships[0];
+ const currentMembership =
+  user.memberships.find((item) => {
+    const isActive =
+      item.status === MembershipStatus.ACTIVE &&
+      (!item.expiryDate || item.expiryDate > now);
+
+    const hasCredits =
+      item.creditsTotal === null ||
+      item.creditsUsed < item.creditsTotal;
+
+    return isActive && hasCredits;
+  }) ?? null;
 
     const creditsTotal =
       currentMembership?.creditsTotal ?? null;
@@ -1080,8 +1097,8 @@ async getAllMembers() {
       email: user.email,
       phone: user.phone,
       membership: currentMembership?.membership ?? null,
-      membershipStatus:
-        currentMembership?.status ?? "NO_MEMBERSHIP",
+ membershipStatus:
+  currentMembership ? currentMembership.status : "NO_ACTIVE_MEMBERSHIP",
       membershipNumber:
         currentMembership?.activation?.membershipNumber ?? null,
       expiryDate: currentMembership?.expiryDate ?? null,
@@ -1194,6 +1211,119 @@ async getAllMembers() {
   return [...registeredMembers, ...offlineMembers];
 }
 
+
+async getMemberClasses(memberId: string) {
+  // First check whether this is a registered member.
+  const user = await prisma.user.findUnique({
+    where: { id: memberId },
+    select: {
+      id: true,
+      fullName: true,
+      email: true,
+    },
+  });
+
+  // If no registered user exists, check offline membership.
+  const offlineMember = user
+    ? null
+    : await prisma.memberMembership.findUnique({
+        where: { id: memberId },
+        include: {
+          bookings: {
+            where: {
+              paymentStatus: PaymentStatus.PAID,
+              paymentMethod: PaymentMethod.OFFLINE,
+              bookingStatus: BookingStatus.CONFIRMED,
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
+        },
+      });
+
+  if (!user && !offlineMember) {
+    throw new Error('Member not found.');
+  }
+
+  const bookings = await prisma.booking.findMany({
+    where: {
+      ...(user
+        ? { userId: user.id }
+        : { memberMembershipId: offlineMember!.id }),
+      bookingStatus: BookingStatus.CONFIRMED,
+      paymentStatus: PaymentStatus.PAID,
+      sessionId: { not: null },
+    },
+    include: {
+      session: {
+        include: {
+          schedule: true,
+        },
+      },
+    },
+  });
+
+const classes = bookings
+  .filter((booking) => booking.session)
+  .map((booking) => {
+    const session = booking.session!;
+
+    const hasEnded = hasSessionEnded(
+      session.sessionDate,
+      session.schedule.endTime,
+    );
+
+    return {
+      bookingId: booking.id,
+      sessionId: session.id,
+      className: session.schedule.className,
+      tutorName: session.schedule.tutorName,
+      sessionDate: session.sessionDate,
+      startTime: session.schedule.startTime,
+      endTime: session.schedule.endTime,
+
+      // Preserve cancellation; otherwise derive completion from end time.
+      sessionStatus:
+        session.status === "CANCELLED"
+          ? "CANCELLED"
+          : session.status === "COMPLETED" || hasEnded
+            ? "COMPLETED"
+            : session.status,
+    };
+  });
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+const completedClasses = classes
+  .filter((item) => item.sessionStatus === "COMPLETED")
+  .sort(
+    (a, b) =>
+      new Date(b.sessionDate).getTime() -
+      new Date(a.sessionDate).getTime(),
+  );
+
+const upcomingClasses = classes
+  .filter(
+    (item) =>
+      item.sessionStatus !== "CANCELLED" &&
+      item.sessionStatus !== "COMPLETED",
+  )
+  .sort(
+    (a, b) =>
+      new Date(a.sessionDate).getTime() -
+      new Date(b.sessionDate).getTime(),
+  );
+
+  return {
+    member: {
+      id: memberId,
+      fullName: user?.fullName ?? offlineMember?.bookings[0]?.fullName ?? null,
+      email: user?.email ?? offlineMember?.bookings[0]?.email ?? null,
+    },
+    completedClasses,
+    upcomingClasses,
+  };
+}
 }
 
 export const adminService = new AdminService();

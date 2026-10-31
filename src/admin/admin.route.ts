@@ -119,6 +119,12 @@ router.post(
   adminSessionController.addOfflineAttendee
 );
 
+router.get(
+  '/members/:userId/classes',
+  authenticate,
+  requireAdmin,
+  adminController.getMemberClasses.bind(adminController),
+);
 // =====================================================
 // PENDING OFFLINE PAYMENTS
 // =====================================================

@@ -100,7 +100,16 @@ model MembershipPurchase {
   paymentReference String        @unique
   paymentStatus    PaymentStatus @default(PENDING)
 
-  carriedCredits Int @default(0)
+  carriedCredits Int           @default(0)
+  // First class selected during initial purchase
+  firstSessionId String?
+  firstSession   ClassSession? @relation("MembershipPurchaseFirstSession", fields: [firstSessionId], references: [id], onDelete: SetNull)
+
+  firstClassId String?
+
+  // Health declaration submitted during checkout
+  healthDeclarationAccepted Boolean @default(false)
+  healthDeclarationNotes    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -109,6 +118,7 @@ model MembershipPurchase {
   membership Membership @relation(fields: [membershipId], references: [id])
 
   @@index([userId])
+  @@index([firstSessionId])
   @@index([email])
 }
 
@@ -206,7 +216,8 @@ model ClassSession {
    */
   capacity Int?
 
-  status SessionStatus @default(OPEN)
+  membershipPurchases MembershipPurchase[] @relation("MembershipPurchaseFirstSession")
+  status              SessionStatus        @default(OPEN)
 
   bookings Booking[]
 

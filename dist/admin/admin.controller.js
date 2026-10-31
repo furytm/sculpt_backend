@@ -62,6 +62,28 @@ class AdminController {
             });
         }
     }
+    async resendRegistrationEmail(req, res) {
+        try {
+            const email = typeof req.body?.email === "string"
+                ? req.body.email.trim().toLowerCase()
+                : "";
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Please provide a valid email address.",
+                });
+            }
+            const result = await adminService.resendRegistrationEmail(email);
+            return res.status(200).json(result);
+        }
+        catch (error) {
+            console.error("Resend registration email error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Unable to process your request right now.",
+            });
+        }
+    }
     async getAllBookings(req, res) {
         try {
             const bookings = await adminService.getAllBookings();

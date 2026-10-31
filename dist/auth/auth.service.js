@@ -1,7 +1,7 @@
-import { AuthProvider, UserRole, PaymentStatus, BookingStatus } from "@prisma/client";
+import { AuthProvider, UserRole, PaymentStatus, BookingStatus, PaymentMethod } from "@prisma/client";
 import prisma from "../config/prisma.js";
-import { sendPasswordResetEmail, sendVerificationEmail, sendPaymentConfirmationEmail, } from "../utils/mailer.js";
-import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
+import { sendPasswordResetEmail, sendVerificationEmail, } from "../utils/mailer.js";
+import membershipService from "../membership/membership.service.js";
 import { hashPassword, comparePassword, } from "../utils/bcrypt.js";
 import googleClient from "../config/google.js";
 import { generateSecureToken, hashToken, } from "../utils/auth-token.js";
@@ -21,16 +21,14 @@ class AuthService {
             where: { email: normalizedEmail },
         });
         if (existingUser) {
-            throw new Error("An account with this email already exists.");
+            throw new Error("An account with this email already exists. Please log in.");
         }
         let paidBooking = null;
         let paidPurchase = null;
         if (normalizedReference) {
-            // First check whether this reference belongs to a booking.
             paidBooking = await prisma.booking.findUnique({
                 where: { paymentReference: normalizedReference },
             });
-            // If no booking exists, check membership purchases.
             if (!paidBooking) {
                 paidPurchase = await prisma.membershipPurchase.findUnique({
                     where: { paymentReference: normalizedReference },
@@ -38,30 +36,53 @@ class AuthService {
                 if (!paidPurchase) {
                     throw new Error("No booking or membership purchase was found for this reference.");
                 }
-                if (paidPurchase.email.toLowerCase().trim() !== normalizedEmail) {
+                if (paidPurchase.email.trim().toLowerCase() !== normalizedEmail) {
                     throw new Error("The membership purchase email does not match your registration email.");
                 }
                 if (paidPurchase.paymentStatus !== PaymentStatus.PAID) {
                     throw new Error("This membership purchase has not been paid for.");
                 }
                 if (paidPurchase.userId) {
-                    throw new Error("This membership purchase is already attached to an account.");
+                    throw new Error("This membership purchase is already attached to an account. Please log in.");
                 }
             }
             else {
-                // Preserve the existing booking validation.
                 if (!paidBooking.email) {
                     throw new Error("This booking has no email address. Please contact support.");
                 }
-                if (paidBooking.email.toLowerCase().trim() !== normalizedEmail) {
+                if (paidBooking.email.trim().toLowerCase() !== normalizedEmail) {
                     throw new Error("The booking email does not match your registration email.");
                 }
                 if (paidBooking.paymentStatus !== PaymentStatus.PAID) {
                     throw new Error("This booking has not been paid for.");
                 }
-                if (paidBooking.bookingStatus !== BookingStatus.PENDING ||
-                    paidBooking.userId) {
-                    throw new Error("This booking is already attached or can no longer be continued.");
+                const isOfflineBooking = paidBooking.paymentMethod === PaymentMethod.OFFLINE &&
+                    paidBooking.bookingStatus === BookingStatus.CONFIRMED;
+                const isOnlineBooking = paidBooking.paymentMethod !== PaymentMethod.OFFLINE &&
+                    paidBooking.bookingStatus === BookingStatus.PENDING;
+                if (!isOfflineBooking && !isOnlineBooking) {
+                    throw new Error("This booking can no longer be attached to an account.");
+                }
+                if (paidBooking.userId) {
+                    throw new Error("This booking is already attached to an account. Please log in.");
+                }
+                // Offline memberships must already exist before registration.
+                if (isOfflineBooking) {
+                    if (!paidBooking.memberMembershipId) {
+                        throw new Error("No membership is linked to this offline booking. Please contact Sculpt LAB.");
+                    }
+                    const existingMembership = await prisma.memberMembership.findUnique({
+                        where: {
+                            id: paidBooking.memberMembershipId,
+                        },
+                    });
+                    if (!existingMembership) {
+                        throw new Error("The membership linked to this booking could not be found. Please contact Sculpt LAB.");
+                    }
+                    if (existingMembership.userId &&
+                        existingMembership.userId !== null) {
+                        throw new Error("This membership is already attached to an account. Please contact Sculpt LAB.");
+                    }
                 }
             }
         }
@@ -78,11 +99,14 @@ class AuthService {
                 },
             });
             if (paidBooking) {
+                const isOfflineBooking = paidBooking.paymentMethod === PaymentMethod.OFFLINE &&
+                    paidBooking.bookingStatus === BookingStatus.CONFIRMED;
                 const result = await tx.booking.updateMany({
                     where: {
                         id: paidBooking.id,
                         paymentStatus: PaymentStatus.PAID,
-                        bookingStatus: BookingStatus.PENDING,
+                        bookingStatus: paidBooking.bookingStatus,
+                        paymentMethod: paidBooking.paymentMethod,
                         userId: null,
                         email: normalizedEmail,
                     },
@@ -97,6 +121,20 @@ class AuthService {
                     where: { bookingId: paidBooking.id },
                     data: { userId: createdUser.id },
                 });
+                if (isOfflineBooking) {
+                    const membershipResult = await tx.memberMembership.updateMany({
+                        where: {
+                            id: paidBooking.memberMembershipId,
+                            userId: null,
+                        },
+                        data: {
+                            userId: createdUser.id,
+                        },
+                    });
+                    if (membershipResult.count !== 1) {
+                        throw new Error("The membership could not be attached to this account. Please contact Sculpt LAB.");
+                    }
+                }
             }
             if (paidPurchase) {
                 const result = await tx.membershipPurchase.updateMany({
@@ -116,22 +154,15 @@ class AuthService {
                 if (result.count !== 1) {
                     throw new Error("This membership purchase has already been attached or is no longer available.");
                 }
-                // If payment activation already created a membership
-                // for this purchase, attach it to the newly created account.
                 const linkedMembership = await tx.memberMembership.findUnique({
                     where: {
                         membershipPurchaseId: paidPurchase.id,
                     },
                 });
-                if (linkedMembership &&
-                    linkedMembership.userId === null) {
+                if (linkedMembership && linkedMembership.userId === null) {
                     await tx.memberMembership.update({
-                        where: {
-                            id: linkedMembership.id,
-                        },
-                        data: {
-                            userId: createdUser.id,
-                        },
+                        where: { id: linkedMembership.id },
+                        data: { userId: createdUser.id },
                     });
                 }
                 else if (linkedMembership &&
@@ -141,6 +172,9 @@ class AuthService {
             }
             return createdUser;
         });
+        if (paidPurchase && normalizedReference) {
+            await membershipService.completeMembershipPurchase(normalizedReference);
+        }
         return {
             user: {
                 id: user.id,
@@ -181,6 +215,68 @@ class AuthService {
         const passwordMatches = await comparePassword(data.password, user.password);
         if (!passwordMatches) {
             throw new Error("Invalid email or password.");
+        }
+        const normalizedReference = data.bookingReference?.trim();
+        if (normalizedReference) {
+            const purchase = await prisma.membershipPurchase.findUnique({
+                where: {
+                    paymentReference: normalizedReference,
+                },
+            });
+            if (purchase) {
+                // The reference belongs to a membership purchase.
+                if (purchase.paymentStatus !== PaymentStatus.PAID) {
+                    throw new Error("This membership purchase has not been paid for.");
+                }
+                if (purchase.email.trim().toLowerCase() !== normalizedEmail) {
+                    throw new Error("The membership purchase email does not match your account email.");
+                }
+                if (purchase.userId && purchase.userId !== user.id) {
+                    throw new Error("This membership purchase is already attached to another account.");
+                }
+                await prisma.$transaction(async (tx) => {
+                    if (!purchase.userId) {
+                        const attachedPurchase = await tx.membershipPurchase.updateMany({
+                            where: {
+                                id: purchase.id,
+                                paymentStatus: PaymentStatus.PAID,
+                                userId: null,
+                                email: normalizedEmail,
+                            },
+                            data: {
+                                userId: user.id,
+                                fullName: user.fullName,
+                                phone: user.phone,
+                            },
+                        });
+                        if (attachedPurchase.count !== 1) {
+                            throw new Error("This membership purchase has already been attached or is no longer available.");
+                        }
+                    }
+                    const linkedMembership = await tx.memberMembership.findUnique({
+                        where: {
+                            membershipPurchaseId: purchase.id,
+                        },
+                    });
+                    if (linkedMembership && linkedMembership.userId === null) {
+                        await tx.memberMembership.update({
+                            where: {
+                                id: linkedMembership.id,
+                            },
+                            data: {
+                                userId: user.id,
+                            },
+                        });
+                    }
+                    else if (linkedMembership &&
+                        linkedMembership.userId !== user.id) {
+                        throw new Error("This membership is already attached to another account.");
+                    }
+                });
+                // Complete the purchase after attaching it to the account.
+                // This also creates the first booking when firstSessionId exists.
+                await membershipService.completeMembershipPurchase(normalizedReference);
+            }
         }
         // Generate JWT tokens
         const payload = {
@@ -505,82 +601,94 @@ class AuthService {
             message: "Verification email sent successfully.",
         };
     }
-    async resendRegistrationEmail(email) {
-        const normalizedEmail = email.trim().toLowerCase();
-        const user = await prisma.user.findUnique({
-            where: { email: normalizedEmail },
-        });
-        // Existing verified accounts should proceed to login.
-        if (user?.isEmailVerified) {
-            return {
-                success: true,
-                message: "Your account is already verified. Please proceed to login.",
-            };
-        }
-        // Resend verification for an existing unverified account.
-        if (user) {
-            try {
-                await this.sendVerificationEmailForUser(user.id);
-            }
-            catch (error) {
-                console.error("Failed to resend registration verification email:", normalizedEmail, error);
-            }
-            return {
-                success: true,
-                message: "Request received. Please check your email.",
-            };
-        }
-        // Try the existing offline membership activation.
-        const activation = await membershipActivationService.resendActivationForEmail(normalizedEmail);
-        if (activation.found) {
-            return {
-                success: true,
-                message: "Request received. Please check your email.",
-            };
-        }
-        // Find an existing paid online booking without an account.
-        const booking = await prisma.booking.findFirst({
-            where: {
-                email: {
-                    equals: normalizedEmail,
-                    mode: "insensitive",
-                },
-                paymentStatus: PaymentStatus.PAID,
-                paymentMethod: { not: "OFFLINE" },
-                bookingStatus: BookingStatus.PENDING,
-                userId: null,
-            },
-            orderBy: {
-                createdAt: "desc",
-            },
-        });
-        if (booking?.paymentReference) {
-            const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
-            if (!frontendUrl) {
-                console.error("FRONTEND_URL is not configured.");
-                return {
-                    success: true,
-                    message: "Request received. Please check your email.",
-                };
-            }
-            try {
-                await sendPaymentConfirmationEmail({
-                    email: normalizedEmail,
-                    fullName: booking.fullName || "Sculpt LAB customer",
-                    bookingReference: booking.paymentReference,
-                    registrationUrl: `${frontendUrl}/register?reference=${encodeURIComponent(booking.paymentReference)}`,
-                    loginUrl: `${frontendUrl}/login?reference=${encodeURIComponent(booking.paymentReference)}`,
-                });
-            }
-            catch (error) {
-                console.error("Failed to resend paid booking email:", normalizedEmail, error);
-            }
-        }
-        return {
-            success: true,
-            message: "If a matching registration exists, an email will be sent. If you already have an account, please proceed to login.",
-        };
-    }
+    // async resendRegistrationEmail(email: string) {
+    //   const normalizedEmail = email.trim().toLowerCase();
+    //   const user = await prisma.user.findUnique({
+    //     where: { email: normalizedEmail },
+    //   });
+    //   // Existing verified accounts should proceed to login.
+    //   if (user?.isEmailVerified) {
+    //     return {
+    //       success: true,
+    //       message: "Your account is already verified. Please proceed to login.",
+    //     };
+    //   }
+    //   // Resend verification for an existing unverified account.
+    //   if (user) {
+    //     try {
+    //       await this.sendVerificationEmailForUser(user.id);
+    //     } catch (error) {
+    //       console.error(
+    //         "Failed to resend registration verification email:",
+    //         normalizedEmail,
+    //         error
+    //       );
+    //     }
+    //     return {
+    //       success: true,
+    //       message: "Request received. Please check your email.",
+    //     };
+    //   }
+    //   // Try the existing offline membership activation.
+    //   const activation =
+    //     await membershipActivationService.resendActivationForEmail(
+    //       normalizedEmail
+    //     );
+    //   if (activation.found) {
+    //     return {
+    //       success: true,
+    //       message: "Request received. Please check your email.",
+    //     };
+    //   }
+    //   // Find an existing paid online booking without an account.
+    //   const booking = await prisma.booking.findFirst({
+    //     where: {
+    //       email: {
+    //         equals: normalizedEmail,
+    //         mode: "insensitive",
+    //       },
+    //       paymentStatus: PaymentStatus.PAID,
+    //       paymentMethod: { not: "OFFLINE" },
+    //       bookingStatus: BookingStatus.PENDING,
+    //       userId: null,
+    //     },
+    //     orderBy: {
+    //       createdAt: "desc",
+    //     },
+    //   });
+    //   if (booking?.paymentReference) {
+    //     const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
+    //     if (!frontendUrl) {
+    //       console.error("FRONTEND_URL is not configured.");
+    //       return {
+    //         success: true,
+    //         message: "Request received. Please check your email.",
+    //       };
+    //     }
+    //     try {
+    //       await sendPaymentConfirmationEmail({
+    //         email: normalizedEmail,
+    //         fullName: booking.fullName || "Sculpt LAB customer",
+    //         bookingReference: booking.paymentReference,
+    //         registrationUrl:
+    //           `${frontendUrl}/register?reference=${encodeURIComponent(booking.paymentReference)}`,
+    //         loginUrl:
+    //           `${frontendUrl}/login?reference=${encodeURIComponent(booking.paymentReference)}`,
+    //       });
+    //     } catch (error) {
+    //       console.error(
+    //         "Failed to resend paid booking email:",
+    //         normalizedEmail,
+    //         error
+    //       );
+    //     }
+    //   }
+    //   return {
+    //     success: true,
+    //     message:
+    //       "If a matching registration exists, an email will be sent. If you already have an account, please proceed to login.",
+    //   };
+    // }
     async verifyEmail(token) {
         if (!token) {
             throw new Error("Verification token is required.");

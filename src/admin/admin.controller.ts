@@ -486,7 +486,42 @@ async getAllMembers(req: Request, res: Response) {
 }
 
 
+async getMemberClasses(req: Request, res: Response) {
+  try {
+    const memberId = Array.isArray(req.params.userId)
+      ? req.params.userId[0]
+      : req.params.userId;
 
+    if (!memberId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Member ID is required.',
+      });
+    }
+
+    const result = await adminService.getMemberClasses(memberId);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Member classes retrieved successfully.',
+      data: result,
+    });
+  } catch (error: any) {
+    console.error('Get Member Classes Error:', error);
+
+    if (error?.message === 'Member not found.') {
+      return res.status(404).json({
+        success: false,
+        message: error.message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: error?.message || 'Failed to retrieve member classes.',
+    });
+  }
+}
 }
 
 export const adminController =

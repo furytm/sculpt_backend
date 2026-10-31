@@ -4,6 +4,8 @@ export const registerSchema = Joi.object({
     email: Joi.string().email().lowercase().required(),
     phone: Joi.string().trim().optional().allow("", null),
     bookingReference: Joi.string().trim().optional(),
+    membership: Joi.string().trim().optional(),
+    activationToken: Joi.string().trim().optional(),
     password: Joi.string().min(8).max(100).required(),
     confirmPassword: Joi.any()
         .valid(Joi.ref("password"))
@@ -11,6 +13,17 @@ export const registerSchema = Joi.object({
         .messages({
         "any.only": "Passwords do not match.",
     }),
+}).custom((value, helpers) => {
+    const hasMembership = Boolean(value.membership);
+    const hasToken = Boolean(value.activationToken);
+    if (hasMembership !== hasToken) {
+        return helpers.error("any.custom", {
+            message: "Membership number and activation token must be provided together.",
+        });
+    }
+    return value;
+}).messages({
+    "any.custom": "{{#message}}",
 });
 export const loginSchema = Joi.object({
     email: Joi.string().email().required(),

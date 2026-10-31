@@ -323,23 +323,54 @@ export const purchaseNewMembership = async (
   res: Response
 ) => {
   try {
-    const { membershipId, fullName, email, phone } = req.body;
+    const {
+      membershipId,
+      fullName,
+      email,
+      phone,
+      firstSessionId,
+      firstClassId,
+      healthDeclaration,
+    } = req.body;
 
-    if (!membershipId || !fullName?.trim() || !email?.trim() || !phone?.trim()) {
+    if (
+      !membershipId ||
+      !fullName?.trim() ||
+      !email?.trim() ||
+      !phone?.trim()
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Membership, name, email, and phone are required.",
+        message:
+          "Membership, name, email, and phone are required.",
       });
     }
 
-   const result =
-  await membershipService.initiateNewMembershipPurchase({
-    membershipId,
-    fullName,
-    email,
-    phone,
-userId: req.user?.userId ?? null,
-  });
+    if (
+      firstSessionId &&
+      healthDeclaration?.accepted !== true
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "You must accept the Health Declaration when selecting your first session.",
+      });
+    }
+
+    const result =
+      await membershipService.initiateNewMembershipPurchase({
+        membershipId,
+        fullName,
+        email,
+        phone,
+        userId: req.user?.userId ?? null,
+        firstSessionId: firstSessionId || null,
+        firstClassId: firstClassId || null,
+        healthDeclarationAccepted:
+          healthDeclaration?.accepted === true,
+        healthDeclarationNotes:
+          healthDeclaration?.notes || null,
+      });
 
     return res.status(201).json({
       success: true,

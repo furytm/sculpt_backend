@@ -55,5 +55,6 @@ router.post("/verify", membershipActivationController.verify);
  *         description: Booking or membership not found
  */
 router.post("/complete", membershipActivationController.complete);
+router.post("/resend", membershipActivationController.resend);
 export default router;
 //# sourceMappingURL=membership-activation.route.js.map

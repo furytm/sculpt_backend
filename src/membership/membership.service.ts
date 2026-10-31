@@ -5,6 +5,7 @@ import {
   MembershipPurchaseType,
   PaymentStatus,
 } from "@prisma/client";
+import bookingService from "../booking/booking.service.js";
 
 
 import paymentService from "../payment/payment.service.js";
@@ -638,19 +639,23 @@ async completeMembershipPurchase(
     );
   }
 
-  return await prisma.$transaction(
-    async (tx) => {
-      const purchase =
-        await tx.membershipPurchase.findUnique({
-          where: {
-            paymentReference,
-          },
+const result = await prisma.$transaction(
+  async (tx) => {
+const purchase =
+  await tx.membershipPurchase.findUnique({
+    where: {
+      paymentReference,
+    },
 
-          include: {
-            membership: true,
-          },
-        });
-
+    include: {
+      membership: true,
+      firstSession: {
+        include: {
+          schedule: true,
+        },
+      },
+    },
+  });
       if (!purchase) {
         throw new Error(
           "Membership purchase not found."
@@ -866,6 +871,77 @@ if (linkedMembership) {
       }
 
       /*
+ * ==================================================
+ * NEW MEMBERSHIP PURCHASE
+ * ==================================================
+ */
+
+if (purchase.type === MembershipPurchaseType.NEW) {
+  const firstSession = purchase.firstSession;
+
+  let startDate: Date | null = null;
+  let expiryDate: Date | null = null;
+
+  // A selected first session determines membership validity.
+  if (firstSession) {
+    if (
+      firstSession.status !== "OPEN" ||
+      !firstSession.schedule.isActive
+    ) {
+      throw new Error(
+        "The selected first class session is no longer available."
+      );
+    }
+
+    startDate = firstSession.sessionDate;
+
+    expiryDate = this.calculateMembershipExpiry(
+      startDate,
+      purchase.membership.duration,
+      purchase.membership.period
+    );
+  }
+
+  const creditsTotal = this.getMembershipCredits(
+    purchase.membership.classLimit
+  );
+
+  const newMembership = await tx.memberMembership.create({
+    data: {
+      userId: purchase.userId,
+      membershipPurchaseId: purchase.id,
+      membershipId: purchase.membershipId,
+
+      status: MembershipStatus.ACTIVE,
+
+      startDate,
+      expiryDate,
+
+      creditsTotal,
+      creditsUsed: 0,
+    },
+  });
+
+  await tx.membershipPurchase.update({
+    where: {
+      id: purchase.id,
+    },
+    data: {
+      paymentStatus: PaymentStatus.PAID,
+    },
+  });
+
+  return {
+    purchase,
+    membership: newMembership,
+    creditsTotal,
+    remainingCredits: creditsTotal,
+    firstSessionId: firstSession?.id ?? null,
+    firstSessionDate: firstSession?.sessionDate ?? null,
+    requiresFirstBooking: Boolean(firstSession),
+  };
+}
+      /*
        * ==================================================
        * RENEWAL
        * ==================================================
@@ -962,14 +1038,56 @@ if (linkedMembership) {
         remainingCredits:
           creditsTotal,
       };
-    },
+       },
     {
       maxWait: 10000,
       timeout: 15000,
     }
   );
+
+  // Automatically create the first booking only when the
+  // customer selected a class session during membership checkout.
+  // Membership-only purchases must not create a booking here.
+if (
+  result.purchase.type === MembershipPurchaseType.NEW &&
+  result.purchase.firstSessionId &&
+  result.purchase.userId
+) {
+  const fullName = result.purchase.fullName?.trim();
+  const phone = result.purchase.phone?.trim();
+
+  if (!fullName || !phone) {
+    throw new Error(
+      "Membership purchase is missing the customer's name or phone number. Cannot create the first booking."
+    );
+  }
+
+  const existingFirstBooking = await prisma.booking.findUnique({
+    where: {
+      paymentReference: `${result.purchase.paymentReference}-FIRST-BOOKING`,
+    },
+  });
+
+  if (
+    !existingFirstBooking ||
+    existingFirstBooking.bookingStatus !== "CONFIRMED"
+  ) {
+    await bookingService.createMembershipFirstBooking({
+      purchaseReference: result.purchase.paymentReference,
+      userId: result.purchase.userId,
+      membershipId: result.purchase.membershipId,
+      firstSessionId: result.purchase.firstSessionId,
+      fullName,
+      email: result.purchase.email,
+      phone,
+      healthDeclarationNotes:
+        result.purchase.healthDeclarationNotes,
+    });
+  }
 }
 
+  return result;
+}
 
 async getMembershipPurchase(
   userId: string,
@@ -1107,6 +1225,10 @@ async initiateNewMembershipPurchase(data: {
   email: string;
   phone: string;
   userId: string | null;
+  firstSessionId?: string | null;
+  firstClassId?: string | null;
+  healthDeclarationAccepted?: boolean;
+  healthDeclarationNotes?: string | null;
 }) {
   const email = data.email.trim().toLowerCase();
 
@@ -1124,6 +1246,45 @@ async initiateNewMembershipPurchase(data: {
   if (!membership) {
     throw new Error("Membership not found or is not active.");
   }
+  let selectedSession = null;
+
+if (data.firstSessionId) {
+  selectedSession = await prisma.classSession.findUnique({
+    where: {
+      id: data.firstSessionId,
+    },
+    include: {
+      schedule: true,
+    },
+  });
+
+  if (!selectedSession) {
+    throw new Error("Selected class session was not found.");
+  }
+
+  if (
+    selectedSession.status !== "OPEN" ||
+    !selectedSession.schedule.isActive
+  ) {
+    throw new Error("Selected class session is unavailable.");
+  }
+
+  if (
+    data.firstClassId &&
+    selectedSession.schedule.className.toLowerCase() !==
+      data.firstClassId.toLowerCase()
+  ) {
+    throw new Error(
+      "Selected session does not belong to the selected class."
+    );
+  }
+
+  if (data.healthDeclarationAccepted !== true) {
+    throw new Error(
+      "Health Declaration must be accepted before selecting a first session."
+    );
+  }
+}
 
   const paymentReference =
     `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
@@ -1134,17 +1295,28 @@ async initiateNewMembershipPurchase(data: {
   paymentReference,
 });
 const purchase = await prisma.membershipPurchase.create({
-  data: {
-    userId: data.userId,
-    fullName: data.fullName.trim(),
-    email,
-    phone: data.phone.trim(),
-    membershipId: membership.id,
-    type: MembershipPurchaseType.NEW,
-    amount: membership.price,
-    paymentReference,
-    paymentStatus: PaymentStatus.PENDING,
-  },
+data: {
+  userId: data.userId,
+  fullName: data.fullName.trim(),
+  email,
+  phone: data.phone.trim(),
+
+  membershipId: membership.id,
+  type: MembershipPurchaseType.NEW,
+  amount: membership.price,
+
+  paymentReference,
+  paymentStatus: PaymentStatus.PENDING,
+
+  firstSessionId: selectedSession?.id ?? null,
+  firstClassId: data.firstClassId ?? null,
+
+  healthDeclarationAccepted:
+    data.healthDeclarationAccepted ?? false,
+
+  healthDeclarationNotes:
+    data.healthDeclarationNotes?.trim() || null,
+},
 });
 console.log("[MEMBERSHIP] Purchase created", {
   purchaseId: purchase.id,

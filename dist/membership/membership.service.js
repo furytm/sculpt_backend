@@ -1,5 +1,6 @@
 import prisma from "../config/prisma.js";
 import { MembershipStatus, MembershipPurchaseType, PaymentStatus, } from "@prisma/client";
+import bookingService from "../booking/booking.service.js";
 import paymentService from "../payment/payment.service.js";
 import crypto from "crypto";
 class MembershipService {
@@ -403,13 +404,18 @@ class MembershipService {
         if (!paymentReference) {
             throw new Error("Payment reference is required.");
         }
-        return await prisma.$transaction(async (tx) => {
+        const result = await prisma.$transaction(async (tx) => {
             const purchase = await tx.membershipPurchase.findUnique({
                 where: {
                     paymentReference,
                 },
                 include: {
                     membership: true,
+                    firstSession: {
+                        include: {
+                            schedule: true,
+                        },
+                    },
                 },
             });
             if (!purchase) {
@@ -554,6 +560,55 @@ class MembershipService {
                 };
             }
             /*
+       * ==================================================
+       * NEW MEMBERSHIP PURCHASE
+       * ==================================================
+       */
+            if (purchase.type === MembershipPurchaseType.NEW) {
+                const firstSession = purchase.firstSession;
+                let startDate = null;
+                let expiryDate = null;
+                // A selected first session determines membership validity.
+                if (firstSession) {
+                    if (firstSession.status !== "OPEN" ||
+                        !firstSession.schedule.isActive) {
+                        throw new Error("The selected first class session is no longer available.");
+                    }
+                    startDate = firstSession.sessionDate;
+                    expiryDate = this.calculateMembershipExpiry(startDate, purchase.membership.duration, purchase.membership.period);
+                }
+                const creditsTotal = this.getMembershipCredits(purchase.membership.classLimit);
+                const newMembership = await tx.memberMembership.create({
+                    data: {
+                        userId: purchase.userId,
+                        membershipPurchaseId: purchase.id,
+                        membershipId: purchase.membershipId,
+                        status: MembershipStatus.ACTIVE,
+                        startDate,
+                        expiryDate,
+                        creditsTotal,
+                        creditsUsed: 0,
+                    },
+                });
+                await tx.membershipPurchase.update({
+                    where: {
+                        id: purchase.id,
+                    },
+                    data: {
+                        paymentStatus: PaymentStatus.PAID,
+                    },
+                });
+                return {
+                    purchase,
+                    membership: newMembership,
+                    creditsTotal,
+                    remainingCredits: creditsTotal,
+                    firstSessionId: firstSession?.id ?? null,
+                    firstSessionDate: firstSession?.sessionDate ?? null,
+                    requiresFirstBooking: Boolean(firstSession),
+                };
+            }
+            /*
              * ==================================================
              * RENEWAL
              * ==================================================
@@ -617,6 +672,32 @@ class MembershipService {
             maxWait: 10000,
             timeout: 15000,
         });
+        // Automatically create the first booking only when the
+        // customer selected a class session during membership checkout.
+        // Membership-only purchases must not create a booking here.
+        if (result.purchase.type === MembershipPurchaseType.NEW &&
+            result.purchase.firstSessionId &&
+            result.purchase.userId) {
+            const existingFirstBooking = await prisma.booking.findUnique({
+                where: {
+                    paymentReference: `${result.purchase.paymentReference}-FIRST-BOOKING`,
+                },
+            });
+            if (!existingFirstBooking ||
+                existingFirstBooking.bookingStatus !== "CONFIRMED") {
+                await bookingService.createMembershipFirstBooking({
+                    purchaseReference: result.purchase.paymentReference,
+                    userId: result.purchase.userId,
+                    membershipId: result.purchase.membershipId,
+                    firstSessionId: result.purchase.firstSessionId,
+                    fullName: result.purchase.fullName,
+                    email: result.purchase.email,
+                    phone: result.purchase.phone,
+                    healthDeclarationNotes: result.purchase.healthDeclarationNotes,
+                });
+            }
+        }
+        return result;
     }
     async getMembershipPurchase(userId, paymentReference) {
         const purchase = await prisma.membershipPurchase.findFirst({
@@ -679,20 +760,11 @@ class MembershipService {
         if (!purchase) {
             return null;
         }
-        const memberMembership = purchase.userId
-            ? await prisma.memberMembership.findFirst({
-                where: {
-                    userId: purchase.userId,
-                    membershipId: purchase.membershipId,
-                    startDate: {
-                        gte: purchase.createdAt,
-                    },
-                },
-                orderBy: {
-                    startDate: "desc",
-                },
-            })
-            : null;
+        const memberMembership = await prisma.memberMembership.findUnique({
+            where: {
+                membershipPurchaseId: purchase.id,
+            },
+        });
         return {
             purchase: {
                 paymentReference: purchase.paymentReference,
@@ -741,7 +813,39 @@ class MembershipService {
         if (!membership) {
             throw new Error("Membership not found or is not active.");
         }
+        let selectedSession = null;
+        if (data.firstSessionId) {
+            selectedSession = await prisma.classSession.findUnique({
+                where: {
+                    id: data.firstSessionId,
+                },
+                include: {
+                    schedule: true,
+                },
+            });
+            if (!selectedSession) {
+                throw new Error("Selected class session was not found.");
+            }
+            if (selectedSession.status !== "OPEN" ||
+                !selectedSession.schedule.isActive) {
+                throw new Error("Selected class session is unavailable.");
+            }
+            if (data.firstClassId &&
+                selectedSession.schedule.className.toLowerCase() !==
+                    data.firstClassId.toLowerCase()) {
+                throw new Error("Selected session does not belong to the selected class.");
+            }
+            if (data.healthDeclarationAccepted !== true) {
+                throw new Error("Health Declaration must be accepted before selecting a first session.");
+            }
+        }
         const paymentReference = `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+        console.log("[MEMBERSHIP] Creating purchase", {
+            membershipId: membership.id,
+            email,
+            userId: data.userId,
+            paymentReference,
+        });
         const purchase = await prisma.membershipPurchase.create({
             data: {
                 userId: data.userId,
@@ -753,7 +857,16 @@ class MembershipService {
                 amount: membership.price,
                 paymentReference,
                 paymentStatus: PaymentStatus.PENDING,
+                firstSessionId: selectedSession?.id ?? null,
+                firstClassId: data.firstClassId ?? null,
+                healthDeclarationAccepted: data.healthDeclarationAccepted ?? false,
+                healthDeclarationNotes: data.healthDeclarationNotes?.trim() || null,
             },
+        });
+        console.log("[MEMBERSHIP] Purchase created", {
+            purchaseId: purchase.id,
+            paymentReference: purchase.paymentReference,
+            paymentStatus: purchase.paymentStatus,
         });
         try {
             const payment = await paymentService.initializeTransaction({

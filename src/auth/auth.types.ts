@@ -16,8 +16,8 @@ export interface RegisterDto {
 export interface LoginDto {
   email: string;
   password: string;
+  bookingReference?: string;
 }
-
 export interface JwtPayload {
   userId: string;
   email: string;

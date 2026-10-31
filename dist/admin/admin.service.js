@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { BookingStatus, PaymentMethod, PaymentStatus, UserRole, MembershipStatus, } from "@prisma/client";
 import prisma from "../config/prisma.js";
+import { sendPaymentConfirmationEmail, } from "../utils/mailer.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
 import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
 console.log("🔥 ACTIVATION SERVICE IMPORT:", membershipActivationService);
@@ -183,6 +184,60 @@ class AdminService {
             },
         });
         return bookings;
+    }
+    async resendRegistrationEmail(email) {
+        const normalizedEmail = email.trim().toLowerCase();
+        // First, try to resend an offline membership activation email.
+        const activation = await membershipActivationService.resendActivationForEmail(normalizedEmail);
+        if (activation.found) {
+            if (!activation.emailSent) {
+                throw new Error("Failed to send membership activation email.");
+            }
+            return {
+                success: true,
+                message: "Membership activation email resent successfully.",
+            };
+        }
+        // Preserve the existing online booking email flow.
+        const frontendUrl = process.env.FRONTEND_URL?.replace(/\/+$/, "");
+        if (!frontendUrl) {
+            throw new Error("FRONTEND_URL is not configured.");
+        }
+        const booking = await prisma.booking.findFirst({
+            where: {
+                email: {
+                    equals: normalizedEmail,
+                    mode: "insensitive",
+                },
+                paymentStatus: PaymentStatus.PAID,
+                paymentMethod: { not: "OFFLINE" },
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+        const bookingReference = booking?.paymentReference ?? "";
+        try {
+            await sendPaymentConfirmationEmail({
+                email: normalizedEmail,
+                fullName: booking?.fullName || "Sculpt LAB customer",
+                bookingReference,
+                registrationUrl: bookingReference
+                    ? `${frontendUrl}/register?reference=${encodeURIComponent(bookingReference)}`
+                    : `${frontendUrl}/register`,
+                loginUrl: bookingReference
+                    ? `${frontendUrl}/login?reference=${encodeURIComponent(bookingReference)}`
+                    : `${frontendUrl}/login`,
+            });
+            return {
+                success: true,
+                message: "Registration email sent successfully.",
+            };
+        }
+        catch (error) {
+            console.error("Failed to resend registration email:", normalizedEmail, error);
+            throw new Error("Unable to send registration email.");
+        }
     }
     /**
      * Get one booking for admin management.

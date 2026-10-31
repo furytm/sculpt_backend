@@ -1820,47 +1820,56 @@ class BookingService {
     // MEMBERSHIP CREDIT SUMMARY
     // =========================================================
     async getMembershipCreditSummary(userId) {
-        const membership = await prisma.memberMembership.findFirst({
+        const memberMembership = await prisma.memberMembership.findFirst({
             where: {
                 userId,
                 status: MembershipStatus.ACTIVE,
                 OR: [
-                    {
-                        expiryDate: null,
-                    },
-                    {
-                        expiryDate: {
-                            gt: new Date(),
-                        },
-                    },
+                    { expiryDate: null },
+                    { expiryDate: { gt: new Date() } },
                 ],
             },
             include: {
                 membership: true,
+                membershipPurchase: true,
+                bookings: {
+                    where: {
+                        bookingStatus: "CONFIRMED",
+                    },
+                    select: {
+                        id: true,
+                        sessionId: true,
+                        bookingStatus: true,
+                    },
+                },
             },
             orderBy: {
                 expiryDate: "asc",
             },
         });
-        if (!membership) {
+        if (!memberMembership) {
             return null;
         }
-        const remainingCredits = membership.creditsTotal ===
-            null
+        const remainingCredits = memberMembership.creditsTotal === null
             ? null
-            : Math.max(membership.creditsTotal -
-                membership.creditsUsed, 0);
+            : Math.max(memberMembership.creditsTotal - memberMembership.creditsUsed, 0);
+        const purchase = memberMembership.membershipPurchase;
+        const hasFirstSession = Boolean(purchase?.firstSessionId);
+        const firstBookingConfirmed = Boolean(hasFirstSession &&
+            memberMembership.bookings.some((booking) => booking.sessionId === purchase?.firstSessionId));
         return {
-            memberMembershipId: membership.id,
-            membership: membership.membership,
-            creditsTotal: membership.creditsTotal,
-            creditsUsed: membership.creditsUsed,
+            memberMembershipId: memberMembership.id,
+            membership: memberMembership.membership,
+            creditsTotal: memberMembership.creditsTotal,
+            creditsUsed: memberMembership.creditsUsed,
             remainingCredits,
-            unlimited: membership.creditsTotal ===
-                null,
-            startDate: membership.startDate,
-            expiryDate: membership.expiryDate,
-            status: membership.status,
+            unlimited: memberMembership.creditsTotal === null,
+            startDate: memberMembership.startDate,
+            expiryDate: memberMembership.expiryDate,
+            status: memberMembership.status,
+            hasFirstSession,
+            firstBookingConfirmed,
+            requiresInitialBooking: !hasFirstSession,
         };
     }
     // =========================================================
@@ -2137,6 +2146,126 @@ class BookingService {
             }
         }
         return result;
+    }
+    /**
+     * Creates and confirms the first class booking included
+     * with a paid membership purchase.
+     *
+     * The purchase payment has already been completed, so this
+     * booking must not initialize or charge another payment.
+     *
+     * The deterministic reference makes retries idempotent.
+     */
+    async createMembershipFirstBooking(data) {
+        const { purchaseReference, userId, membershipId, firstSessionId, fullName, email, phone, healthDeclarationNotes, } = data;
+        if (!userId || !purchaseReference || !firstSessionId) {
+            throw new Error("The membership purchase, account and first session are required.");
+        }
+        if (!fullName?.trim() || !email?.trim() || !phone?.trim()) {
+            throw new Error("Member name, email and phone are required to create the first booking.");
+        }
+        // A stable reference prevents duplicate first bookings
+        // if payment verification or account registration is retried.
+        const bookingReference = `${purchaseReference}-FIRST-BOOKING`;
+        const existingBooking = await prisma.booking.findUnique({
+            where: {
+                paymentReference: bookingReference,
+            },
+        });
+        if (existingBooking) {
+            if (existingBooking.userId !== userId) {
+                throw new Error("This first booking is already attached to another account.");
+            }
+            if (existingBooking.bookingStatus === BookingStatus.CONFIRMED) {
+                return existingBooking;
+            }
+        }
+        const [membership, session] = await Promise.all([
+            prisma.membership.findUnique({
+                where: { id: membershipId },
+            }),
+            prisma.classSession.findUnique({
+                where: { id: firstSessionId },
+                include: {
+                    schedule: true,
+                },
+            }),
+        ]);
+        if (!membership || !membership.isActive) {
+            throw new Error("The selected membership is no longer available.");
+        }
+        if (!session) {
+            throw new Error("The selected first class session was not found.");
+        }
+        if (session.status !== "OPEN" ||
+            !session.schedule.isActive) {
+            throw new Error("The selected first class session is no longer available.");
+        }
+        if (!this.isSessionAtLeastTwoHoursAhead(session.sessionDate, session.schedule.startTime)) {
+            throw new Error("The selected session must start at least two hours from now.");
+        }
+        // Create the booking only once. If a previous attempt created
+        // it but failed during confirmation, reuse it on the retry.
+        const booking = existingBooking
+            ? await prisma.booking.update({
+                where: { id: existingBooking.id },
+                data: {
+                    userId,
+                    paymentStatus: PaymentStatus.PAID,
+                },
+            })
+            : await prisma.booking.create({
+                data: {
+                    fullName: fullName.trim(),
+                    email: email.trim().toLowerCase(),
+                    phone: phone.trim(),
+                    userId,
+                    classId: session.schedule.className,
+                    sessionId: session.id,
+                    scheduleId: session.scheduleId,
+                    bookingDate: session.sessionDate,
+                    preferredStartDate: session.sessionDate,
+                    membershipId: membership.id,
+                    // The membership purchase already paid for this.
+                    // Do not charge the customer again for this booking.
+                    amount: 0,
+                    paymentMethod: PaymentMethod.PAYMISH,
+                    paymentReference: bookingReference,
+                    paymentStatus: PaymentStatus.PAID,
+                    bookingStatus: BookingStatus.PENDING,
+                },
+            });
+        // The membership checkout already captured the declaration.
+        // Persist it against the booking so confirmBooking() can use
+        // the existing health declaration safeguard.
+        await prisma.healthSafetyForm.upsert({
+            where: {
+                bookingId: booking.id,
+            },
+            create: {
+                bookingId: booking.id,
+                userId,
+                accepted: true,
+                declarationVersion: this.HEALTH_DECLARATION_VERSION,
+                notes: healthDeclarationNotes?.trim() || null,
+                acceptedAt: new Date(),
+                submittedAt: new Date(),
+                screeningAnswers: {},
+                consent: [],
+            },
+            update: {
+                userId,
+                accepted: true,
+                declarationVersion: this.HEALTH_DECLARATION_VERSION,
+                notes: healthDeclarationNotes?.trim() || null,
+                acceptedAt: new Date(),
+                submittedAt: new Date(),
+            },
+        });
+        // Reuse the existing confirmation flow. This performs the
+        // capacity checks, membership credit deduction and calendar
+        // event creation. It is safe to retry after confirmation.
+        return this.confirmBooking(booking.id, userId);
     }
 }
 export default new BookingService();
