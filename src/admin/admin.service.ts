@@ -1335,8 +1335,10 @@ async getAllMembers() {
       membership: currentMembership?.membership ?? null,
  membershipStatus:
   currentMembership ? currentMembership.status : "NO_ACTIVE_MEMBERSHIP",
-      membershipNumber:
-        currentMembership?.activation?.membershipNumber ?? null,
+     membershipNumber:
+  currentMembership?.membershipNumber ??
+  currentMembership?.activation?.membershipNumber ??
+  null,
       expiryDate: currentMembership?.expiryDate ?? null,
       createdAt:
         currentMembership?.createdAt ?? user.createdAt,
@@ -1433,8 +1435,10 @@ async getAllMembers() {
       phone: booking.phone,
       membership: member.membership,
       membershipStatus: member.status,
-      membershipNumber:
-        member.activation?.membershipNumber ?? null,
+  membershipNumber:
+  member.membershipNumber ??
+  member.activation?.membershipNumber ??
+  null,
       expiryDate: member.expiryDate,
       createdAt: booking.createdAt,
 

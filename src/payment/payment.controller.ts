@@ -317,15 +317,16 @@ async callback(req: Request, res: Response) {
       });
     }
 
-    return res.redirect(
-      `${frontendUrl}/confirmation?${
-        paymentVerified ? "status=success" : "payment=failed"
-      }${
-        reference
-          ? `&reference=${encodeURIComponent(reference)}`
-          : ""
-      }`
-    );
+  
+return res.redirect(
+  `${frontendUrl}/confirmation?${paymentVerified ? "status=success" : "payment=failed"
+  }${
+    reference
+      ? `&reference=${encodeURIComponent(reference)}`
+      : ""
+  }`
+);
+
   }
 }
 

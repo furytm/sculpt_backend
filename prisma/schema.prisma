@@ -401,6 +401,7 @@ model MemberMembership {
 
   creditsTotal Int?
   creditsUsed  Int  @default(0)
+    membershipNumber String?
 
   activation MembershipActivation?
 

@@ -2,6 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcrypt";
 import { AuthProvider, MembershipStatus } from "@prisma/client";
 import prisma from "../config/prisma.js";
+import { generateMembershipNumber } from "../utils/membership-number.js";
 
 import {
   generateAccessToken,
@@ -31,13 +32,13 @@ function hashActivationToken(token: string): string {
     .digest("hex");
 }
 
-function generateMembershipNumber(): string {
-  const year = new Date().getFullYear();
+// function generateMembershipNumber(): string {
+//   const year = new Date().getFullYear();
 
-  const randomNumber = crypto.randomInt(100000, 999999);
+//   const randomNumber = crypto.randomInt(100000, 999999);
 
-  return `SL-${year}-${randomNumber}`;
-}
+//   return `SL-${year}-${randomNumber}`;
+// }
 
 function getMembershipExpiry(
   startDate: Date,
@@ -369,16 +370,18 @@ await prisma.booking.update({
 });
     const activationToken = generateActivationToken();
     const tokenHash = hashActivationToken(activationToken);
+let membershipNumber = generateMembershipNumber();
 
-    let membershipNumber = generateMembershipNumber();
-
-    while (
-      await prisma.membershipActivation.findUnique({
-        where: { membershipNumber },
-      })
-    ) {
-      membershipNumber = generateMembershipNumber();
-    }
+while (
+  (await prisma.membershipActivation.findUnique({
+    where: { membershipNumber },
+  })) ||
+  (await prisma.memberMembership.findFirst({
+    where: { membershipNumber },
+  }))
+) {
+  membershipNumber = generateMembershipNumber();
+}
 
     const expiresAt = new Date();
 
@@ -396,6 +399,14 @@ await prisma.booking.update({
           expiresAt,
         },
       });
+      await prisma.memberMembership.update({
+  where: {
+    id: memberMembership.id,
+  },
+  data: {
+    membershipNumber,
+  },
+});
 
     try {
       /*
