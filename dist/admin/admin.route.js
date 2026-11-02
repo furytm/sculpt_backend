@@ -60,6 +60,7 @@ router.delete("/notifications/push-subscription", authenticate, requireAdmin, ad
 router.get("/dashboard", authenticate, requireAdmin, adminController.getDashboard);
 router.post("/resend-registration-email", authenticate, requireAdmin, adminController.resendRegistrationEmail);
 router.post("/sessions/:sessionId/offline-attendees", authenticate, requireAdmin, adminSessionController.addOfflineAttendee);
+router.get('/members/:userId/classes', authenticate, requireAdmin, adminController.getMemberClasses.bind(adminController));
 // =====================================================
 // PENDING OFFLINE PAYMENTS
 // =====================================================
@@ -462,5 +463,6 @@ router.post("/sessions/:sessionId/reopen", authenticate, requireAdmin, adminSess
  */
 router.post("/members/offline", authenticate, requireAdmin, adminController.createOfflineMember);
 router.get('/members', authenticate, requireAdmin, adminController.getAllMembers.bind(adminController));
+router.delete("/members/:memberId", authenticate, requireAdmin, adminController.deleteMember.bind(adminController));
 export default router;
 //# sourceMappingURL=admin.route.js.map

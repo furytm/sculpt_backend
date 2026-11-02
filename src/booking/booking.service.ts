@@ -2265,11 +2265,15 @@ return sessions
   // =========================================================
 
 
+// =========================================================
+// CONFIRM PRIVATE BOOKING
+// =========================================================
+
 private async confirmPrivateBooking(
   bookingId: string,
   userId: string
 ) {
-  return prisma.$transaction(async (tx) => {
+  const confirmedBooking = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`
       SELECT id
       FROM "Booking"
@@ -2283,9 +2287,7 @@ private async confirmPrivateBooking(
         membership: true,
         memberMembership: true,
         healthSafetyForm: true,
-        session: {
-          include: { schedule: true },
-        },
+        session: { include: { schedule: true } },
       },
     });
 
@@ -2294,9 +2296,7 @@ private async confirmPrivateBooking(
     }
 
     if (booking.userId !== userId) {
-      throw new Error(
-        "This booking does not belong to your account."
-      );
+      throw new Error("This booking does not belong to your account.");
     }
 
     // Idempotency: do not consume another credit on retry.
@@ -2315,9 +2315,7 @@ private async confirmPrivateBooking(
     }
 
     if (booking.membership.type !== MembershipType.PRIVATE) {
-      throw new Error(
-        "This booking does not have a Private membership."
-      );
+      throw new Error("This booking does not have a Private membership.");
     }
 
     if (booking.sessionId) {
@@ -2335,8 +2333,7 @@ private async confirmPrivateBooking(
       );
     }
 
-    const membershipStart =
-      booking.preferredStartDate ?? new Date();
+    const membershipStart = booking.preferredStartDate ?? new Date();
 
     const membershipExpiry = this.calculateMembershipExpiry(
       membershipStart,
@@ -2348,7 +2345,6 @@ private async confirmPrivateBooking(
       booking.membership.classLimit
     );
 
-    // Create a membership or refresh the existing linked record.
     const memberMembership = booking.memberMembership
       ? await tx.memberMembership.update({
           where: { id: booking.memberMembership.id },
@@ -2374,18 +2370,13 @@ private async confirmPrivateBooking(
         });
 
     if (!this.hasRemainingCredit(memberMembership)) {
-      throw new Error(
-        "You do not have any remaining session credits."
-      );
+      throw new Error("You do not have any remaining session credits.");
     }
 
-    // Consume the initial session credit for finite memberships.
     if (memberMembership.creditsTotal !== null) {
       await tx.memberMembership.update({
         where: { id: memberMembership.id },
-        data: {
-          creditsUsed: { increment: 1 },
-        },
+        data: { creditsUsed: { increment: 1 } },
       });
     }
 
@@ -2401,12 +2392,66 @@ private async confirmPrivateBooking(
         membership: true,
         memberMembership: true,
         healthSafetyForm: true,
-        session: {
-          include: { schedule: true },
-        },
+        session: { include: { schedule: true } },
       },
     });
   });
+
+  // Create the tutor/member calendar event only after the booking commits.
+  // Calendar failure must never roll back a confirmed private booking.
+  if (confirmedBooking.sessionId && !confirmedBooking.calendarEventId) {
+    try {
+      const session = await prisma.classSession.findUnique({
+        where: { id: confirmedBooking.sessionId },
+        include: { schedule: true },
+      });
+
+      if (session) {
+        if (!confirmedBooking.fullName || !confirmedBooking.email) {
+          throw new Error(
+            "Member name and email are required before creating the calendar event."
+          );
+        }
+
+        const calendarEvent =
+          await googleCalendarService.createBookingEvent({
+            bookingId: confirmedBooking.id,
+            bookingReference: confirmedBooking.paymentReference,
+            memberName: confirmedBooking.fullName,
+            memberEmail: confirmedBooking.email,
+            className: session.schedule.className,
+            tutorName: session.schedule.tutorName,
+            sessionDate: session.sessionDate,
+            startTime: session.schedule.startTime,
+            endTime: session.schedule.endTime,
+          });
+
+        if (calendarEvent.eventId) {
+          await prisma.booking.update({
+            where: { id: confirmedBooking.id },
+            data: {
+              calendarEventId: calendarEvent.eventId,
+              calendarEventUrl: calendarEvent.eventUrl,
+            },
+          });
+
+          confirmedBooking.calendarEventId = calendarEvent.eventId;
+          confirmedBooking.calendarEventUrl = calendarEvent.eventUrl;
+        }
+
+        console.log(
+          `✅ Google Calendar event created for private booking ${confirmedBooking.id}`
+        );
+      }
+    } catch (calendarError) {
+      console.error(
+        `⚠️ Google Calendar event creation failed for private booking ${confirmedBooking.id}:`,
+        calendarError
+      );
+    }
+  }
+
+  return confirmedBooking;
 }
 
   // =========================================================

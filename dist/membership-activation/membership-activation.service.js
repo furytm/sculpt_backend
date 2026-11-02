@@ -2,6 +2,7 @@ import crypto from "crypto";
 import bcrypt from "bcrypt";
 import { AuthProvider, MembershipStatus } from "@prisma/client";
 import prisma from "../config/prisma.js";
+import { generateMembershipNumber } from "../utils/membership-number.js";
 import { generateAccessToken, generateRefreshToken, } from "../utils/jwt.js";
 const FRONTEND_URL = process.env.FRONTEND_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -16,11 +17,11 @@ function hashActivationToken(token) {
         .update(token)
         .digest("hex");
 }
-function generateMembershipNumber() {
-    const year = new Date().getFullYear();
-    const randomNumber = crypto.randomInt(100000, 999999);
-    return `SL-${year}-${randomNumber}`;
-}
+// function generateMembershipNumber(): string {
+//   const year = new Date().getFullYear();
+//   const randomNumber = crypto.randomInt(100000, 999999);
+//   return `SL-${year}-${randomNumber}`;
+// }
 function getMembershipExpiry(startDate, duration) {
     const expiry = new Date(startDate);
     const normalized = duration.trim().toLowerCase();
@@ -283,9 +284,12 @@ class MembershipActivationService {
         const activationToken = generateActivationToken();
         const tokenHash = hashActivationToken(activationToken);
         let membershipNumber = generateMembershipNumber();
-        while (await prisma.membershipActivation.findUnique({
+        while ((await prisma.membershipActivation.findUnique({
             where: { membershipNumber },
-        })) {
+        })) ||
+            (await prisma.memberMembership.findFirst({
+                where: { membershipNumber },
+            }))) {
             membershipNumber = generateMembershipNumber();
         }
         const expiresAt = new Date();
@@ -297,6 +301,14 @@ class MembershipActivationService {
                 membershipNumber,
                 tokenHash,
                 expiresAt,
+            },
+        });
+        await prisma.memberMembership.update({
+            where: {
+                id: memberMembership.id,
+            },
+            data: {
+                membershipNumber,
             },
         });
         try {

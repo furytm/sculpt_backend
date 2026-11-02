@@ -285,6 +285,45 @@ class AdminController {
             });
         }
     }
+    async deleteMember(req, res) {
+        try {
+            const memberId = Array.isArray(req.params.memberId)
+                ? req.params.memberId[0]
+                : req.params.memberId;
+            if (!memberId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Member ID is required.",
+                });
+            }
+            const result = await adminService.deleteMember(memberId);
+            return res.status(200).json({
+                success: true,
+                message: "Member deleted successfully.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error("Delete Admin Member Error:", error);
+            const message = error?.message || "Failed to delete member.";
+            if (message === "Member not found.") {
+                return res.status(404).json({
+                    success: false,
+                    message,
+                });
+            }
+            if (message === "Only member accounts can be deleted.") {
+                return res.status(403).json({
+                    success: false,
+                    message,
+                });
+            }
+            return res.status(500).json({
+                success: false,
+                message,
+            });
+        }
+    }
     async createOfflineMember(req, res) {
         try {
             const { fullName, email, phone, membershipId, remainingCredits, } = req.body;
@@ -352,6 +391,38 @@ class AdminController {
             return res.status(500).json({
                 success: false,
                 message: 'Failed to retrieve members.',
+            });
+        }
+    }
+    async getMemberClasses(req, res) {
+        try {
+            const memberId = Array.isArray(req.params.userId)
+                ? req.params.userId[0]
+                : req.params.userId;
+            if (!memberId) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Member ID is required.',
+                });
+            }
+            const result = await adminService.getMemberClasses(memberId);
+            return res.status(200).json({
+                success: true,
+                message: 'Member classes retrieved successfully.',
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error('Get Member Classes Error:', error);
+            if (error?.message === 'Member not found.') {
+                return res.status(404).json({
+                    success: false,
+                    message: error.message,
+                });
+            }
+            return res.status(500).json({
+                success: false,
+                message: error?.message || 'Failed to retrieve member classes.',
             });
         }
     }

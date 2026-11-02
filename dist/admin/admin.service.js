@@ -5,6 +5,12 @@ import { sendPaymentConfirmationEmail, } from "../utils/mailer.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
 import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
 console.log("🔥 ACTIVATION SERVICE IMPORT:", membershipActivationService);
+function hasSessionEnded(sessionDate, endTime) {
+    // Sculpt LAB operates in Nigeria (WAT = UTC+1).
+    const date = new Date(sessionDate).toISOString().slice(0, 10);
+    const endDateTime = new Date(`${date}T${endTime}:00+01:00`);
+    return endDateTime.getTime() <= Date.now();
+}
 class AdminService {
     async getPendingOfflinePayments() {
         return prisma.booking.findMany({
@@ -501,6 +507,194 @@ class AdminService {
         }
         return booking;
     }
+    async deleteMember(memberId) {
+        // =====================================================
+        // 1. CHECK IF THIS IS A REGISTERED MEMBER
+        // =====================================================
+        const user = await prisma.user.findUnique({
+            where: { id: memberId },
+            include: {
+                memberships: true,
+            },
+        });
+        let memberType;
+        let bookings = [];
+        let membershipIds = [];
+        if (user) {
+            if (user.role !== UserRole.MEMBER) {
+                throw new Error("Only member accounts can be deleted.");
+            }
+            memberType = "REGISTERED";
+            membershipIds = user.memberships.map((membership) => membership.id);
+            // Get all bookings belonging to this member.
+            bookings = await prisma.booking.findMany({
+                where: {
+                    OR: [
+                        { userId: user.id },
+                        ...(membershipIds.length
+                            ? [{ memberMembershipId: { in: membershipIds } }]
+                            : []),
+                    ],
+                },
+                select: {
+                    id: true,
+                    calendarEventId: true,
+                    sessionId: true,
+                    bookingStatus: true,
+                },
+            });
+        }
+        else {
+            // =====================================================
+            // 2. CHECK IF THIS IS AN OFFLINE MEMBER
+            // =====================================================
+            const offlineMember = await prisma.memberMembership.findFirst({
+                where: {
+                    id: memberId,
+                    userId: null,
+                },
+                include: {
+                    bookings: {
+                        select: {
+                            id: true,
+                            calendarEventId: true,
+                            sessionId: true,
+                            bookingStatus: true,
+                        },
+                    },
+                },
+            });
+            if (!offlineMember) {
+                throw new Error("Member not found.");
+            }
+            memberType = "OFFLINE";
+            membershipIds = [offlineMember.id];
+            bookings = offlineMember.bookings;
+        }
+        // =====================================================
+        // 3. COLLECT BOOKING AND SESSION INFORMATION
+        // =====================================================
+        const bookingIds = bookings.map((booking) => booking.id);
+        const calendarEventIds = bookings
+            .map((booking) => booking.calendarEventId)
+            .filter((id) => Boolean(id));
+        const sessionIds = [
+            ...new Set(bookings
+                .map((booking) => booking.sessionId)
+                .filter((id) => Boolean(id))),
+        ];
+        // =====================================================
+        // 4. DELETE MEMBER AND RELATED RECORDS
+        // =====================================================
+        await prisma.$transaction(async (tx) => {
+            // Delete booking-related health and safety forms.
+            if (bookingIds.length > 0) {
+                await tx.healthSafetyForm.deleteMany({
+                    where: {
+                        bookingId: { in: bookingIds },
+                    },
+                });
+                // Delete schedules attached to these bookings.
+                await tx.memberSchedule.deleteMany({
+                    where: {
+                        bookingId: { in: bookingIds },
+                    },
+                });
+                // Delete membership activations attached to bookings.
+                await tx.membershipActivation.deleteMany({
+                    where: {
+                        bookingId: { in: bookingIds },
+                    },
+                });
+                // Delete all bookings belonging to this member.
+                await tx.booking.deleteMany({
+                    where: {
+                        id: { in: bookingIds },
+                    },
+                });
+            }
+            // Delete activations attached to the member's memberships.
+            if (membershipIds.length > 0) {
+                await tx.membershipActivation.deleteMany({
+                    where: {
+                        memberMembershipId: {
+                            in: membershipIds,
+                        },
+                    },
+                });
+            }
+            if (memberType === "REGISTERED") {
+                // Delete the registered member's account.
+                // Related tokens, health forms and memberships
+                // are handled by the configured Prisma relations.
+                await tx.user.delete({
+                    where: {
+                        id: memberId,
+                    },
+                });
+            }
+            else {
+                // Delete the offline membership record.
+                // Its linked membership purchase is preserved
+                // because the schema uses onDelete: SetNull.
+                await tx.memberMembership.delete({
+                    where: {
+                        id: memberId,
+                    },
+                });
+            }
+            // ===================================================
+            // 5. REOPEN FULL SESSIONS WHERE SPACES ARE AVAILABLE
+            // ===================================================
+            for (const sessionId of sessionIds) {
+                const session = await tx.classSession.findUnique({
+                    where: { id: sessionId },
+                    include: {
+                        schedule: true,
+                    },
+                });
+                if (!session || session.status !== "FULL") {
+                    continue;
+                }
+                const confirmedBookings = await tx.booking.count({
+                    where: {
+                        sessionId,
+                        bookingStatus: BookingStatus.CONFIRMED,
+                    },
+                });
+                const capacity = session.capacity ?? session.schedule.capacity;
+                if (confirmedBookings < capacity) {
+                    await tx.classSession.update({
+                        where: { id: sessionId },
+                        data: {
+                            status: "OPEN",
+                        },
+                    });
+                }
+            }
+        });
+        // =====================================================
+        // 6. REMOVE ASSOCIATED GOOGLE CALENDAR EVENTS
+        // =====================================================
+        for (const calendarEventId of calendarEventIds) {
+            try {
+                await googleCalendarService.deleteBookingEvent(calendarEventId);
+            }
+            catch (calendarError) {
+                console.error("Failed to remove Google Calendar event:", calendarEventId, calendarError);
+            }
+        }
+        // =====================================================
+        // 7. RETURN RESULT
+        // =====================================================
+        return {
+            success: true,
+            memberId,
+            memberType,
+            deletedBookings: bookingIds.length,
+            message: "Member deleted successfully.",
+        };
+    }
     async deleteBooking(bookingId) {
         const booking = await prisma.booking.findUnique({
             where: {
@@ -809,8 +1003,13 @@ class AdminService {
             },
         });
         const registeredMembers = users.map((user) => {
-            const currentMembership = user.memberships.find((item) => item.status === MembershipStatus.ACTIVE &&
-                (!item.expiryDate || item.expiryDate > now)) ?? user.memberships[0];
+            const currentMembership = user.memberships.find((item) => {
+                const isActive = item.status === MembershipStatus.ACTIVE &&
+                    (!item.expiryDate || item.expiryDate > now);
+                const hasCredits = item.creditsTotal === null ||
+                    item.creditsUsed < item.creditsTotal;
+                return isActive && hasCredits;
+            }) ?? null;
             const creditsTotal = currentMembership?.creditsTotal ?? null;
             const creditsUsed = currentMembership?.creditsUsed ?? null;
             const classLimit = currentMembership?.membership.classLimit;
@@ -825,8 +1024,10 @@ class AdminService {
                 email: user.email,
                 phone: user.phone,
                 membership: currentMembership?.membership ?? null,
-                membershipStatus: currentMembership?.status ?? "NO_MEMBERSHIP",
-                membershipNumber: currentMembership?.activation?.membershipNumber ?? null,
+                membershipStatus: currentMembership ? currentMembership.status : "NO_ACTIVE_MEMBERSHIP",
+                membershipNumber: currentMembership?.membershipNumber ??
+                    currentMembership?.activation?.membershipNumber ??
+                    null,
                 expiryDate: currentMembership?.expiryDate ?? null,
                 createdAt: currentMembership?.createdAt ?? user.createdAt,
                 creditsTotal,
@@ -908,7 +1109,9 @@ class AdminService {
                 phone: booking.phone,
                 membership: member.membership,
                 membershipStatus: member.status,
-                membershipNumber: member.activation?.membershipNumber ?? null,
+                membershipNumber: member.membershipNumber ??
+                    member.activation?.membershipNumber ??
+                    null,
                 expiryDate: member.expiryDate,
                 createdAt: booking.createdAt,
                 creditsTotal,
@@ -917,6 +1120,95 @@ class AdminService {
             });
         }
         return [...registeredMembers, ...offlineMembers];
+    }
+    async getMemberClasses(memberId) {
+        // First check whether this is a registered member.
+        const user = await prisma.user.findUnique({
+            where: { id: memberId },
+            select: {
+                id: true,
+                fullName: true,
+                email: true,
+            },
+        });
+        // If no registered user exists, check offline membership.
+        const offlineMember = user
+            ? null
+            : await prisma.memberMembership.findUnique({
+                where: { id: memberId },
+                include: {
+                    bookings: {
+                        where: {
+                            paymentStatus: PaymentStatus.PAID,
+                            paymentMethod: PaymentMethod.OFFLINE,
+                            bookingStatus: BookingStatus.CONFIRMED,
+                        },
+                        orderBy: { createdAt: 'desc' },
+                        take: 1,
+                    },
+                },
+            });
+        if (!user && !offlineMember) {
+            throw new Error('Member not found.');
+        }
+        const bookings = await prisma.booking.findMany({
+            where: {
+                ...(user
+                    ? { userId: user.id }
+                    : { memberMembershipId: offlineMember.id }),
+                bookingStatus: BookingStatus.CONFIRMED,
+                paymentStatus: PaymentStatus.PAID,
+                sessionId: { not: null },
+            },
+            include: {
+                session: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+        });
+        const classes = bookings
+            .filter((booking) => booking.session)
+            .map((booking) => {
+            const session = booking.session;
+            const hasEnded = hasSessionEnded(session.sessionDate, session.schedule.endTime);
+            return {
+                bookingId: booking.id,
+                sessionId: session.id,
+                className: session.schedule.className,
+                tutorName: session.schedule.tutorName,
+                sessionDate: session.sessionDate,
+                startTime: session.schedule.startTime,
+                endTime: session.schedule.endTime,
+                // Preserve cancellation; otherwise derive completion from end time.
+                sessionStatus: session.status === "CANCELLED"
+                    ? "CANCELLED"
+                    : session.status === "COMPLETED" || hasEnded
+                        ? "COMPLETED"
+                        : session.status,
+            };
+        });
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const completedClasses = classes
+            .filter((item) => item.sessionStatus === "COMPLETED")
+            .sort((a, b) => new Date(b.sessionDate).getTime() -
+            new Date(a.sessionDate).getTime());
+        const upcomingClasses = classes
+            .filter((item) => item.sessionStatus !== "CANCELLED" &&
+            item.sessionStatus !== "COMPLETED")
+            .sort((a, b) => new Date(a.sessionDate).getTime() -
+            new Date(b.sessionDate).getTime());
+        return {
+            member: {
+                id: memberId,
+                fullName: user?.fullName ?? offlineMember?.bookings[0]?.fullName ?? null,
+                email: user?.email ?? offlineMember?.bookings[0]?.email ?? null,
+            },
+            completedClasses,
+            upcomingClasses,
+        };
     }
 }
 export const adminService = new AdminService();

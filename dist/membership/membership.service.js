@@ -1,6 +1,7 @@
 import prisma from "../config/prisma.js";
 import { MembershipStatus, MembershipPurchaseType, PaymentStatus, } from "@prisma/client";
 import bookingService from "../booking/booking.service.js";
+import { generateMembershipNumber } from "../utils/membership-number.js";
 import paymentService from "../payment/payment.service.js";
 import crypto from "crypto";
 class MembershipService {
@@ -424,7 +425,7 @@ class MembershipService {
             // Return the membership linked to this exact purchase.
             // A PAID purchase without a linked membership must be
             // allowed to continue through activation.
-            const linkedMembership = await tx.memberMembership.findUnique({
+            let linkedMembership = await tx.memberMembership.findUnique({
                 where: {
                     membershipPurchaseId: purchase.id,
                 },
@@ -433,11 +434,54 @@ class MembershipService {
                 },
             });
             if (linkedMembership) {
-                // Attach a guest membership to the purchaser's account
-                // once the purchase has been associated with that account.
-                if (purchase.userId &&
-                    !linkedMembership.userId) {
-                    const updatedMembership = await tx.memberMembership.update({
+                // Assign a membership number if this membership does not have one.
+                if (!linkedMembership.membershipNumber) {
+                    const previousMembership = purchase.userId
+                        ? await tx.memberMembership.findFirst({
+                            where: {
+                                userId: purchase.userId,
+                                membershipNumber: {
+                                    not: null,
+                                },
+                                id: {
+                                    not: linkedMembership.id,
+                                },
+                            },
+                            orderBy: {
+                                createdAt: "desc",
+                            },
+                            select: {
+                                membershipNumber: true,
+                            },
+                        })
+                        : null;
+                    let membershipNumber = previousMembership?.membershipNumber ?? null;
+                    if (!membershipNumber) {
+                        membershipNumber = generateMembershipNumber();
+                        while ((await tx.membershipActivation.findUnique({
+                            where: { membershipNumber },
+                        })) ||
+                            (await tx.memberMembership.findFirst({
+                                where: { membershipNumber },
+                            }))) {
+                            membershipNumber = generateMembershipNumber();
+                        }
+                    }
+                    linkedMembership = await tx.memberMembership.update({
+                        where: {
+                            id: linkedMembership.id,
+                        },
+                        data: {
+                            membershipNumber,
+                        },
+                        include: {
+                            membership: true,
+                        },
+                    });
+                }
+                // Attach a guest membership to the purchaser's account.
+                if (purchase.userId && !linkedMembership.userId) {
+                    linkedMembership = await tx.memberMembership.update({
                         where: {
                             id: linkedMembership.id,
                         },
@@ -448,20 +492,28 @@ class MembershipService {
                             membership: true,
                         },
                     });
-                    return {
-                        purchase,
-                        membership: updatedMembership,
-                    };
                 }
-                // Never silently attach a membership belonging
-                // to a different user.
+                // Never silently attach a membership belonging to another user.
                 if (purchase.userId &&
                     linkedMembership.userId &&
                     linkedMembership.userId !== purchase.userId) {
                     throw new Error("Membership purchase is linked to a different user.");
                 }
+                // The Paymish callback has already verified this payment.
+                // Ensure the purchase is marked as PAID before returning
+                // the membership already linked to this exact purchase.
+                const updatedPurchase = purchase.paymentStatus !== PaymentStatus.PAID
+                    ? await tx.membershipPurchase.update({
+                        where: {
+                            id: purchase.id,
+                        },
+                        data: {
+                            paymentStatus: PaymentStatus.PAID,
+                        },
+                    })
+                    : purchase;
                 return {
-                    purchase,
+                    purchase: updatedPurchase,
                     membership: linkedMembership,
                 };
             }
@@ -491,6 +543,39 @@ class MembershipService {
                     expiryDate: "asc",
                 },
             });
+            const previousMembership = purchase.userId
+                ? await tx.memberMembership.findFirst({
+                    where: {
+                        userId: purchase.userId,
+                        membershipNumber: {
+                            not: null,
+                        },
+                    },
+                    orderBy: {
+                        createdAt: "desc",
+                    },
+                    select: {
+                        membershipNumber: true,
+                    },
+                })
+                : null;
+            const existingMembershipNumber = currentMembership?.membershipNumber ??
+                previousMembership?.membershipNumber ??
+                null;
+            // Reuse the member's existing number, or generate a new
+            // one and check that it does not already exist.
+            let membershipNumber = existingMembershipNumber;
+            if (!membershipNumber) {
+                membershipNumber = generateMembershipNumber();
+                while ((await tx.membershipActivation.findUnique({
+                    where: { membershipNumber },
+                })) ||
+                    (await tx.memberMembership.findFirst({
+                        where: { membershipNumber },
+                    }))) {
+                    membershipNumber = generateMembershipNumber();
+                }
+            }
             const now = new Date();
             /*
              * ==================================================
@@ -536,6 +621,7 @@ class MembershipService {
                         userId: purchase.userId,
                         membershipPurchaseId: purchase.id,
                         membershipId: purchase.membershipId,
+                        membershipNumber,
                         status: MembershipStatus.ACTIVE,
                         startDate,
                         expiryDate,
@@ -583,6 +669,7 @@ class MembershipService {
                         userId: purchase.userId,
                         membershipPurchaseId: purchase.id,
                         membershipId: purchase.membershipId,
+                        membershipNumber,
                         status: MembershipStatus.ACTIVE,
                         startDate,
                         expiryDate,
@@ -654,6 +741,7 @@ class MembershipService {
                     userId: purchase.userId,
                     membershipPurchaseId: purchase.id,
                     membershipId: purchase.membershipId,
+                    membershipNumber,
                     status: MembershipStatus.ACTIVE,
                     startDate,
                     expiryDate,
@@ -678,6 +766,11 @@ class MembershipService {
         if (result.purchase.type === MembershipPurchaseType.NEW &&
             result.purchase.firstSessionId &&
             result.purchase.userId) {
+            const fullName = result.purchase.fullName?.trim();
+            const phone = result.purchase.phone?.trim();
+            if (!fullName || !phone) {
+                throw new Error("Membership purchase is missing the customer's name or phone number. Cannot create the first booking.");
+            }
             const existingFirstBooking = await prisma.booking.findUnique({
                 where: {
                     paymentReference: `${result.purchase.paymentReference}-FIRST-BOOKING`,
@@ -690,9 +783,9 @@ class MembershipService {
                     userId: result.purchase.userId,
                     membershipId: result.purchase.membershipId,
                     firstSessionId: result.purchase.firstSessionId,
-                    fullName: result.purchase.fullName,
+                    fullName,
                     email: result.purchase.email,
-                    phone: result.purchase.phone,
+                    phone,
                     healthDeclarationNotes: result.purchase.healthDeclarationNotes,
                 });
             }
