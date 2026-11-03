@@ -3571,6 +3571,33 @@ if (
     }
 
     // A stable reference prevents duplicate first bookings
+    // Find the exact membership record created for this purchase.
+const purchase = await prisma.membershipPurchase.findUnique({
+  where: {
+    paymentReference: purchaseReference,
+  },
+  select: {
+    id: true,
+  },
+});
+
+if (!purchase) {
+  throw new Error("Membership purchase not found.");
+}
+
+const memberMembership = await prisma.memberMembership.findFirst({
+  where: {
+    membershipPurchaseId: purchase.id,
+    userId,
+    membershipId,
+  },
+});
+
+if (!memberMembership) {
+  throw new Error(
+    "The membership record for this purchase could not be found."
+  );
+}
     // if payment verification or account registration is retried.
     const bookingReference = `${purchaseReference}-FIRST-BOOKING`;
 
@@ -3635,10 +3662,12 @@ if (
     const booking = existingBooking
       ? await prisma.booking.update({
           where: { id: existingBooking.id },
-          data: {
-            userId,
-            paymentStatus: PaymentStatus.PAID,
-          },
+        data: {
+  userId,
+  membershipId: membership.id,
+  memberMembershipId: memberMembership.id,
+  paymentStatus: PaymentStatus.PAID,
+},
         })
       : await prisma.booking.create({
           data: {
@@ -3655,6 +3684,7 @@ if (
             preferredStartDate: session.sessionDate,
 
             membershipId: membership.id,
+            memberMembershipId: memberMembership.id,
 
             // The membership purchase already paid for this.
             // Do not charge the customer again for this booking.
