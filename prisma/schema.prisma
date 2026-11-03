@@ -96,6 +96,7 @@ model MembershipPurchase {
   memberMembership     MemberMembership?
   type                 MembershipPurchaseType
 
+previousMemberMembershipId String?
   amount           Int
   paymentReference String        @unique
   paymentStatus    PaymentStatus @default(PENDING)
