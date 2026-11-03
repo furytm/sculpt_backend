@@ -357,8 +357,8 @@ async login(data: LoginDto) {
     throw new Error("Invalid email or password.");
   }
   const normalizedReference = data.bookingReference?.trim();
-  console.log("LOGIN BOOKING REFERENCE:", data.bookingReference);
-console.log("NORMALIZED REFERENCE:", normalizedReference);
+//   console.log("LOGIN BOOKING REFERENCE:", data.bookingReference);
+// console.log("NORMALIZED REFERENCE:", normalizedReference);
 
 if (normalizedReference) {
   const purchase = await prisma.membershipPurchase.findUnique({
@@ -440,6 +440,89 @@ if (normalizedReference) {
     );
   }
 }
+// ======================================================
+// AUTOMATIC RECOVERY FOR PAID MEMBERSHIP PURCHASES
+// ======================================================
+
+// Only run this when no booking reference was supplied.
+// This prevents interfering with the existing reference flow.
+if (!normalizedReference) {
+  const unlinkedPurchases = await prisma.membershipPurchase.findMany({
+    where: {
+      email: {
+        equals: normalizedEmail,
+        mode: "insensitive",
+      },
+      paymentStatus: PaymentStatus.PAID,
+      userId: null,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+    take: 2,
+  });
+
+  // Automatically recover only when exactly one eligible
+  // paid purchase belongs to this customer's email.
+  if (unlinkedPurchases.length === 1) {
+    const purchase = unlinkedPurchases[0];
+
+    const attached = await prisma.$transaction(async (tx) => {
+      const attachedPurchase = await tx.membershipPurchase.updateMany({
+        where: {
+          id: purchase.id,
+          paymentStatus: PaymentStatus.PAID,
+          userId: null,
+        },
+        data: {
+          userId: user.id,
+          fullName: user.fullName,
+          phone: user.phone,
+        },
+      });
+
+      if (attachedPurchase.count !== 1) {
+        return false;
+      }
+
+      const linkedMembership = await tx.memberMembership.findUnique({
+        where: {
+          membershipPurchaseId: purchase.id,
+        },
+      });
+
+      if (linkedMembership) {
+        if (linkedMembership.userId === null) {
+          await tx.memberMembership.update({
+            where: {
+              id: linkedMembership.id,
+            },
+            data: {
+              userId: user.id,
+            },
+          });
+        } else if (linkedMembership.userId !== user.id) {
+          throw new Error(
+            "This membership is already attached to another account."
+          );
+        }
+      }
+
+      return true;
+    });
+
+    if (attached) {
+      await membershipService.completeMembershipPurchase(
+        purchase.paymentReference
+      );
+    }
+  } else if (unlinkedPurchases.length > 1) {
+    console.warn(
+      `Multiple unlinked paid membership purchases found for ${normalizedEmail}. Manual review required.`
+    );
+  }
+}
+
 
   // Generate JWT tokens
   const payload: JwtPayload = {
