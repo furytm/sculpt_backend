@@ -357,6 +357,8 @@ async login(data: LoginDto) {
     throw new Error("Invalid email or password.");
   }
   const normalizedReference = data.bookingReference?.trim();
+  console.log("LOGIN BOOKING REFERENCE:", data.bookingReference);
+console.log("NORMALIZED REFERENCE:", normalizedReference);
 
 if (normalizedReference) {
   const purchase = await prisma.membershipPurchase.findUnique({
