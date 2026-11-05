@@ -147,6 +147,56 @@ async getAllBookings(
   }
 }
 
+
+async getTutorSchedule(req: Request, res: Response) {
+  try {
+    const { startDate, endDate } = req.query;
+
+    if (
+      typeof startDate !== "string" ||
+      typeof endDate !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "startDate and endDate are required in YYYY-MM-DD format.",
+      });
+    }
+
+    const data = await adminService.getTutorSchedule(
+      startDate,
+      endDate
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Tutor schedule retrieved successfully.",
+      data,
+    });
+  } catch (error: any) {
+    console.error("Get Tutor Schedule Error:", error);
+
+    const message =
+      error?.message || "Failed to retrieve tutor schedule.";
+
+    if (
+      message.includes("Dates must") ||
+      message.includes("Invalid calendar date") ||
+      message.includes("cannot be after")
+    ) {
+      return res.status(400).json({
+        success: false,
+        message,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message,
+    });
+  }
+}
+
+
   async getBookingById(req: Request, res: Response) {
     try {
       const bookingId = Array.isArray(req.params.bookingId)
