@@ -76,7 +76,7 @@ const memberships = [
     slug: "monthly-5",
     name: "5 Classes/Month",
     description: "Perfect for casual practitioners",
-    price: 90000,
+    price: 10,
     period: "/month",
     classLimit: 5,
     duration: "Monthly",
