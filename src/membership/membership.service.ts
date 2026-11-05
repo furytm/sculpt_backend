@@ -234,10 +234,16 @@ async initiateUpgrade(
       )
     : 0;
 
-  const newCreditsTotal =
-    targetMembership.classLimit === null
-      ? null
-      : targetMembership.classLimit + carriedCredits;
+const previousCreditsUsed = membershipIsStillValid
+  ? currentMembership.creditsUsed ?? 0
+  : 0;
+
+const newCreditsTotal =
+  targetMembership.classLimit === null
+    ? null
+    : targetMembership.classLimit +
+      carriedCredits +
+      previousCreditsUsed;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -862,18 +868,27 @@ if (
    * Only carry credits if the previous membership
    * is still within its validity period.
    */
-  const remainingCredits = membershipIsStillValid
-    ? Math.max(
-        (currentMembership.creditsTotal ?? 0) -
-          currentMembership.creditsUsed,
-        0
-      )
-    : 0;
+const previousCreditsUsed = currentMembership.creditsUsed ?? 0;
 
-  const newCreditsTotal =
-    purchase.membership.classLimit === null
-      ? null
-      : purchase.membership.classLimit + remainingCredits;
+const remainingCredits = membershipIsStillValid
+  ? Math.max(
+      (currentMembership.creditsTotal ?? 0) -
+        previousCreditsUsed,
+      0
+    )
+  : 0;
+
+// Preserve historical usage while carrying forward unused credits.
+const newCreditsTotal =
+  purchase.membership.classLimit === null
+    ? null
+    : purchase.membership.classLimit +
+      remainingCredits +
+      (membershipIsStillValid ? previousCreditsUsed : 0);
+
+const newCreditsUsed = membershipIsStillValid
+  ? previousCreditsUsed
+  : 0;
 
   /*
    * The new membership becomes usable immediately.
@@ -923,7 +938,7 @@ if (
       startDate,
       expiryDate,
       creditsTotal: newCreditsTotal,
-      creditsUsed: 0,
+creditsUsed: newCreditsUsed,
     },
   });
 
@@ -941,13 +956,16 @@ if (
       },
     });
 
-  return {
-    purchase: updatedPurchase,
-    membership: newMembership,
-    carriedCredits: remainingCredits,
-    creditsTotal: newCreditsTotal,
-    remainingCredits: newCreditsTotal,
-  };
+ return {
+  purchase: updatedPurchase,
+  membership: newMembership,
+  carriedCredits: remainingCredits,
+  creditsTotal: newCreditsTotal,
+  remainingCredits:
+    newCreditsTotal === null
+      ? null
+      : Math.max(newCreditsTotal - newCreditsUsed, 0),
+};
 }
       /*
  * ==================================================
