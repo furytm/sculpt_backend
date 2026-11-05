@@ -1564,6 +1564,121 @@ const upcomingClasses = classes
     upcomingClasses,
   };
 }
+
+
+async getTutorSchedule(startDate: string, endDate: string) {
+  const parseDate = (value: string): Date => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new Error("Dates must use YYYY-MM-DD format.");
+    }
+
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      throw new Error("Invalid calendar date.");
+    }
+
+    return date;
+  };
+
+  const start = parseDate(startDate);
+  const end = parseDate(endDate);
+
+  if (start.getTime() > end.getTime()) {
+    throw new Error("startDate cannot be after endDate.");
+  }
+
+  // ClassSession.sessionDate is stored as Lagos class time
+  // represented in UTC (Lagos is UTC+1).
+  // Convert the requested Lagos date range to UTC boundaries.
+  const startUtc = new Date(start.getTime() - 60 * 60 * 1000);
+
+  const endExclusiveUtc = new Date(
+    end.getTime() + 24 * 60 * 60 * 1000 - 60 * 60 * 1000
+  );
+
+  const bookings = await prisma.booking.findMany({
+    where: {
+      sessionId: {
+        not: null,
+      },
+      session: {
+        is: {
+          sessionDate: {
+            gte: startUtc,
+            lt: endExclusiveUtc,
+          },
+        },
+      },
+    },
+    include: {
+     user: {
+  select: {
+    id: true,
+    fullName: true,
+    email: true,
+    phone: true,
+  },
+},
+      schedule: true,
+      session: {
+        include: {
+          schedule: true,
+        },
+      },
+    },
+    orderBy: [
+      {
+        session: {
+          sessionDate: "asc",
+        },
+      },
+      {
+        createdAt: "asc",
+      },
+    ],
+  });
+
+  return bookings.map((booking) => {
+    const schedule = booking.session?.schedule ?? booking.schedule;
+    const sessionDate = booking.session?.sessionDate;
+
+    return {
+      bookingId: booking.id,
+      bookingStatus: booking.bookingStatus,
+      paymentStatus: booking.paymentStatus,
+      paymentMethod: booking.paymentMethod,
+
+      session: {
+        id: booking.session?.id ?? null,
+        date: sessionDate
+          ? new Date(
+              sessionDate.getTime() + 60 * 60 * 1000
+            ).toISOString().slice(0, 10)
+          : null,
+        startTime: schedule?.startTime ?? null,
+        endTime: schedule?.endTime ?? null,
+        sessionStatus: booking.session?.status ?? null,
+      },
+
+      class: schedule?.className ?? null,
+      tutor: schedule?.tutorName ?? null,
+
+      customer: {
+        id: booking.user?.id ?? booking.userId,
+        name: booking.user?.fullName ?? booking.fullName,
+        email: booking.user?.email ?? booking.email,
+        phone: booking.user?.phone ?? booking.phone,
+      },
+    };
+  });
+}
+
 }
 
 export const adminService = new AdminService();

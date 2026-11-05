@@ -77,6 +77,7 @@ router.delete(
   requireAdmin,
   adminNotificationController.deletePushSubscription
 );
+
 // =====================================================
 // DASHBOARD
 // =====================================================
@@ -181,6 +182,18 @@ router.get(
   authenticate,
   requireAdmin,
   adminController.getAllBookings
+);
+
+
+// =====================================================
+// ADMIN TUTOR SCHEDULE CALENDAR
+// =====================================================
+
+router.get(
+  "/tutor-schedule",
+  authenticate,
+  requireAdmin,
+  adminController.getTutorSchedule
 );
 
 /**
