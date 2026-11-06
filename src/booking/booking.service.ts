@@ -3086,7 +3086,8 @@ async getMembershipCreditSummary(userId: string) {
 
     hasFirstSession,
     firstBookingConfirmed,
-    requiresInitialBooking: !hasFirstSession,
+requiresInitialBooking:
+  purchase?.type === "NEW" && !hasFirstSession,
   };
 }
   // =========================================================
@@ -3408,33 +3409,71 @@ if (
         },
       });
 
-      /**
-       * Restore one credit for finite memberships.
-       *
-       * Unlimited memberships have creditsTotal === null,
-       * so there is nothing to restore.
-       */
-      let creditRestored = false;
+   
+/**
+ * Restore one credit.
+ *
+ * If the booking belongs to an old membership that was
+ * upgraded, restore the credit to the active upgraded
+ * membership instead.
+ */
+let creditRestored = false;
 
-      if (
-        booking.memberMembership &&
-        booking.memberMembership.creditsTotal !== null &&
-        booking.memberMembership.creditsUsed > 0
-      ) {
-        await tx.memberMembership.update({
-          where: {
-            id: booking.memberMembership.id,
-          },
+const originalMembership = booking.memberMembership;
 
-          data: {
-            creditsUsed: {
-              decrement: 1,
+if (
+  originalMembership &&
+  originalMembership.creditsTotal !== null &&
+  originalMembership.creditsUsed > 0
+) {
+  let membershipToRestore = originalMembership;
+
+  // If the original membership has expired, check whether
+  // it was replaced by an upgrade.
+  if (originalMembership.status === MembershipStatus.EXPIRED) {
+    const upgradedMembership =
+      await tx.memberMembership.findFirst({
+        where: {
+          userId,
+          status: MembershipStatus.ACTIVE,
+          OR: [
+            { expiryDate: null },
+            { expiryDate: { gt: new Date() } },
+          ],
+          membershipPurchase: {
+            is: {
+              type: "UPGRADE",
+              previousMemberMembershipId: originalMembership.id,
             },
           },
-        });
+        },
+      });
 
-        creditRestored = true;
-      }
+    if (upgradedMembership) {
+      membershipToRestore = upgradedMembership;
+    }
+  }
+
+  // Only restore finite credits, and never allow creditsUsed
+  // to become negative.
+  if (
+    membershipToRestore.creditsTotal !== null &&
+    membershipToRestore.creditsUsed > 0
+  ) {
+    const restored = await tx.memberMembership.updateMany({
+      where: {
+        id: membershipToRestore.id,
+        creditsUsed: { gt: 0 },
+      },
+      data: {
+        creditsUsed: { decrement: 1 },
+      },
+    });
+
+    creditRestored = restored.count === 1;
+  }
+}
+
 
       /**
        * Recalculate confirmed bookings after cancellation.
