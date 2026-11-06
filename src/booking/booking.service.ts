@@ -3061,15 +3061,18 @@ async getMembershipCreditSummary(userId: string) {
 
   const purchase = memberMembership.membershipPurchase;
 
-  const hasFirstSession = Boolean(purchase?.firstSessionId);
-
-  const firstBookingConfirmed = Boolean(
-    hasFirstSession &&
-    memberMembership.bookings.some(
-      (booking) =>
-        booking.sessionId === purchase?.firstSessionId
+const firstBookingConfirmed = memberMembership.bookings.some(
+  (booking) =>
+    booking.bookingStatus === "CONFIRMED" &&
+    (
+      !purchase?.firstSessionId ||
+      booking.sessionId === purchase.firstSessionId
     )
-  );
+);
+
+const hasFirstSession = Boolean(
+  purchase?.firstSessionId || firstBookingConfirmed
+);
 
   return {
     memberMembershipId: memberMembership.id,
