@@ -38,6 +38,14 @@ router.post(
   optionalAuthenticate,
   purchaseNewMembership
 );
+
+router.post(
+  "/purchase/offline",
+ 
+  membershipController.initiateOfflineMembershipPurchase.bind(
+    membershipController
+  )
+);
 /**
  * @openapi
  * /api/memberships:

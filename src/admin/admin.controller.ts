@@ -621,6 +621,110 @@ async getMemberClasses(req: Request, res: Response) {
     });
   }
 }
+
+async getPendingOfflineMembershipPurchases(
+  req: Request,
+  res: Response
+) {
+  try {
+    const purchases =
+      await adminService
+        .getPendingOfflineMembershipPurchases();
+
+    return res.status(200).json({
+      success: true,
+      data: purchases,
+    });
+  } catch (error: any) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to fetch pending membership purchases.",
+    });
+  }
+}
+
+async confirmOfflineMembershipPurchase(
+  req: Request,
+  res: Response
+) {
+  try {
+   const purchaseId = Array.isArray(req.params.purchaseId)
+  ? req.params.purchaseId[0]
+  : req.params.purchaseId;
+
+    if (!purchaseId) {
+      return res.status(400).json({
+        success: false,
+        message: "Purchase ID is required.",
+      });
+    }
+
+    const result =
+      await adminService
+        .confirmOfflineMembershipPurchase(purchaseId);
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Offline membership payment confirmed.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to confirm membership purchase.",
+    });
+  }
+}
+
+async rejectOfflineMembershipPurchase(
+  req: Request,
+  res: Response
+) {
+  try {
+   const purchaseId = Array.isArray(req.params.purchaseId)
+  ? req.params.purchaseId[0]
+  : req.params.purchaseId;
+    const { reason } = req.body;
+
+    if (!purchaseId) {
+      return res.status(400).json({
+        success: false,
+        message: "Purchase ID is required.",
+      });
+    }
+
+    const result =
+      await adminService
+        .rejectOfflineMembershipPurchase(
+          purchaseId,
+          reason
+        );
+
+    return res.status(200).json({
+      success: true,
+      message: "Membership purchase rejected.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Failed to reject membership purchase.",
+    });
+  }
+}
 }
 
 export const adminController =

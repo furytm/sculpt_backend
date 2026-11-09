@@ -95,6 +95,9 @@ model MembershipPurchase {
   phone                String?
   memberMembership     MemberMembership?
   type                 MembershipPurchaseType
+  paymentMethod PaymentMethod @default(PAYMISH)
+paymentRejectionReason String?
+membershipActivation MembershipActivation?
 
 previousMemberMembershipId String?
   amount           Int
@@ -316,15 +319,19 @@ model User {
 model MembershipActivation {
   id String @id @default(cuid())
 
-  bookingId String  @unique
-  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  // Existing class-booking activation
+  bookingId String?  @unique
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  // New direct membership-purchase activation
+  membershipPurchaseId String?             @unique
+  membershipPurchase   MembershipPurchase?  @relation(fields: [membershipPurchaseId], references: [id], onDelete: Cascade)
 
   memberMembershipId String           @unique
   memberMembership   MemberMembership @relation(fields: [memberMembershipId], references: [id], onDelete: Cascade)
 
   membershipNumber String @unique
-
-  tokenHash String @unique
+  tokenHash        String @unique
 
   expiresAt DateTime
   usedAt    DateTime?

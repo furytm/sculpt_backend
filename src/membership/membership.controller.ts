@@ -312,10 +312,67 @@ async getPublicMembershipConfirmation(
         "Failed to retrieve membership confirmation.",
     });
   }
+
+  
 }
 
 
+async initiateOfflineMembershipPurchase(
+  req: Request,
+  res: Response
+) {
+  try {
+    const {
+      membershipId,
+      fullName,
+      email,
+      phone,
+    } = req.body;
 
+    if (
+      !membershipId ||
+      !fullName?.trim() ||
+      !email?.trim() ||
+      !phone?.trim()
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Membership, full name, email, and phone are required.",
+      });
+    }
+
+    const userId = req.user?.userId ?? null;
+
+    const result =
+      await membershipService.initiateOfflineMembershipPurchase({
+        membershipId,
+        fullName,
+        email,
+        phone,
+        userId,
+      });
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Offline membership purchase created. Please complete your bank transfer.",
+      data: result,
+    });
+  } catch (error: any) {
+    console.error(
+      "Initiate Offline Membership Purchase Error:",
+      error
+    );
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error?.message ||
+        "Unable to initiate offline membership purchase.",
+    });
+  }
+}
 }
 
 export const purchaseNewMembership = async (
@@ -389,6 +446,8 @@ export const purchaseNewMembership = async (
     });
   }
 };
+
+
 
 
 export default new MembershipController();

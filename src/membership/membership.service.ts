@@ -3,7 +3,7 @@ import { MembershipType } from "@prisma/client";
 import {
   MembershipStatus,
   MembershipPurchaseType,
-  PaymentStatus,
+  PaymentStatus,PaymentMethod,
 } from "@prisma/client";
 import bookingService from "../booking/booking.service.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
@@ -615,6 +615,26 @@ async completeMembershipPurchase(
       "Payment reference is required."
     );
   }
+  const purchase =
+  await prisma.membershipPurchase.findUnique({
+    where: {
+      paymentReference,
+    },
+    select: {
+      paymentMethod: true,
+      paymentStatus: true,
+    },
+  });
+
+if (!purchase) {
+  throw new Error("Membership purchase not found.");
+}
+
+if (purchase.paymentMethod !== PaymentMethod.PAYMISH) {
+  throw new Error(
+    "This purchase cannot be completed through the Paymish payment flow."
+  );
+}
 
 const result = await prisma.$transaction(
   async (tx) => {
@@ -1449,6 +1469,77 @@ console.log("[MEMBERSHIP] Purchase created", {
     // Keep the pending purchase for reconciliation or a safe retry.
     throw error;
   }
+}
+
+async initiateOfflineMembershipPurchase(data: {
+  membershipId: string;
+  fullName: string;
+  email: string;
+  phone: string;
+  userId: string | null;
+}) {
+  const email = data.email.trim().toLowerCase();
+
+  if (
+    !data.membershipId ||
+    !data.fullName?.trim() ||
+    !email ||
+    !data.phone?.trim()
+  ) {
+    throw new Error(
+      "Membership, name, email, and phone are required."
+    );
+  }
+
+  const membership = await prisma.membership.findFirst({
+    where: {
+      id: data.membershipId,
+      isActive: true,
+    },
+  });
+
+  if (!membership) {
+    throw new Error(
+      "Membership not found or is not active."
+    );
+  }
+
+  const paymentReference =
+    `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+
+  const purchase = await prisma.membershipPurchase.create({
+    data: {
+      userId: data.userId,
+      fullName: data.fullName.trim(),
+      email,
+      phone: data.phone.trim(),
+
+      membershipId: membership.id,
+      type: MembershipPurchaseType.NEW,
+      amount: membership.price,
+
+      paymentReference,
+      paymentStatus: PaymentStatus.PENDING,
+      paymentMethod: PaymentMethod.OFFLINE,
+    },
+    include: {
+      membership: true,
+    },
+  });
+
+  return {
+    success: true,
+    purchaseId: purchase.id,
+    paymentReference: purchase.paymentReference,
+    amount: purchase.amount,
+    membership: purchase.membership,
+
+    bankDetails: {
+      accountName: "Sculpt LAB Limited",
+      bankName: "Moniepoint",
+      accountNumber: "3001445877",
+    },
+  };
 }
 }
 

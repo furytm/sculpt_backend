@@ -1679,6 +1679,136 @@ async getTutorSchedule(startDate: string, endDate: string) {
   });
 }
 
+async getPendingOfflineMembershipPurchases() {
+  return prisma.membershipPurchase.findMany({
+    where: {
+      paymentMethod: PaymentMethod.OFFLINE,
+      paymentStatus: PaymentStatus.PENDING,
+      type: "NEW",
+    },
+    include: {
+      membership: true,
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+        },
+      },
+      firstSession: true,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+}
+
+async confirmOfflineMembershipPurchase(
+  purchaseId: string
+) {
+  const purchase =
+    await prisma.membershipPurchase.findUnique({
+      where: {
+        id: purchaseId,
+      },
+      include: {
+        membership: true,
+        memberMembership: true,
+        membershipActivation: true,
+      },
+    });
+
+  if (!purchase) {
+    throw new Error("Membership purchase not found.");
+  }
+
+  if (purchase.paymentMethod !== PaymentMethod.OFFLINE) {
+    throw new Error(
+      "This purchase is not an offline payment."
+    );
+  }
+
+  if (purchase.paymentStatus !== PaymentStatus.PENDING) {
+    throw new Error(
+      "Only pending offline purchases can be confirmed."
+    );
+  }
+
+  // The admin has verified the actual bank transfer.
+  await prisma.membershipPurchase.update({
+    where: {
+      id: purchase.id,
+    },
+    data: {
+      paymentStatus: PaymentStatus.PAID,
+    },
+  });
+
+  try {
+    const activation =
+      await membershipActivationService
+        .createActivationForPurchase(purchase.id);
+
+    return {
+      purchaseId: purchase.id,
+      paymentReference: purchase.paymentReference,
+      paymentStatus: PaymentStatus.PAID,
+      activation,
+    };
+  } catch (error) {
+    // Do not silently revert a payment that the admin
+    // has already verified in the bank account.
+    console.error(
+      "Offline membership activation failed:",
+      error
+    );
+
+    throw new Error(
+      "Payment was confirmed, but membership activation failed. Please retry activation or resend the registration email."
+    );
+  }
+}
+
+async rejectOfflineMembershipPurchase(
+  purchaseId: string,
+  reason?: string
+) {
+  const purchase =
+    await prisma.membershipPurchase.findUnique({
+      where: {
+        id: purchaseId,
+      },
+    });
+
+  if (!purchase) {
+    throw new Error("Membership purchase not found.");
+  }
+
+  if (purchase.paymentMethod !== PaymentMethod.OFFLINE) {
+    throw new Error(
+      "This purchase is not an offline payment."
+    );
+  }
+
+  if (purchase.paymentStatus !== PaymentStatus.PENDING) {
+    throw new Error(
+      "Only pending offline purchases can be rejected."
+    );
+  }
+
+  return prisma.membershipPurchase.update({
+    where: {
+      id: purchaseId,
+    },
+    data: {
+      paymentStatus: PaymentStatus.FAILED,
+      paymentRejectionReason:
+        reason?.trim() ||
+        "Bank transfer could not be verified.",
+    },
+  });
+}
+
 }
 
 export const adminService = new AdminService();

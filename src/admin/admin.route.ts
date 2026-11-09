@@ -639,5 +639,33 @@ router.delete(
   adminController.deleteMember.bind(adminController)
 );
 
+// =====================================================
+// OFFLINE MEMBERSHIP PURCHASES
+// =====================================================
+
+// Get pending offline membership purchases
+router.get(
+  "/membership-purchases/pending",
+  authenticate,
+  requireAdmin,
+  adminController.getPendingOfflineMembershipPurchases
+);
+
+// Confirm an offline membership purchase
+router.post(
+  "/membership-purchases/:purchaseId/confirm",
+  authenticate,
+  requireAdmin,
+  adminController.confirmOfflineMembershipPurchase
+);
+
+// Reject an offline membership purchase
+router.post(
+  "/membership-purchases/:purchaseId/reject",
+  authenticate,
+  requireAdmin,
+  adminController.rejectOfflineMembershipPurchase
+);
+
 
 export default router;
