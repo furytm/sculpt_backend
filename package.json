@@ -6,7 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "node init && nodemon",
-    "build": "node init && tsc",
+   "build": "tsc",
     "start": "node init && node dist/server.js",
     "clean": "rm -rf dist"
   },
