@@ -721,7 +721,7 @@ async rejectOfflineMembershipPurchase(
       success: false,
       message:
         error?.message ||
-        "Failed to reject membership purchase.",
+        "Failed to reject membership purchase.", 
     });
   }
 }
