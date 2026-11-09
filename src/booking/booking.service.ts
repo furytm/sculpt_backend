@@ -2551,7 +2551,8 @@ async bookMemberSession(
   healthDeclaration: {
     accepted: boolean;
     notes?: string;
-  }
+  },
+  bookingType: MembershipType
 )
 {
   if (!userId) {
@@ -2564,6 +2565,13 @@ async bookMemberSession(
     throw new Error(
       "Class session is required."
     );
+  }
+
+  if (
+    bookingType !== MembershipType.GROUP &&
+    bookingType !== MembershipType.PRIVATE
+  ) {
+    throw new Error("Membership type must be GROUP or PRIVATE.");
   }
 
 if (healthDeclaration?.accepted !== true) {
@@ -2655,75 +2663,86 @@ if (healthDeclaration?.accepted !== true) {
         const now =
           new Date();
 
-        const membership =
-          await tx.memberMembership.findFirst({
+        // -----------------------------------------------------
+        // FIND ELIGIBLE MEMBERSHIPS IN THE REQUESTED CREDIT POOL
+        // -----------------------------------------------------
+        // Keep each MemberMembership row separate for audit and
+        // cancellation restoration. A booking consumes one row,
+        // but the member can use credits from any active row of
+        // the same membership type.
+        const memberships =
+          await tx.memberMembership.findMany({
             where: {
               userId,
-
-              status:
-                MembershipStatus.ACTIVE,
-
+              status: MembershipStatus.ACTIVE,
+              membership: {
+                type: bookingType,
+              },
               OR: [
-                {
-                  expiryDate: null,
-                },
-
-                {
-                  expiryDate: {
-                    gt: now,
-                  },
-                },
+                { expiryDate: null },
+                { expiryDate: { gt: now } },
               ],
             },
-
             include: {
               membership: true,
             },
-
             orderBy: {
-              expiryDate:
-                "asc",
+              expiryDate: "asc",
             },
           });
 
-        if (!membership) {
+        // Prefer the finite membership that expires soonest;
+        // keep unlimited/non-expiring records as the fallback.
+        memberships.sort((a, b) => {
+          if (a.expiryDate === null && b.expiryDate === null) return 0;
+          if (a.expiryDate === null) return 1;
+          if (b.expiryDate === null) return -1;
+          return a.expiryDate.getTime() - b.expiryDate.getTime();
+        });
+
+        if (memberships.length === 0) {
           throw new Error(
-            "You do not have an active membership."
+            `You do not have an active ${bookingType.toLowerCase()} membership.`
           );
         }
 
-        // -----------------------------------------------------
-        // CHECK MEMBERSHIP EXPIRY
-        // -----------------------------------------------------
+        // Use the earliest-expiring record that both has a
+        // remaining credit and covers the selected session date.
+        const membership = memberships.find((item) =>
+          this.hasRemainingCredit(item) &&
+          (!item.expiryDate || session.sessionDate <= item.expiryDate)
+        );
 
-        if (
-          membership.expiryDate &&
-          session.sessionDate >
-            membership.expiryDate
-        ) {
+        if (!membership) {
+          const hasCredit = memberships.some((item) =>
+            this.hasRemainingCredit(item)
+          );
+
+          if (!hasCredit) {
+            throw new Error(
+              `You do not have any remaining ${bookingType.toLowerCase()} class credits.`
+            );
+          }
+
           throw new Error(
             "This session is outside your membership validity period."
           );
         }
 
         // -----------------------------------------------------
-// CHECK MEMBERSHIP TYPE AND SESSION AVAILABILITY
-// -----------------------------------------------------
+        // CHECK SESSION TYPE AND AVAILABILITY
+        // -----------------------------------------------------
+        if (membership.membership.type !== bookingType) {
+          throw new Error(
+            "The selected membership does not match this booking type."
+          );
+        }
 
-if (
-  membership.membership.type !== MembershipType.GROUP &&
-  membership.membership.type !== MembershipType.PRIVATE
-) {
-  throw new Error(
-    "Unsupported membership type."
-  );
-}
-
-await this.assertSessionAvailable(
-  tx,
-  session.id,
-  membership.membership.type
-);
+        await this.assertSessionAvailable(
+          tx,
+          session.id,
+          bookingType
+        );
         // -----------------------------------------------------
         // CHECK CREDIT
         // -----------------------------------------------------
@@ -3019,22 +3038,22 @@ await tx.healthSafetyForm.create({
   // =========================================================
 
 async getMembershipCreditSummary(userId: string) {
-  const memberMembership = await prisma.memberMembership.findFirst({
+  const now = new Date();
+
+  const memberships = await prisma.memberMembership.findMany({
     where: {
       userId,
       status: MembershipStatus.ACTIVE,
       OR: [
         { expiryDate: null },
-        { expiryDate: { gt: new Date() } },
+        { expiryDate: { gt: now } },
       ],
     },
     include: {
       membership: true,
       membershipPurchase: true,
       bookings: {
-        where: {
-          bookingStatus: "CONFIRMED",
-        },
+        where: { bookingStatus: BookingStatus.CONFIRMED },
         select: {
           id: true,
           sessionId: true,
@@ -3047,50 +3066,136 @@ async getMembershipCreditSummary(userId: string) {
     },
   });
 
-  if (!memberMembership) {
-    return null;
-  }
+  if (memberships.length === 0) return null;
 
-  const remainingCredits =
-    memberMembership.creditsTotal === null
+  // Finite expiries are consumed first; non-expiring records last.
+  memberships.sort((a, b) => {
+    if (a.expiryDate === null && b.expiryDate === null) return 0;
+    if (a.expiryDate === null) return 1;
+    if (b.expiryDate === null) return -1;
+    return a.expiryDate.getTime() - b.expiryDate.getTime();
+  });
+
+  const buildPool = (type: MembershipType) => {
+    const rows = memberships.filter(
+      (item) => item.membership.type === type
+    );
+    if (rows.length === 0) return null;
+
+    const unlimited = rows.some((item) => item.creditsTotal === null);
+    const creditsTotal = unlimited
       ? null
-      : Math.max(
-          memberMembership.creditsTotal - memberMembership.creditsUsed,
+      : rows.reduce((total, item) => total + (item.creditsTotal ?? 0), 0);
+    const creditsUsed = rows.reduce(
+      (total, item) => total + item.creditsUsed,
+      0
+    );
+    const remainingCredits = unlimited
+      ? null
+      : rows.reduce(
+          (total, item) =>
+            total + Math.max(
+              (item.creditsTotal ?? 0) - item.creditsUsed,
+              0
+            ),
           0
         );
 
-  const purchase = memberMembership.membershipPurchase;
+    const firstRow = rows[0];
+    const firstBookingConfirmed = rows.some((row) => {
+      const purchase = row.membershipPurchase;
+      return row.bookings.some(
+        (booking) =>
+          booking.bookingStatus === BookingStatus.CONFIRMED &&
+          (!purchase?.firstSessionId ||
+            booking.sessionId === purchase.firstSessionId)
+      );
+    });
+    const hasFirstSession =
+      rows.some((row) => Boolean(row.membershipPurchase?.firstSessionId)) ||
+      firstBookingConfirmed;
 
-const firstBookingConfirmed = memberMembership.bookings.some(
-  (booking) =>
-    booking.bookingStatus === "CONFIRMED" &&
-    (
-      !purchase?.firstSessionId ||
-      booking.sessionId === purchase.firstSessionId
-    )
-);
+    const hasNoExpiry = rows.some((row) => row.expiryDate === null);
+    const expiryDates = rows
+      .map((row) => row.expiryDate)
+      .filter((date): date is Date => date !== null);
 
-const hasFirstSession = Boolean(
-  purchase?.firstSessionId || firstBookingConfirmed
-);
+    return {
+      type,
+      memberMembershipIds: rows.map((row) => row.id),
+      membership: firstRow.membership,
+      creditsTotal,
+      creditsUsed,
+      remainingCredits,
+      unlimited,
+   startDate: (() => {
+  const validStartDates = rows
+    .map((item) => item.startDate)
+    .filter((date): date is Date => date !== null);
+
+  if (validStartDates.length === 0) {
+    return null;
+  }
+
+  return validStartDates.reduce((earliest, current) =>
+    current < earliest ? current : earliest
+  );
+})(),
+      expiryDate: hasNoExpiry
+        ? null
+        : expiryDates.length
+          ? new Date(Math.max(...expiryDates.map((date) => date.getTime())))
+          : null,
+      status: MembershipStatus.ACTIVE,
+      hasFirstSession,
+      firstBookingConfirmed,
+      requiresInitialBooking: rows.some(
+        (row) =>
+          row.membershipPurchase?.type === "NEW" &&
+          !row.membershipPurchase.firstSessionId &&
+          !row.bookings.some(
+            (booking) => booking.bookingStatus === BookingStatus.CONFIRMED
+          )
+      ),
+    };
+  };
+
+  const group = buildPool(MembershipType.GROUP);
+  const privatePool = buildPool(MembershipType.PRIVATE);
+  const primary = group ?? privatePool;
+  const combinedUnlimited = Boolean(group?.unlimited || privatePool?.unlimited);
+  const combinedCreditsTotal = combinedUnlimited
+    ? null
+    : (group?.creditsTotal ?? 0) + (privatePool?.creditsTotal ?? 0);
+  const combinedCreditsUsed =
+    (group?.creditsUsed ?? 0) + (privatePool?.creditsUsed ?? 0);
 
   return {
-    memberMembershipId: memberMembership.id,
-    membership: memberMembership.membership,
-
-    creditsTotal: memberMembership.creditsTotal,
-    creditsUsed: memberMembership.creditsUsed,
-    remainingCredits,
-    unlimited: memberMembership.creditsTotal === null,
-
-    startDate: memberMembership.startDate,
-    expiryDate: memberMembership.expiryDate,
-    status: memberMembership.status,
-
-    hasFirstSession,
-    firstBookingConfirmed,
-requiresInitialBooking:
-  purchase?.type === "NEW" && !hasFirstSession,
+    // Legacy top-level fields remain for existing clients.
+    memberMembershipId: primary?.memberMembershipIds[0] ?? null,
+    memberMembershipIds: memberships.map((row) => row.id),
+    membership: primary?.membership ?? null,
+    creditsTotal: combinedCreditsTotal,
+    creditsUsed: combinedCreditsUsed,
+    remainingCredits: combinedUnlimited
+      ? null
+      : (group?.remainingCredits ?? 0) +
+        (privatePool?.remainingCredits ?? 0),
+    unlimited: combinedUnlimited,
+    startDate: primary?.startDate ?? null,
+    expiryDate: primary?.expiryDate ?? null,
+    status: MembershipStatus.ACTIVE,
+    hasFirstSession: Boolean(group?.hasFirstSession || privatePool?.hasFirstSession),
+    firstBookingConfirmed: Boolean(
+      group?.firstBookingConfirmed || privatePool?.firstBookingConfirmed
+    ),
+    requiresInitialBooking: Boolean(
+      group?.requiresInitialBooking || privatePool?.requiresInitialBooking
+    ),
+    creditPools: {
+      GROUP: group,
+      PRIVATE: privatePool,
+    },
   };
 }
   // =========================================================
@@ -3312,7 +3417,7 @@ requiresInitialBooking:
  * - Booking must belong to the authenticated user.
  * - Booking must currently be CONFIRMED.
  * - The class session must still be in the future.
- * - Finite memberships get 1 credit restored.
+ * - Finite credits are restored to the exact membership row used.
  * - Unlimited memberships do not need credit restoration.
  * - Google Calendar event is deleted after the transaction succeeds.
  */
@@ -3424,59 +3529,27 @@ let creditRestored = false;
 
 const originalMembership = booking.memberMembership;
 
+// Restore the credit to the exact MemberMembership row that
+// funded this booking. Never redirect it to a newer purchase.
 if (
   originalMembership &&
   originalMembership.creditsTotal !== null &&
   originalMembership.creditsUsed > 0
 ) {
-  let membershipToRestore = originalMembership;
+  const restored = await tx.memberMembership.updateMany({
+    where: {
+      id: originalMembership.id,
+      userId,
+      creditsUsed: { gt: 0 },
+      creditsTotal: { not: null },
+    },
+    data: {
+      creditsUsed: { decrement: 1 },
+    },
+  });
 
-  // If the original membership has expired, check whether
-  // it was replaced by an upgrade.
-  if (originalMembership.status === MembershipStatus.EXPIRED) {
-    const upgradedMembership =
-      await tx.memberMembership.findFirst({
-        where: {
-          userId,
-          status: MembershipStatus.ACTIVE,
-          OR: [
-            { expiryDate: null },
-            { expiryDate: { gt: new Date() } },
-          ],
-          membershipPurchase: {
-            is: {
-              type: "UPGRADE",
-              previousMemberMembershipId: originalMembership.id,
-            },
-          },
-        },
-      });
-
-    if (upgradedMembership) {
-      membershipToRestore = upgradedMembership;
-    }
-  }
-
-  // Only restore finite credits, and never allow creditsUsed
-  // to become negative.
-  if (
-    membershipToRestore.creditsTotal !== null &&
-    membershipToRestore.creditsUsed > 0
-  ) {
-    const restored = await tx.memberMembership.updateMany({
-      where: {
-        id: membershipToRestore.id,
-        creditsUsed: { gt: 0 },
-      },
-      data: {
-        creditsUsed: { decrement: 1 },
-      },
-    });
-
-    creditRestored = restored.count === 1;
-  }
+  creditRestored = restored.count === 1;
 }
-
 
       /**
        * Recalculate confirmed bookings after cancellation.

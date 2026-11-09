@@ -1298,33 +1298,102 @@ async getAllMembers() {
   });
 
   const registeredMembers = users.map((user) => {
- const currentMembership =
-  user.memberships.find((item) => {
-    const isActive =
-      item.status === MembershipStatus.ACTIVE &&
-      (!item.expiryDate || item.expiryDate > now);
+    // Keep only memberships that are currently active and not expired.
+    const eligibleMemberships = user.memberships.filter((item) => {
+      const isActive =
+        item.status === MembershipStatus.ACTIVE &&
+        (!item.expiryDate || item.expiryDate > now);
 
-    const hasCredits =
-      item.creditsTotal === null ||
-      item.creditsUsed < item.creditsTotal;
+      return isActive;
+    });
 
-    return isActive && hasCredits;
-  }) ?? null;
+    // Credits are pooled independently by membership type.
+    // The underlying MemberMembership records remain separate.
+    const buildCreditPool = (type: "GROUP" | "PRIVATE") => {
+      const rows = eligibleMemberships.filter(
+        (item) => item.membership.type === type,
+      );
 
-    const creditsTotal =
-      currentMembership?.creditsTotal ?? null;
+      if (rows.length === 0) {
+        return {
+          membershipType: type,
+          hasMembership: false,
+          isUnlimited: false,
+          creditsTotal: 0,
+          creditsUsed: 0,
+          creditsRemaining: 0,
+          expiryDate: null as Date | null,
+          membershipIds: [] as string[],
+        };
+      }
 
-    const creditsUsed =
-      currentMembership?.creditsUsed ?? null;
+      const isUnlimited = rows.some(
+        (item) => item.creditsTotal === null,
+      );
 
-    const classLimit =
-      currentMembership?.membership.classLimit;
+      const creditsTotal = isUnlimited
+        ? null
+        : rows.reduce(
+            (total, item) => total + (item.creditsTotal ?? 0),
+            0,
+          );
+
+      const creditsUsed = rows.reduce(
+        (total, item) => total + item.creditsUsed,
+        0,
+      );
+
+      // Sum each row's remaining credits independently so an overused
+      // row cannot be offset by unused credits in another row.
+      const creditsRemaining = isUnlimited
+        ? null
+        : rows.reduce(
+            (total, item) =>
+              total +
+              Math.max(
+                (item.creditsTotal ?? 0) - item.creditsUsed,
+                0,
+              ),
+            0,
+          );
+
+      const expiryDates = rows
+        .map((item) => item.expiryDate)
+        .filter((date): date is Date => date !== null);
+
+      return {
+        membershipType: type,
+        hasMembership: true,
+        isUnlimited,
+        creditsTotal,
+        creditsUsed,
+        creditsRemaining,
+        expiryDate:
+          expiryDates.length > 0
+            ? new Date(
+                Math.max(...expiryDates.map((date) => date.getTime())),
+              )
+            : null,
+        membershipIds: rows.map((item) => item.id),
+      };
+    };
+
+    const groupCreditPool = buildCreditPool("GROUP");
+    const privateCreditPool = buildCreditPool("PRIVATE");
+
+    // Retain the legacy single-membership fields for existing admin UI
+    // consumers while exposing the authoritative type-specific pools.
+    const currentMembership = eligibleMemberships[0] ?? null;
+
+    const creditsTotal = currentMembership?.creditsTotal ?? null;
+    const creditsUsed = currentMembership?.creditsUsed ?? null;
+    const classLimit = currentMembership?.membership.classLimit;
 
     const creditsRemaining =
       !currentMembership || classLimit === null
         ? null
         : creditsTotal !== null && creditsUsed !== null
-          ? creditsTotal - creditsUsed
+          ? Math.max(creditsTotal - creditsUsed, 0)
           : null;
 
     return {
@@ -1333,19 +1402,26 @@ async getAllMembers() {
       email: user.email,
       phone: user.phone,
       membership: currentMembership?.membership ?? null,
- membershipStatus:
-  currentMembership ? currentMembership.status : "NO_ACTIVE_MEMBERSHIP",
-     membershipNumber:
-  currentMembership?.membershipNumber ??
-  currentMembership?.activation?.membershipNumber ??
-  null,
+      membershipStatus: currentMembership
+        ? currentMembership.status
+        : "NO_ACTIVE_MEMBERSHIP",
+      membershipNumber:
+        currentMembership?.membershipNumber ??
+        currentMembership?.activation?.membershipNumber ??
+        null,
       expiryDate: currentMembership?.expiryDate ?? null,
-      createdAt:
-        currentMembership?.createdAt ?? user.createdAt,
+      createdAt: currentMembership?.createdAt ?? user.createdAt,
 
+      // Legacy fields retained for backward compatibility.
       creditsTotal,
       creditsUsed,
       creditsRemaining,
+
+      // New pooled balances, separated by class type.
+      creditPools: {
+        GROUP: groupCreditPool,
+        PRIVATE: privateCreditPool,
+      },
     };
   });
 
@@ -1425,8 +1501,20 @@ async getAllMembers() {
       classLimit === null
         ? null
         : creditsTotal !== null
-          ? creditsTotal - creditsUsed
+          ? Math.max(creditsTotal - creditsUsed, 0)
           : null;
+
+    const membershipType = member.membership.type;
+    const offlinePool = {
+      membershipType,
+      hasMembership: true,
+      isUnlimited: creditsTotal === null,
+      creditsTotal,
+      creditsUsed,
+      creditsRemaining,
+      expiryDate: member.expiryDate,
+      membershipIds: [member.id],
+    };
 
     offlineMembers.push({
       id: member.id,
@@ -1435,16 +1523,46 @@ async getAllMembers() {
       phone: booking.phone,
       membership: member.membership,
       membershipStatus: member.status,
-  membershipNumber:
-  member.membershipNumber ??
-  member.activation?.membershipNumber ??
-  null,
+      membershipNumber:
+        member.membershipNumber ??
+        member.activation?.membershipNumber ??
+        null,
       expiryDate: member.expiryDate,
       createdAt: booking.createdAt,
 
       creditsTotal,
       creditsUsed,
       creditsRemaining,
+
+      // Offline records have one underlying membership row.
+      creditPools: {
+        GROUP:
+          membershipType === "GROUP"
+            ? offlinePool
+            : {
+                membershipType: "GROUP",
+                hasMembership: false,
+                isUnlimited: false,
+                creditsTotal: 0,
+                creditsUsed: 0,
+                creditsRemaining: 0,
+                expiryDate: null,
+                membershipIds: [],
+              },
+        PRIVATE:
+          membershipType === "PRIVATE"
+            ? offlinePool
+            : {
+                membershipType: "PRIVATE",
+                hasMembership: false,
+                isUnlimited: false,
+                creditsTotal: 0,
+                creditsUsed: 0,
+                creditsRemaining: 0,
+                expiryDate: null,
+                membershipIds: [],
+              },
+      },
     });
   }
 

@@ -598,6 +598,7 @@ async resumeBookingForUser(req: Request, res: Response) {
   // BOOK A SESSION USING EXISTING MEMBERSHIP
   // =========================================================
 
+
   async bookMemberSession(
     req: Request,
     res: Response
@@ -612,49 +613,59 @@ async resumeBookingForUser(req: Request, res: Response) {
         });
       }
 
-   
-const { classSessionId, healthDeclaration } = req.body;
+      const {
+        classSessionId,
+        healthDeclaration,
+        bookingType,
+      } = req.body;
 
-if (!classSessionId || typeof classSessionId !== "string") {
-  return res.status(400).json({
-    success: false,
-    message: "Class session ID is required.",
-  });
-}
+      if (!classSessionId || typeof classSessionId !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "Class session ID is required.",
+        });
+      }
 
-if (!healthDeclaration || healthDeclaration.accepted !== true) {
-  return res.status(400).json({
-    success: false,
-    message: "You must accept the Health Declaration to continue.",
-  });
-}
+      if (
+        bookingType !== MembershipType.GROUP &&
+        bookingType !== MembershipType.PRIVATE
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Booking type must be GROUP or PRIVATE.",
+        });
+      }
 
-const booking = await bookingService.bookMemberSession(
-  userId,
-  classSessionId,
-  healthDeclaration
-);
+      if (!healthDeclaration || healthDeclaration.accepted !== true) {
+        return res.status(400).json({
+          success: false,
+          message: "You must accept the Health Declaration to continue.",
+        });
+      }
 
-return res.status(201).json({
-  success: true,
-  message: "Class session booked successfully.",
-  data: { booking },
-});
-
-    } catch (error: any) {
-      console.error(
-        "Book Member Session Error:",
-        error
+      const booking = await bookingService.bookMemberSession(
+        userId,
+        classSessionId,
+        healthDeclaration,
+        bookingType
       );
+
+      return res.status(201).json({
+        success: true,
+        message: "Class session booked successfully.",
+        data: { booking },
+      });
+    } catch (error: any) {
+      console.error("Book Member Session Error:", error);
 
       return res.status(400).json({
         success: false,
         message:
-          error?.message ||
-          "Unable to book class session.",
+          error?.message || "Unable to book class session.",
       });
     }
   }
+
 
   async saveHealthDeclarationForUser(req: Request, res: Response) {
   try {

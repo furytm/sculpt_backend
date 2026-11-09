@@ -1,6 +1,11 @@
 import crypto from "crypto";
 import bcrypt from "bcrypt";
-import { AuthProvider, MembershipStatus,UserRole } from "@prisma/client";
+import {
+  AuthProvider,
+  MembershipStatus,
+  MembershipType,
+  UserRole,
+} from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
 import bookingService from "../booking/booking.service.js";
@@ -706,6 +711,7 @@ async createActivationForPurchase(purchaseId: string) {
   };
 }
 
+
 async createManualMembershipForRegisteredUser(data: {
   userId: string;
   membershipId: string;
@@ -731,6 +737,13 @@ async createManualMembershipForRegisteredUser(data: {
 
   if (!membership.isActive) {
     throw new Error("This membership is not active.");
+  }
+
+  if (
+    membership.type !== MembershipType.GROUP &&
+    membership.type !== MembershipType.PRIVATE
+  ) {
+    throw new Error("Unsupported membership type.");
   }
 
   const usedCredits = data.usedCredits ?? 0;
@@ -784,6 +797,13 @@ async createManualMembershipForRegisteredUser(data: {
     membership.duration
   );
 
+  // A finite membership must have a calculated expiry.
+  if (totalCredits !== null && !expiryDate) {
+    throw new Error(
+      "Unable to calculate membership expiry. Please check the membership duration."
+    );
+  }
+
   let membershipNumber = generateMembershipNumber();
 
   while (
@@ -797,30 +817,89 @@ async createManualMembershipForRegisteredUser(data: {
     membershipNumber = generateMembershipNumber();
   }
 
-  return prisma.memberMembership.create({
-    data: {
-      userId: user.id,
-      membershipId: membership.id,
-      status: MembershipStatus.ACTIVE,
-      startDate,
-      expiryDate,
-      creditsTotal: totalCredits,
-      creditsUsed: usedCredits,
-      membershipNumber,
-    },
-    include: {
-      membership: true,
-      user: {
-        select: {
-          id: true,
-          fullName: true,
-          email: true,
-          phone: true,
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+
+    // Find the member's existing active memberships.
+    const existingMemberships =
+      await tx.memberMembership.findMany({
+        where: {
+          userId: user.id,
+          status: MembershipStatus.ACTIVE,
+          OR: [
+            { expiryDate: null },
+            { expiryDate: { gt: now } },
+          ],
+        },
+        include: {
+          membership: true,
+        },
+      });
+
+    // Only combine credits belonging to the same membership type.
+    const sameTypeMemberships = existingMemberships.filter(
+      (item) => {
+        const sameType =
+          item.membership.type === membership.type;
+
+        const hasRemainingCredits =
+          item.creditsTotal === null ||
+          item.creditsUsed < item.creditsTotal;
+
+        return sameType && hasRemainingCredits;
+      }
+    );
+
+    // Extend finite, same-type memberships with remaining credits to the
+    // newly assigned finite plan's expiry. Keep unlimited memberships
+    // non-expiring, and never turn a finite membership into an unlimited one
+    // merely because the newly assigned plan has no expiry.
+    if (expiryDate !== null && totalCredits !== null) {
+      for (const existing of sameTypeMemberships) {
+        // An unlimited existing record must remain unlimited.
+        if (existing.creditsTotal === null) {
+          continue;
+        }
+
+        await tx.memberMembership.update({
+          where: {
+            id: existing.id,
+          },
+          data: {
+            expiryDate,
+          },
+        });
+      }
+    }
+
+    // Create a separate record for the newly added plan.
+    // Its credits join the existing balance through aggregation.
+    return tx.memberMembership.create({
+      data: {
+        userId: user.id,
+        membershipId: membership.id,
+        status: MembershipStatus.ACTIVE,
+        startDate,
+        expiryDate,
+        creditsTotal: totalCredits,
+        creditsUsed: usedCredits,
+        membershipNumber,
+      },
+      include: {
+        membership: true,
+        user: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+          },
         },
       },
-    },
+    });
   });
 }
+
 async completeActivation(data: CompleteActivationDto) {
   const tokenHash = hashActivationToken(
     data.activationToken
