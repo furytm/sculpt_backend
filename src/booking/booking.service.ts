@@ -3732,7 +3732,7 @@ if (!memberMembership) {
             // Do not charge the customer again for this booking.
             amount: 0,
 
-            paymentMethod: PaymentMethod.PAYMISH,
+            paymentMethod: PaymentMethod.OFFLINE,
             paymentReference: bookingReference,
             paymentStatus: PaymentStatus.PAID,
             bookingStatus: BookingStatus.PENDING,

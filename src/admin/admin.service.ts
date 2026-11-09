@@ -1809,6 +1809,33 @@ async rejectOfflineMembershipPurchase(
   });
 }
 
+async getAllMembershipPurchases() {
+  return prisma.membershipPurchase.findMany({
+    where: {
+      paymentMethod: PaymentMethod.OFFLINE,
+      type: "NEW",
+    },
+    include: {
+      membership: true,
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+        },
+      },
+      firstSession: {
+        include: {
+          schedule: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  });
+}
+
 }
 
 export const adminService = new AdminService();

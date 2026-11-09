@@ -725,6 +725,24 @@ async rejectOfflineMembershipPurchase(
     });
   }
 }
+
+async getAllMembershipPurchases(req: Request, res: Response) {
+  try {
+    const purchases =
+      await adminService.getAllMembershipPurchases();
+
+    return res.status(200).json({
+      success: true,
+      message: "Membership purchases retrieved successfully.",
+      data: purchases,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve membership purchases.",
+    });
+  }
+}
 }
 
 export const adminController =

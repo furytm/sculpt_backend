@@ -327,6 +327,10 @@ async initiateOfflineMembershipPurchase(
       fullName,
       email,
       phone,
+      firstSessionId,
+      firstClassId,
+      healthDeclarationAccepted,
+      healthDeclarationNotes,
     } = req.body;
 
     if (
@@ -351,6 +355,12 @@ async initiateOfflineMembershipPurchase(
         email,
         phone,
         userId,
+        firstSessionId: firstSessionId || null,
+        firstClassId: firstClassId || null,
+        healthDeclarationAccepted:
+          healthDeclarationAccepted ?? false,
+        healthDeclarationNotes:
+          healthDeclarationNotes || null,
       });
 
     return res.status(201).json({

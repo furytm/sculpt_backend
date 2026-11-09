@@ -3,7 +3,7 @@ import { MembershipType } from "@prisma/client";
 import {
   MembershipStatus,
   MembershipPurchaseType,
-  PaymentStatus,PaymentMethod,
+  PaymentStatus,PaymentMethod,SessionStatus,
 } from "@prisma/client";
 import bookingService from "../booking/booking.service.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
@@ -1477,9 +1477,14 @@ async initiateOfflineMembershipPurchase(data: {
   email: string;
   phone: string;
   userId: string | null;
+  firstSessionId?: string | null;
+  firstClassId?: string | null;
+  healthDeclarationAccepted?: boolean;
+  healthDeclarationNotes?: string | null;
 }) {
   const email = data.email.trim().toLowerCase();
 
+  // 1. Validate required customer and membership details
   if (
     !data.membershipId ||
     !data.fullName?.trim() ||
@@ -1491,6 +1496,7 @@ async initiateOfflineMembershipPurchase(data: {
     );
   }
 
+  // 2. Validate membership
   const membership = await prisma.membership.findFirst({
     where: {
       id: data.membershipId,
@@ -1504,9 +1510,57 @@ async initiateOfflineMembershipPurchase(data: {
     );
   }
 
+  // 3. Validate Health & Safety declaration when a first session is selected
+  if (
+    data.firstSessionId &&
+    data.healthDeclarationAccepted !== true
+  ) {
+    throw new Error(
+      "You must accept the Health & Safety declaration to book your first class."
+    );
+  }
+
+  // 4. Validate selected first session
+  let firstSession = null;
+
+  if (data.firstSessionId) {
+    firstSession = await prisma.classSession.findUnique({
+      where: {
+        id: data.firstSessionId,
+      },
+      include: {
+        schedule: true,
+      },
+    });
+
+    if (!firstSession) {
+      throw new Error("Selected session not found.");
+    }
+
+    // Ensure session is open
+    if (firstSession.status !== SessionStatus.OPEN) {
+      throw new Error(
+        "This session is no longer available."
+      );
+    }
+
+    // Ensure the associated schedule is active
+    if (!firstSession.schedule.isActive) {
+      throw new Error(
+        "The selected class is no longer available."
+      );
+    }
+
+    // IMPORTANT:
+    // Add your existing capacity validation and two-hour
+    // booking-window validation here before creating the purchase.
+  }
+
+  // 5. Generate payment reference
   const paymentReference =
     `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
+  // 6. Create membership purchase
   const purchase = await prisma.membershipPurchase.create({
     data: {
       userId: data.userId,
@@ -1518,21 +1572,49 @@ async initiateOfflineMembershipPurchase(data: {
       type: MembershipPurchaseType.NEW,
       amount: membership.price,
 
+      // First class information
+      firstSessionId: firstSession?.id ?? null,
+      firstClassId: data.firstClassId ?? null,
+
+      // Health & Safety declaration
+      healthDeclarationAccepted:
+        data.healthDeclarationAccepted ?? false,
+
+      healthDeclarationNotes:
+        data.healthDeclarationNotes?.trim() || null,
+
+      // Payment information
       paymentReference,
       paymentStatus: PaymentStatus.PENDING,
       paymentMethod: PaymentMethod.OFFLINE,
     },
     include: {
       membership: true,
+      firstSession: {
+        include: {
+          schedule: true,
+        },
+      },
     },
   });
 
+  // 7. Return purchase details
   return {
     success: true,
     purchaseId: purchase.id,
     paymentReference: purchase.paymentReference,
     amount: purchase.amount,
+
     membership: purchase.membership,
+
+    firstSession: purchase.firstSession,
+    firstClassId: purchase.firstClassId,
+
+    healthDeclarationAccepted:
+      purchase.healthDeclarationAccepted,
+
+    healthDeclarationNotes:
+      purchase.healthDeclarationNotes,
 
     bankDetails: {
       accountName: "Sculpt LAB Limited",

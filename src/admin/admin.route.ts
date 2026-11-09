@@ -638,7 +638,12 @@ router.delete(
   requireAdmin,
   adminController.deleteMember.bind(adminController)
 );
-
+router.get(
+  "/membership-purchases",
+  authenticate,
+  requireAdmin,
+  adminController.getAllMembershipPurchases
+);
 // =====================================================
 // OFFLINE MEMBERSHIP PURCHASES
 // =====================================================
