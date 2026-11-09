@@ -1,78 +1,38 @@
 
 import prisma from "./src/config/prisma.js";
 
+
 async function main() {
-  const email = "sholaaminu0@gmail.com";
+  console.log("Checking MembershipActivation.bookingId...");
 
-  const user = await prisma.user.findUnique({
-    where: { email },
-  });
+  await prisma.$executeRaw`
+    ALTER TABLE "MembershipActivation"
+    ALTER COLUMN "bookingId" DROP NOT NULL
+  `;
 
-  if (!user) {
-    throw new Error(`No user found with email: ${email}`);
+  const result = await prisma.$queryRaw<
+    { column_name: string; is_nullable: string }[]
+  >`
+    SELECT column_name, is_nullable
+    FROM information_schema.columns
+    WHERE table_name = 'MembershipActivation'
+      AND column_name = 'bookingId'
+  `;
+
+  console.log("Neon column check:", result);
+
+  if (result[0]?.is_nullable !== "YES") {
+    throw new Error("bookingId is still NOT NULL in the database.");
   }
 
-  const memberships = await prisma.memberMembership.findMany({
-    where: {
-      userId: user.id,
-      status: "ACTIVE",
-    },
-    include: {
-      membership: true,
-    },
-  });
-
-  if (memberships.length === 0) {
-    throw new Error("No active membership found for this customer.");
-  }
-
-  console.log("Active memberships found:");
-  console.table(
-    memberships.map((m) => ({
-      membershipRecordId: m.id,
-      plan: m.membership.name,
-      creditsTotal: m.creditsTotal,
-      creditsUsed: m.creditsUsed,
-      remaining: m.creditsTotal - m.creditsUsed,
-    }))
-  );
-
-  // Update only the 5-class monthly plan.
-  const target = memberships.find(
-    (m) =>
-      m.creditsTotal === 5 &&
-      m.membership.duration.toLowerCase().includes("month")
-  );
-
-  if (!target) {
-    throw new Error(
-      "No active 5-credit monthly membership found. No changes made."
-    );
-  }
-
-  const updated = await prisma.memberMembership.update({
-    where: { id: target.id },
-    data: {
-      creditsUsed: 3,
-    },
-    include: {
-      membership: true,
-    },
-  });
-
-  console.log("\nUpdated membership:");
-  console.log({
-    customer: user.fullName,
-    email: user.email,
-    plan: updated.membership.name,
-    creditsTotal: updated.creditsTotal,
-    creditsUsed: updated.creditsUsed,
-    remainingCredits: updated.creditsTotal - updated.creditsUsed,
-  });
+  console.log("SUCCESS: Neon now allows membership-only activations.");
 }
 
 main()
-  .catch(console.error)
+  .catch((error) => {
+    console.error("Database fix failed:", error);
+    process.exitCode = 1;
+  })
   .finally(async () => {
     await prisma.$disconnect();
   });
