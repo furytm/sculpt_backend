@@ -3,34 +3,74 @@ import prisma from "./src/config/prisma.js";
 
 
 async function main() {
-  console.log("Checking MembershipActivation.bookingId...");
+  console.log("\n========== TUESDAY SCHEDULES ==========\n");
 
-  await prisma.$executeRaw`
-    ALTER TABLE "MembershipActivation"
-    ALTER COLUMN "bookingId" DROP NOT NULL
-  `;
+  // 1. Check Tuesday schedules
+  const schedules = await prisma.schedule.findMany({
+    where: {
+      dayOfWeek: "TUESDAY",
+    },
+    orderBy: {
+      startTime: "asc",
+    },
+    select: {
+      id: true,
+      code: true,
+      dayOfWeek: true,
+      startTime: true,
+      endTime: true,
+      className: true,
+      tutorName: true,
+      isActive: true,
+    },
+  });
 
-  const result = await prisma.$queryRaw<
-    { column_name: string; is_nullable: string }[]
-  >`
-    SELECT column_name, is_nullable
-    FROM information_schema.columns
-    WHERE table_name = 'MembershipActivation'
-      AND column_name = 'bookingId'
-  `;
+  console.table(schedules);
 
-  console.log("Neon column check:", result);
+  console.log("\n========== TUESDAY CLASS SESSIONS ==========\n");
 
-  if (result[0]?.is_nullable !== "YES") {
-    throw new Error("bookingId is still NOT NULL in the database.");
-  }
+  // 2. Check generated Tuesday sessions
+  const sessions = await prisma.classSession.findMany({
+    where: {
+      schedule: {
+        dayOfWeek: "TUESDAY",
+      },
+    },
+    orderBy: {
+      sessionDate: "asc",
+    },
+    include: {
+      schedule: {
+        select: {
+          code: true,
+          className: true,
+          startTime: true,
+          endTime: true,
+          tutorName: true,
+          isActive: true,
+        },
+      },
+    },
+  });
 
-  console.log("SUCCESS: Neon now allows membership-only activations.");
+  console.table(
+    sessions.map((session) => ({
+      code: session.schedule.code,
+      className: session.schedule.className,
+      tutorName: session.schedule.tutorName,
+      startTime: session.schedule.startTime,
+      sessionDate: session.sessionDate.toISOString(),
+      status: session.status,
+      scheduleActive: session.schedule.isActive,
+    }))
+  );
+
+  console.log("\n========== CHECK COMPLETED ==========\n");
 }
 
 main()
   .catch((error) => {
-    console.error("Database fix failed:", error);
+    console.error("Error checking Tuesday schedules:", error);
     process.exitCode = 1;
   })
   .finally(async () => {

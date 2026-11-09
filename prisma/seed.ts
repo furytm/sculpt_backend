@@ -368,8 +368,17 @@ type: MembershipType.PRIVATE,
 },
 ];
 
+
 const schedules = [
   // MONDAY
+  {
+    code: "MON-09-BEGINNER",
+    dayOfWeek: DayOfWeek.MONDAY,
+    startTime: "09:00",
+    endTime: "10:00",
+    tutorName: "Betty",
+    className: "Beginner",
+  },
   {
     code: "MON-10-INTERMEDIATE",
     dayOfWeek: DayOfWeek.MONDAY,
@@ -387,30 +396,22 @@ const schedules = [
     className: "Beginner",
   },
   {
-    code: "MON-12-BEGINNER",
+    code: "MON-12-INTERMEDIATE",
     dayOfWeek: DayOfWeek.MONDAY,
     startTime: "12:00",
     endTime: "13:00",
-    tutorName: "Betty",
-    className: "Beginner",
-  },
-  {
-    code: "MON-13-INTERMEDIATE",
-    dayOfWeek: DayOfWeek.MONDAY,
-    startTime: "13:00",
-    endTime: "14:00",
     tutorName: "Betty",
     className: "Intermediate",
   },
 
   // TUESDAY
   {
-    code: "TUE-07-INTERMEDIATE",
+    code: "TUE-07-PILATES-STRENGTH",
     dayOfWeek: DayOfWeek.TUESDAY,
     startTime: "07:00",
     endTime: "08:00",
     tutorName: "Betty",
-    className: "Intermediate",
+    className: "Pilates + Strength",
   },
   {
     code: "TUE-08-REFORMER-STRETCH",
@@ -421,14 +422,6 @@ const schedules = [
     className: "Reformer Stretch",
   },
   {
-    code: "TUE-09-BEGINNER",
-    dayOfWeek: DayOfWeek.TUESDAY,
-    startTime: "09:00",
-    endTime: "10:00",
-    tutorName: "Betty",
-    className: "Beginner",
-  },
-  {
     code: "TUE-11-INTERMEDIATE",
     dayOfWeek: DayOfWeek.TUESDAY,
     startTime: "11:00",
@@ -437,39 +430,23 @@ const schedules = [
     className: "Intermediate",
   },
   {
-    code: "TUE-14-BEGINNER",
+    code: "TUE-12-BEGINNER",
     dayOfWeek: DayOfWeek.TUESDAY,
-    startTime: "14:00",
-    endTime: "15:00",
-    tutorName: "Hope",
-    className: "Beginner",
-  },
-  {
-    code: "TUE-15-PILATES-STRENGTH",
-    dayOfWeek: DayOfWeek.TUESDAY,
-    startTime: "15:00",
-    endTime: "16:00",
-    tutorName: "Hope",
-    className: "Pilates + Strength",
-  },
-  {
-    code: "TUE-16-INTERMEDIATE",
-    dayOfWeek: DayOfWeek.TUESDAY,
-    startTime: "16:00",
-    endTime: "17:00",
-    tutorName: "Hope",
-    className: "Intermediate",
-  },
-  {
-    code: "TUE-17-BEGINNER",
-    dayOfWeek: DayOfWeek.TUESDAY,
-    startTime: "17:00",
-    endTime: "18:00",
-    tutorName: "Hope",
+    startTime: "12:00",
+    endTime: "13:00",
+    tutorName: "Betty",
     className: "Beginner",
   },
 
   // WEDNESDAY
+  {
+    code: "WED-08-BEGINNER",
+    dayOfWeek: DayOfWeek.WEDNESDAY,
+    startTime: "08:00",
+    endTime: "09:00",
+    tutorName: "Betty",
+    className: "Beginner",
+  },
   {
     code: "WED-09-INTERMEDIATE",
     dayOfWeek: DayOfWeek.WEDNESDAY,
@@ -479,38 +456,38 @@ const schedules = [
     className: "Intermediate",
   },
   {
-    code: "WED-16-INTERMEDIATE",
+    code: "WED-16-BEGINNER",
     dayOfWeek: DayOfWeek.WEDNESDAY,
     startTime: "16:00",
     endTime: "17:00",
-    tutorName: "Betty",
-    className: "Intermediate",
+    tutorName: "Hope",
+    className: "Beginner",
   },
   {
-    code: "WED-17-BEGINNER",
+    code: "WED-17-INTERMEDIATE",
     dayOfWeek: DayOfWeek.WEDNESDAY,
     startTime: "17:00",
     endTime: "18:00",
-    tutorName: "Betty",
-    className: "Beginner",
+    tutorName: "Hope",
+    className: "Intermediate",
   },
   {
     code: "WED-18-BEGINNER",
     dayOfWeek: DayOfWeek.WEDNESDAY,
     startTime: "18:00",
     endTime: "19:00",
-    tutorName: "Betty",
+    tutorName: "Hope",
     className: "Beginner",
   },
 
   // THURSDAY
   {
-    code: "THU-08-PILATES-STRENGTH",
+    code: "THU-08-BEGINNER",
     dayOfWeek: DayOfWeek.THURSDAY,
     startTime: "08:00",
     endTime: "09:00",
     tutorName: "Betty",
-    className: "Pilates + Strength",
+    className: "Beginner",
   },
   {
     code: "THU-09-INTERMEDIATE",
@@ -521,27 +498,19 @@ const schedules = [
     className: "Intermediate",
   },
   {
-    code: "THU-10-PILATES-STRENGTH",
+    code: "THU-10-BEGINNER",
     dayOfWeek: DayOfWeek.THURSDAY,
     startTime: "10:00",
     endTime: "11:00",
     tutorName: "Betty",
-    className: "Pilates + Strength",
-  },
-  {
-    code: "THU-11-BEGINNER",
-    dayOfWeek: DayOfWeek.THURSDAY,
-    startTime: "11:00",
-    endTime: "12:00",
-    tutorName: "Betty",
     className: "Beginner",
   },
   {
-    code: "THU-15-INTERMEDIATE",
+    code: "THU-12-INTERMEDIATE",
     dayOfWeek: DayOfWeek.THURSDAY,
-    startTime: "15:00",
-    endTime: "16:00",
-    tutorName: "Hope",
+    startTime: "12:00",
+    endTime: "13:00",
+    tutorName: "Betty",
     className: "Intermediate",
   },
   {
@@ -552,49 +521,65 @@ const schedules = [
     tutorName: "Hope",
     className: "Beginner",
   },
+  {
+    code: "THU-17-PILATES-STRENGTH",
+    dayOfWeek: DayOfWeek.THURSDAY,
+    startTime: "17:00",
+    endTime: "18:00",
+    tutorName: "Hope",
+    className: "Pilates + Strength",
+  },
+  {
+    code: "THU-18-INTERMEDIATE",
+    dayOfWeek: DayOfWeek.THURSDAY,
+    startTime: "18:00",
+    endTime: "19:00",
+    tutorName: "Hope",
+    className: "Intermediate",
+  },
 
   // FRIDAY
   {
-    code: "FRI-11-BEGINNER",
+    code: "FRI-11-INTERMEDIATE",
     dayOfWeek: DayOfWeek.FRIDAY,
     startTime: "11:00",
     endTime: "12:00",
     tutorName: "Hope",
-    className: "Beginner",
+    className: "Intermediate",
   },
   {
-    code: "FRI-12-INTERMEDIATE",
+    code: "FRI-12-PILATES-STRENGTH",
     dayOfWeek: DayOfWeek.FRIDAY,
     startTime: "12:00",
     endTime: "13:00",
     tutorName: "Hope",
-    className: "Intermediate",
+    className: "Pilates + Strength",
   },
   {
-    code: "FRI-13-REFORMER-STRETCH",
+    code: "FRI-13-BEGINNER",
     dayOfWeek: DayOfWeek.FRIDAY,
     startTime: "13:00",
     endTime: "14:00",
     tutorName: "Hope",
-    className: "Reformer Stretch",
+    className: "Beginner",
   },
   {
-    code: "FRI-14-BEGINNER",
+    code: "FRI-14-INTERMEDIATE",
     dayOfWeek: DayOfWeek.FRIDAY,
     startTime: "14:00",
     endTime: "15:00",
     tutorName: "Hope",
-    className: "Beginner",
+    className: "Intermediate",
   },
 
   // SATURDAY
   {
-    code: "SAT-07-BEGINNER",
+    code: "SAT-07-REFORMER-STRETCH",
     dayOfWeek: DayOfWeek.SATURDAY,
     startTime: "07:00",
     endTime: "08:00",
     tutorName: "Betty",
-    className: "Beginner",
+    className: "Reformer Stretch",
   },
   {
     code: "SAT-08-INTERMEDIATE",
@@ -620,7 +605,25 @@ const schedules = [
     tutorName: "Betty",
     className: "Pilates + Strength",
   },
+  {
+    code: "SAT-11-INTERMEDIATE",
+    dayOfWeek: DayOfWeek.SATURDAY,
+    startTime: "11:00",
+    endTime: "12:00",
+    tutorName: "Betty",
+    className: "Intermediate",
+  },
+  {
+    code: "SAT-12-BEGINNER",
+    dayOfWeek: DayOfWeek.SATURDAY,
+    startTime: "12:00",
+    endTime: "13:00",
+    tutorName: "Betty",
+    className: "Beginner",
+  },
 ];
+
+
 
 async function main() {
   console.log("🌱 Starting database seed...");
@@ -687,9 +690,35 @@ async function main() {
     });
   }
 
+
+  
+
+
+  // ==========================================
+  // DEACTIVATE OBSOLETE SCHEDULES
+  // ==========================================
+
+  const activeScheduleCodes = schedules.map(
+    (schedule) => schedule.code
+  );
+
+  await prisma.schedule.updateMany({
+    where: {
+      isActive: true,
+      code: {
+        notIn: activeScheduleCodes,
+      },
+    },
+    data: {
+      isActive: false,
+    },
+  });
+
   console.log("✅ Schedules seeded.");
+  console.log("✅ Obsolete schedules deactivated.");
   console.log("🌱 Database seed completed.");
 }
+
 
 main()
   .catch((error) => {

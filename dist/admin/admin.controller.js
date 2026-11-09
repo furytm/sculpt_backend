@@ -551,6 +551,80 @@ class AdminController {
             });
         }
     }
+    async addMembershipToMember(req, res) {
+        try {
+            const { membershipId, totalCredits, usedCredits, startDate, } = req.body;
+            const memberId = req.params.memberId;
+            if (typeof memberId !== "string") {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid member ID.",
+                });
+            }
+            if (!membershipId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Membership ID is required.",
+                });
+            }
+            if (totalCredits !== undefined &&
+                (typeof totalCredits !== "number" ||
+                    !Number.isInteger(totalCredits) ||
+                    totalCredits < 1)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Total credits must be a positive integer.",
+                });
+            }
+            if (usedCredits !== undefined &&
+                (typeof usedCredits !== "number" ||
+                    !Number.isInteger(usedCredits) ||
+                    usedCredits < 0)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Used credits must be a non-negative integer.",
+                });
+            }
+            const membership = await adminService.addMembershipToMember({
+                memberId,
+                membershipId,
+                totalCredits,
+                usedCredits,
+                startDate,
+            });
+            return res.status(201).json({
+                success: true,
+                message: "Membership added to member successfully.",
+                data: membership,
+            });
+        }
+        catch (error) {
+            console.error("Add Membership To Member Error:", error);
+            const message = error?.message || "Failed to add membership to member.";
+            const badRequestErrors = [
+                "Registered member not found.",
+                "Membership not found.",
+                "This membership is not active.",
+                "Credits cannot be set for an unlimited membership.",
+                "Total credits must be a positive integer.",
+                "Used credits must be between 0 and total credits.",
+                "Invalid membership start date.",
+            ];
+            if (badRequestErrors.includes(message)) {
+                return res.status(message === "Registered member not found." ||
+                    message === "Membership not found."
+                    ? 404
+                    : 400).json({
+                    success: false,
+                    message,
+                });
+            }
+            return res.status(500).json({
+                success: false,
+                message,
+            });
+        }
+    }
 }
 export const adminController = new AdminController();
 //# sourceMappingURL=admin.controller.js.map

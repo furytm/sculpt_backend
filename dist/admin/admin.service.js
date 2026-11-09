@@ -1424,6 +1424,16 @@ class AdminService {
             },
         });
     }
+    async addMembershipToMember(data) {
+        return membershipActivationService
+            .createManualMembershipForRegisteredUser({
+            userId: data.memberId,
+            membershipId: data.membershipId,
+            totalCredits: data.totalCredits,
+            usedCredits: data.usedCredits,
+            startDate: data.startDate,
+        });
+    }
 }
 export const adminService = new AdminService();
 //# sourceMappingURL=admin.service.js.map

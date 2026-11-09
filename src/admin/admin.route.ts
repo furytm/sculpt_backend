@@ -644,6 +644,55 @@ router.get(
   requireAdmin,
   adminController.getAllMembershipPurchases
 );
+
+/**
+ * @openapi
+ * /api/admin/members/{memberId}/memberships:
+ *   post:
+ *     tags:
+ *       - Admin
+ *       - Members
+ *     summary: Add an offline membership to an existing registered member
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: memberId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - membershipId
+ *             properties:
+ *               membershipId:
+ *                 type: string
+ *               totalCredits:
+ *                 type: integer
+ *               usedCredits:
+ *                 type: integer
+ *               startDate:
+ *                 type: string
+ *                 format: date
+ *     responses:
+ *       201:
+ *         description: Membership added successfully
+ *       400:
+ *         description: Invalid request
+ *       404:
+ *         description: Member or membership not found
+ */
+router.post(
+  "/members/:memberId/memberships",
+  authenticate,
+  requireAdmin,
+  adminController.addMembershipToMember.bind(adminController)
+);
 // =====================================================
 // OFFLINE MEMBERSHIP PURCHASES
 // =====================================================

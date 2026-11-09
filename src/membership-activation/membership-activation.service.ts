@@ -705,6 +705,122 @@ async createActivationForPurchase(purchaseId: string) {
     emailSent,
   };
 }
+
+async createManualMembershipForRegisteredUser(data: {
+  userId: string;
+  membershipId: string;
+  totalCredits?: number;
+  usedCredits?: number;
+  startDate?: string;
+}) {
+  const user = await prisma.user.findUnique({
+    where: { id: data.userId },
+  });
+
+  if (!user || user.role !== UserRole.MEMBER) {
+    throw new Error("Registered member not found.");
+  }
+
+  const membership = await prisma.membership.findUnique({
+    where: { id: data.membershipId },
+  });
+
+  if (!membership) {
+    throw new Error("Membership not found.");
+  }
+
+  if (!membership.isActive) {
+    throw new Error("This membership is not active.");
+  }
+
+  const usedCredits = data.usedCredits ?? 0;
+
+  let totalCredits: number | null = membership.classLimit;
+
+  if (membership.classLimit === null) {
+    if (
+      data.totalCredits !== undefined ||
+      usedCredits !== 0
+    ) {
+      throw new Error(
+        "Credits cannot be set for an unlimited membership."
+      );
+    }
+
+    totalCredits = null;
+  } else {
+    totalCredits = data.totalCredits ?? membership.classLimit;
+
+    if (
+      !Number.isInteger(totalCredits) ||
+      totalCredits < 1
+    ) {
+      throw new Error(
+        "Total credits must be a positive integer."
+      );
+    }
+
+    if (
+      !Number.isInteger(usedCredits) ||
+      usedCredits < 0 ||
+      usedCredits > totalCredits
+    ) {
+      throw new Error(
+        "Used credits must be between 0 and total credits."
+      );
+    }
+  }
+
+  const startDate = data.startDate
+    ? new Date(`${data.startDate}T00:00:00.000Z`)
+    : new Date();
+
+  if (Number.isNaN(startDate.getTime())) {
+    throw new Error("Invalid membership start date.");
+  }
+
+  const expiryDate = getMembershipExpiry(
+    startDate,
+    membership.duration
+  );
+
+  let membershipNumber = generateMembershipNumber();
+
+  while (
+    (await prisma.memberMembership.findFirst({
+      where: { membershipNumber },
+    })) ||
+    (await prisma.membershipActivation.findUnique({
+      where: { membershipNumber },
+    }))
+  ) {
+    membershipNumber = generateMembershipNumber();
+  }
+
+  return prisma.memberMembership.create({
+    data: {
+      userId: user.id,
+      membershipId: membership.id,
+      status: MembershipStatus.ACTIVE,
+      startDate,
+      expiryDate,
+      creditsTotal: totalCredits,
+      creditsUsed: usedCredits,
+      membershipNumber,
+    },
+    include: {
+      membership: true,
+      user: {
+        select: {
+          id: true,
+          fullName: true,
+          email: true,
+          phone: true,
+        },
+      },
+    },
+  });
+}
 async completeActivation(data: CompleteActivationDto) {
   const tokenHash = hashActivationToken(
     data.activationToken

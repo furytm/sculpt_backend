@@ -1835,6 +1835,22 @@ async getAllMembershipPurchases() {
     },
   });
 }
+async addMembershipToMember(data: {
+  memberId: string;
+  membershipId: string;
+  totalCredits?: number;
+  usedCredits?: number;
+  startDate?: string;
+}) {
+  return membershipActivationService
+    .createManualMembershipForRegisteredUser({
+      userId: data.memberId,
+      membershipId: data.membershipId,
+      totalCredits: data.totalCredits,
+      usedCredits: data.usedCredits,
+      startDate: data.startDate,
+    });
+}
 
 }
 
