@@ -22,6 +22,7 @@ router.get("/test", (req, res) => {
 router.post("/upgrade", authenticate, membershipController.upgradeMembership);
 router.post("/renew", authenticate, membershipController.renewMembership);
 router.post("/purchase", optionalAuthenticate, purchaseNewMembership);
+router.post("/purchase/offline", membershipController.initiateOfflineMembershipPurchase.bind(membershipController));
 /**
  * @openapi
  * /api/memberships:

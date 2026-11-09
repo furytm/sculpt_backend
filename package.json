@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "node init && nodemon",
    "build": "tsc",
-    "start": "node init && node dist/server.js",
+"start": "node dist/server.js",
     "clean": "rm -rf dist"
   },
   "keywords": [],

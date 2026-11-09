@@ -105,6 +105,10 @@ router.get("/payments/pending", authenticate, requireAdmin, adminController.getP
  *         description: Admin access required
  */
 router.get("/bookings", authenticate, requireAdmin, adminController.getAllBookings);
+// =====================================================
+// ADMIN TUTOR SCHEDULE CALENDAR
+// =====================================================
+router.get("/tutor-schedule", authenticate, requireAdmin, adminController.getTutorSchedule);
 /**
  * @openapi
  * /api/admin/bookings/{bookingId}:
@@ -464,5 +468,15 @@ router.post("/sessions/:sessionId/reopen", authenticate, requireAdmin, adminSess
 router.post("/members/offline", authenticate, requireAdmin, adminController.createOfflineMember);
 router.get('/members', authenticate, requireAdmin, adminController.getAllMembers.bind(adminController));
 router.delete("/members/:memberId", authenticate, requireAdmin, adminController.deleteMember.bind(adminController));
+router.get("/membership-purchases", authenticate, requireAdmin, adminController.getAllMembershipPurchases);
+// =====================================================
+// OFFLINE MEMBERSHIP PURCHASES
+// =====================================================
+// Get pending offline membership purchases
+router.get("/membership-purchases/pending", authenticate, requireAdmin, adminController.getPendingOfflineMembershipPurchases);
+// Confirm an offline membership purchase
+router.post("/membership-purchases/:purchaseId/confirm", authenticate, requireAdmin, adminController.confirmOfflineMembershipPurchase);
+// Reject an offline membership purchase
+router.post("/membership-purchases/:purchaseId/reject", authenticate, requireAdmin, adminController.rejectOfflineMembershipPurchase);
 export default router;
 //# sourceMappingURL=admin.route.js.map

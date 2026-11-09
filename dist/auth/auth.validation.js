@@ -26,8 +26,9 @@ export const registerSchema = Joi.object({
     "any.custom": "{{#message}}",
 });
 export const loginSchema = Joi.object({
-    email: Joi.string().email().required(),
+    email: Joi.string().email().lowercase().trim().required(),
     password: Joi.string().required(),
+    bookingReference: Joi.string().trim().optional(),
 });
 export const forgotPasswordSchema = Joi.object({
     email: Joi.string().email().required(),

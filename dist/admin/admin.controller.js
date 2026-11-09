@@ -102,6 +102,40 @@ class AdminController {
             });
         }
     }
+    async getTutorSchedule(req, res) {
+        try {
+            const { startDate, endDate } = req.query;
+            if (typeof startDate !== "string" ||
+                typeof endDate !== "string") {
+                return res.status(400).json({
+                    success: false,
+                    message: "startDate and endDate are required in YYYY-MM-DD format.",
+                });
+            }
+            const data = await adminService.getTutorSchedule(startDate, endDate);
+            return res.status(200).json({
+                success: true,
+                message: "Tutor schedule retrieved successfully.",
+                data,
+            });
+        }
+        catch (error) {
+            console.error("Get Tutor Schedule Error:", error);
+            const message = error?.message || "Failed to retrieve tutor schedule.";
+            if (message.includes("Dates must") ||
+                message.includes("Invalid calendar date") ||
+                message.includes("cannot be after")) {
+                return res.status(400).json({
+                    success: false,
+                    message,
+                });
+            }
+            return res.status(500).json({
+                success: false,
+                message,
+            });
+        }
+    }
     async getBookingById(req, res) {
         try {
             const bookingId = Array.isArray(req.params.bookingId)
@@ -423,6 +457,97 @@ class AdminController {
             return res.status(500).json({
                 success: false,
                 message: error?.message || 'Failed to retrieve member classes.',
+            });
+        }
+    }
+    async getPendingOfflineMembershipPurchases(req, res) {
+        try {
+            const purchases = await adminService
+                .getPendingOfflineMembershipPurchases();
+            return res.status(200).json({
+                success: true,
+                data: purchases,
+            });
+        }
+        catch (error) {
+            console.error(error);
+            return res.status(500).json({
+                success: false,
+                message: error?.message ||
+                    "Failed to fetch pending membership purchases.",
+            });
+        }
+    }
+    async confirmOfflineMembershipPurchase(req, res) {
+        try {
+            const purchaseId = Array.isArray(req.params.purchaseId)
+                ? req.params.purchaseId[0]
+                : req.params.purchaseId;
+            if (!purchaseId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Purchase ID is required.",
+                });
+            }
+            const result = await adminService
+                .confirmOfflineMembershipPurchase(purchaseId);
+            return res.status(200).json({
+                success: true,
+                message: "Offline membership payment confirmed.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error(error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message ||
+                    "Failed to confirm membership purchase.",
+            });
+        }
+    }
+    async rejectOfflineMembershipPurchase(req, res) {
+        try {
+            const purchaseId = Array.isArray(req.params.purchaseId)
+                ? req.params.purchaseId[0]
+                : req.params.purchaseId;
+            const { reason } = req.body;
+            if (!purchaseId) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Purchase ID is required.",
+                });
+            }
+            const result = await adminService
+                .rejectOfflineMembershipPurchase(purchaseId, reason);
+            return res.status(200).json({
+                success: true,
+                message: "Membership purchase rejected.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error(error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message ||
+                    "Failed to reject membership purchase.",
+            });
+        }
+    }
+    async getAllMembershipPurchases(req, res) {
+        try {
+            const purchases = await adminService.getAllMembershipPurchases();
+            return res.status(200).json({
+                success: true,
+                message: "Membership purchases retrieved successfully.",
+                data: purchases,
+            });
+        }
+        catch (error) {
+            return res.status(500).json({
+                success: false,
+                message: "Failed to retrieve membership purchases.",
             });
         }
     }

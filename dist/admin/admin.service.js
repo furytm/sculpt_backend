@@ -1210,6 +1210,220 @@ class AdminService {
             upcomingClasses,
         };
     }
+    async getTutorSchedule(startDate, endDate) {
+        const parseDate = (value) => {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                throw new Error("Dates must use YYYY-MM-DD format.");
+            }
+            const [year, month, day] = value.split("-").map(Number);
+            const date = new Date(Date.UTC(year, month - 1, day));
+            if (date.getUTCFullYear() !== year ||
+                date.getUTCMonth() !== month - 1 ||
+                date.getUTCDate() !== day) {
+                throw new Error("Invalid calendar date.");
+            }
+            return date;
+        };
+        const start = parseDate(startDate);
+        const end = parseDate(endDate);
+        if (start.getTime() > end.getTime()) {
+            throw new Error("startDate cannot be after endDate.");
+        }
+        // ClassSession.sessionDate is stored as Lagos class time
+        // represented in UTC (Lagos is UTC+1).
+        // Convert the requested Lagos date range to UTC boundaries.
+        const startUtc = new Date(start.getTime() - 60 * 60 * 1000);
+        const endExclusiveUtc = new Date(end.getTime() + 24 * 60 * 60 * 1000 - 60 * 60 * 1000);
+        const bookings = await prisma.booking.findMany({
+            where: {
+                sessionId: {
+                    not: null,
+                },
+                session: {
+                    is: {
+                        sessionDate: {
+                            gte: startUtc,
+                            lt: endExclusiveUtc,
+                        },
+                    },
+                },
+            },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true,
+                        phone: true,
+                    },
+                },
+                schedule: true,
+                session: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+            orderBy: [
+                {
+                    session: {
+                        sessionDate: "asc",
+                    },
+                },
+                {
+                    createdAt: "asc",
+                },
+            ],
+        });
+        return bookings.map((booking) => {
+            const schedule = booking.session?.schedule ?? booking.schedule;
+            const sessionDate = booking.session?.sessionDate;
+            return {
+                bookingId: booking.id,
+                bookingStatus: booking.bookingStatus,
+                paymentStatus: booking.paymentStatus,
+                paymentMethod: booking.paymentMethod,
+                session: {
+                    id: booking.session?.id ?? null,
+                    date: sessionDate
+                        ? new Date(sessionDate.getTime() + 60 * 60 * 1000).toISOString().slice(0, 10)
+                        : null,
+                    startTime: schedule?.startTime ?? null,
+                    endTime: schedule?.endTime ?? null,
+                    sessionStatus: booking.session?.status ?? null,
+                },
+                class: schedule?.className ?? null,
+                tutor: schedule?.tutorName ?? null,
+                customer: {
+                    id: booking.user?.id ?? booking.userId,
+                    name: booking.user?.fullName ?? booking.fullName,
+                    email: booking.user?.email ?? booking.email,
+                    phone: booking.user?.phone ?? booking.phone,
+                },
+            };
+        });
+    }
+    async getPendingOfflineMembershipPurchases() {
+        return prisma.membershipPurchase.findMany({
+            where: {
+                paymentMethod: PaymentMethod.OFFLINE,
+                paymentStatus: PaymentStatus.PENDING,
+                type: "NEW",
+            },
+            include: {
+                membership: true,
+                user: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true,
+                    },
+                },
+                firstSession: true,
+            },
+            orderBy: {
+                createdAt: "asc",
+            },
+        });
+    }
+    async confirmOfflineMembershipPurchase(purchaseId) {
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                id: purchaseId,
+            },
+            include: {
+                membership: true,
+                memberMembership: true,
+                membershipActivation: true,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        if (purchase.paymentMethod !== PaymentMethod.OFFLINE) {
+            throw new Error("This purchase is not an offline payment.");
+        }
+        if (purchase.paymentStatus !== PaymentStatus.PENDING) {
+            throw new Error("Only pending offline purchases can be confirmed.");
+        }
+        // The admin has verified the actual bank transfer.
+        await prisma.membershipPurchase.update({
+            where: {
+                id: purchase.id,
+            },
+            data: {
+                paymentStatus: PaymentStatus.PAID,
+            },
+        });
+        try {
+            const activation = await membershipActivationService
+                .createActivationForPurchase(purchase.id);
+            return {
+                purchaseId: purchase.id,
+                paymentReference: purchase.paymentReference,
+                paymentStatus: PaymentStatus.PAID,
+                activation,
+            };
+        }
+        catch (error) {
+            // Do not silently revert a payment that the admin
+            // has already verified in the bank account.
+            console.error("Offline membership activation failed:", error);
+            throw new Error("Payment was confirmed, but membership activation failed. Please retry activation or resend the registration email.");
+        }
+    }
+    async rejectOfflineMembershipPurchase(purchaseId, reason) {
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                id: purchaseId,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        if (purchase.paymentMethod !== PaymentMethod.OFFLINE) {
+            throw new Error("This purchase is not an offline payment.");
+        }
+        if (purchase.paymentStatus !== PaymentStatus.PENDING) {
+            throw new Error("Only pending offline purchases can be rejected.");
+        }
+        return prisma.membershipPurchase.update({
+            where: {
+                id: purchaseId,
+            },
+            data: {
+                paymentStatus: PaymentStatus.FAILED,
+                paymentRejectionReason: reason?.trim() ||
+                    "Bank transfer could not be verified.",
+            },
+        });
+    }
+    async getAllMembershipPurchases() {
+        return prisma.membershipPurchase.findMany({
+            where: {
+                paymentMethod: PaymentMethod.OFFLINE,
+                type: "NEW",
+            },
+            include: {
+                membership: true,
+                user: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true,
+                    },
+                },
+                firstSession: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+            orderBy: {
+                createdAt: "desc",
+            },
+        });
+    }
 }
 export const adminService = new AdminService();
 //# sourceMappingURL=admin.service.js.map

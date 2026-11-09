@@ -227,6 +227,45 @@ class MembershipController {
             });
         }
     }
+    async initiateOfflineMembershipPurchase(req, res) {
+        try {
+            const { membershipId, fullName, email, phone, firstSessionId, firstClassId, healthDeclarationAccepted, healthDeclarationNotes, } = req.body;
+            if (!membershipId ||
+                !fullName?.trim() ||
+                !email?.trim() ||
+                !phone?.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Membership, full name, email, and phone are required.",
+                });
+            }
+            const userId = req.user?.userId ?? null;
+            const result = await membershipService.initiateOfflineMembershipPurchase({
+                membershipId,
+                fullName,
+                email,
+                phone,
+                userId,
+                firstSessionId: firstSessionId || null,
+                firstClassId: firstClassId || null,
+                healthDeclarationAccepted: healthDeclarationAccepted ?? false,
+                healthDeclarationNotes: healthDeclarationNotes || null,
+            });
+            return res.status(201).json({
+                success: true,
+                message: "Offline membership purchase created. Please complete your bank transfer.",
+                data: result,
+            });
+        }
+        catch (error) {
+            console.error("Initiate Offline Membership Purchase Error:", error);
+            return res.status(400).json({
+                success: false,
+                message: error?.message ||
+                    "Unable to initiate offline membership purchase.",
+            });
+        }
+    }
 }
 export const purchaseNewMembership = async (req, res) => {
     try {

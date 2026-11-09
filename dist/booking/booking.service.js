@@ -1891,9 +1891,10 @@ class BookingService {
             ? null
             : Math.max(memberMembership.creditsTotal - memberMembership.creditsUsed, 0);
         const purchase = memberMembership.membershipPurchase;
-        const hasFirstSession = Boolean(purchase?.firstSessionId);
-        const firstBookingConfirmed = Boolean(hasFirstSession &&
-            memberMembership.bookings.some((booking) => booking.sessionId === purchase?.firstSessionId));
+        const firstBookingConfirmed = memberMembership.bookings.some((booking) => booking.bookingStatus === "CONFIRMED" &&
+            (!purchase?.firstSessionId ||
+                booking.sessionId === purchase.firstSessionId));
+        const hasFirstSession = Boolean(purchase?.firstSessionId || firstBookingConfirmed);
         return {
             memberMembershipId: memberMembership.id,
             membership: memberMembership.membership,
@@ -1906,7 +1907,7 @@ class BookingService {
             status: memberMembership.status,
             hasFirstSession,
             firstBookingConfirmed,
-            requiresInitialBooking: !hasFirstSession,
+            requiresInitialBooking: purchase?.type === "NEW" && !hasFirstSession,
         };
     }
     // =========================================================
@@ -2101,26 +2102,56 @@ class BookingService {
                 },
             });
             /**
-             * Restore one credit for finite memberships.
+             * Restore one credit.
              *
-             * Unlimited memberships have creditsTotal === null,
-             * so there is nothing to restore.
+             * If the booking belongs to an old membership that was
+             * upgraded, restore the credit to the active upgraded
+             * membership instead.
              */
             let creditRestored = false;
-            if (booking.memberMembership &&
-                booking.memberMembership.creditsTotal !== null &&
-                booking.memberMembership.creditsUsed > 0) {
-                await tx.memberMembership.update({
-                    where: {
-                        id: booking.memberMembership.id,
-                    },
-                    data: {
-                        creditsUsed: {
-                            decrement: 1,
+            const originalMembership = booking.memberMembership;
+            if (originalMembership &&
+                originalMembership.creditsTotal !== null &&
+                originalMembership.creditsUsed > 0) {
+                let membershipToRestore = originalMembership;
+                // If the original membership has expired, check whether
+                // it was replaced by an upgrade.
+                if (originalMembership.status === MembershipStatus.EXPIRED) {
+                    const upgradedMembership = await tx.memberMembership.findFirst({
+                        where: {
+                            userId,
+                            status: MembershipStatus.ACTIVE,
+                            OR: [
+                                { expiryDate: null },
+                                { expiryDate: { gt: new Date() } },
+                            ],
+                            membershipPurchase: {
+                                is: {
+                                    type: "UPGRADE",
+                                    previousMemberMembershipId: originalMembership.id,
+                                },
+                            },
                         },
-                    },
-                });
-                creditRestored = true;
+                    });
+                    if (upgradedMembership) {
+                        membershipToRestore = upgradedMembership;
+                    }
+                }
+                // Only restore finite credits, and never allow creditsUsed
+                // to become negative.
+                if (membershipToRestore.creditsTotal !== null &&
+                    membershipToRestore.creditsUsed > 0) {
+                    const restored = await tx.memberMembership.updateMany({
+                        where: {
+                            id: membershipToRestore.id,
+                            creditsUsed: { gt: 0 },
+                        },
+                        data: {
+                            creditsUsed: { decrement: 1 },
+                        },
+                    });
+                    creditRestored = restored.count === 1;
+                }
             }
             /**
              * Recalculate confirmed bookings after cancellation.
@@ -2202,6 +2233,28 @@ class BookingService {
             throw new Error("Member name, email and phone are required to create the first booking.");
         }
         // A stable reference prevents duplicate first bookings
+        // Find the exact membership record created for this purchase.
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                paymentReference: purchaseReference,
+            },
+            select: {
+                id: true,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        const memberMembership = await prisma.memberMembership.findFirst({
+            where: {
+                membershipPurchaseId: purchase.id,
+                userId,
+                membershipId,
+            },
+        });
+        if (!memberMembership) {
+            throw new Error("The membership record for this purchase could not be found.");
+        }
         // if payment verification or account registration is retried.
         const bookingReference = `${purchaseReference}-FIRST-BOOKING`;
         const existingBooking = await prisma.booking.findUnique({
@@ -2248,6 +2301,8 @@ class BookingService {
                 where: { id: existingBooking.id },
                 data: {
                     userId,
+                    membershipId: membership.id,
+                    memberMembershipId: memberMembership.id,
                     paymentStatus: PaymentStatus.PAID,
                 },
             })
@@ -2263,10 +2318,11 @@ class BookingService {
                     bookingDate: session.sessionDate,
                     preferredStartDate: session.sessionDate,
                     membershipId: membership.id,
+                    memberMembershipId: memberMembership.id,
                     // The membership purchase already paid for this.
                     // Do not charge the customer again for this booking.
                     amount: 0,
-                    paymentMethod: PaymentMethod.PAYMISH,
+                    paymentMethod: PaymentMethod.OFFLINE,
                     paymentReference: bookingReference,
                     paymentStatus: PaymentStatus.PAID,
                     bookingStatus: BookingStatus.PENDING,

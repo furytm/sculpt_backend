@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import bcrypt from "bcrypt";
-import { AuthProvider, MembershipStatus } from "@prisma/client";
+import { AuthProvider, MembershipStatus, UserRole } from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
+import bookingService from "../booking/booking.service.js";
 import { generateAccessToken, generateRefreshToken, } from "../utils/jwt.js";
 const FRONTEND_URL = process.env.FRONTEND_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -371,6 +372,11 @@ class MembershipActivationService {
                         membership: true,
                     },
                 },
+                membershipPurchase: {
+                    include: {
+                        membership: true,
+                    },
+                },
                 memberMembership: true,
             },
         });
@@ -387,14 +393,168 @@ class MembershipActivationService {
         if (tokenHash !== activation.tokenHash) {
             throw new Error("Invalid activation token.");
         }
+        // An activation must belong to exactly one source.
+        const booking = activation.booking;
+        const purchase = activation.membershipPurchase;
+        if (Boolean(booking) === Boolean(purchase)) {
+            throw new Error("Invalid activation record. Please contact Sculpt LAB.");
+        }
+        const source = booking ?? purchase;
         return {
             valid: true,
             membershipNumber: activation.membershipNumber,
-            // These may be null when the admin did not provide them.
-            email: activation.booking.email,
-            fullName: activation.booking.fullName,
-            phone: activation.booking.phone,
-            membership: activation.booking.membership,
+            email: source.email,
+            fullName: source.fullName,
+            phone: source.phone,
+            membership: source.membership,
+        };
+    }
+    async createActivationForPurchase(purchaseId) {
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: { id: purchaseId },
+            include: {
+                membership: true,
+                memberMembership: true,
+                membershipActivation: true,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        if (purchase.paymentMethod !== "OFFLINE") {
+            throw new Error("This purchase is not an offline payment.");
+        }
+        if (purchase.paymentStatus !== "PAID") {
+            throw new Error("Payment must be confirmed before activation.");
+        }
+        if (purchase.membershipActivation) {
+            throw new Error("An activation has already been created for this purchase.");
+        }
+        let memberMembership = purchase.memberMembership;
+        let userId = purchase.userId;
+        // A purchase with a selected first session needs a user account
+        // because the first booking must be attached to that account.
+        if (purchase.firstSessionId) {
+            if (!purchase.healthDeclarationAccepted) {
+                throw new Error("The health and safety declaration must be accepted before confirming this purchase.");
+            }
+            const normalizedEmail = purchase.email.trim().toLowerCase();
+            // Reuse an existing account where possible.
+            let user = await prisma.user.findUnique({
+                where: { email: normalizedEmail },
+            });
+            // Create an account without a password if one doesn't exist.
+            // The member will set their password through the activation flow.
+            if (!user) {
+                user = await prisma.user.create({
+                    data: {
+                        fullName: purchase.fullName?.trim() || "Sculpt LAB Member",
+                        email: normalizedEmail,
+                        phone: purchase.phone || null,
+                        provider: AuthProvider.LOCAL,
+                        role: UserRole.MEMBER,
+                    },
+                });
+            }
+            userId = user.id;
+            // Attach the purchase to the account.
+            await prisma.membershipPurchase.update({
+                where: { id: purchase.id },
+                data: { userId },
+            });
+        }
+        // Create the membership record if it doesn't exist.
+        if (!memberMembership) {
+            memberMembership = await prisma.memberMembership.create({
+                data: {
+                    userId: userId ?? null,
+                    membershipId: purchase.membershipId,
+                    membershipPurchaseId: purchase.id,
+                    status: MembershipStatus.ACTIVE,
+                    startDate: null,
+                    expiryDate: null,
+                    creditsTotal: purchase.membership.classLimit,
+                    creditsUsed: 0,
+                },
+            });
+        }
+        else if (userId && memberMembership.userId !== userId) {
+            memberMembership = await prisma.memberMembership.update({
+                where: { id: memberMembership.id },
+                data: { userId },
+            });
+        }
+        // If a first session was selected, create and confirm its booking.
+        // This does NOT initialize another payment.
+        if (purchase.firstSessionId) {
+            if (!userId) {
+                throw new Error("A user account is required for the first booking.");
+            }
+            await bookingService.createMembershipFirstBooking({
+                purchaseReference: purchase.paymentReference,
+                userId,
+                membershipId: purchase.membershipId,
+                firstSessionId: purchase.firstSessionId,
+                fullName: purchase.fullName || "Sculpt LAB Member",
+                email: purchase.email,
+                phone: purchase.phone || "",
+                healthDeclarationNotes: purchase.healthDeclarationNotes,
+            });
+        }
+        // Generate activation credentials.
+        const activationToken = generateActivationToken();
+        const tokenHash = hashActivationToken(activationToken);
+        let membershipNumber = generateMembershipNumber();
+        while ((await prisma.membershipActivation.findUnique({
+            where: { membershipNumber },
+        })) ||
+            (await prisma.memberMembership.findFirst({
+                where: { membershipNumber },
+            }))) {
+            membershipNumber = generateMembershipNumber();
+        }
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
+        // bookingId is intentionally omitted:
+        // this activation belongs to the membership purchase.
+        const activation = await prisma.membershipActivation.create({
+            data: {
+                membershipPurchaseId: purchase.id,
+                memberMembershipId: memberMembership.id,
+                membershipNumber,
+                tokenHash,
+                expiresAt,
+            },
+        });
+        await prisma.memberMembership.update({
+            where: { id: memberMembership.id },
+            data: { membershipNumber },
+        });
+        const activationUrl = `${FRONTEND_URL}/activate?membership=${encodeURIComponent(membershipNumber)}&token=${encodeURIComponent(activationToken)}`;
+        let emailSent = false;
+        try {
+            await sendActivationEmail({
+                email: purchase.email,
+                fullName: purchase.fullName || "Sculpt LAB Member",
+                membershipName: purchase.membership.name,
+                membershipNumber,
+                activationToken,
+                amount: purchase.amount,
+            });
+            emailSent = true;
+        }
+        catch (error) {
+            console.error("Offline purchase activation email failed:", error);
+        }
+        return {
+            purchaseId: purchase.id,
+            paymentReference: purchase.paymentReference,
+            membershipNumber,
+            email: purchase.email,
+            phone: purchase.phone,
+            fullName: purchase.fullName,
+            activationUrl,
+            emailSent,
         };
     }
     async completeActivation(data) {
@@ -405,6 +565,7 @@ class MembershipActivationService {
             },
             include: {
                 booking: true,
+                membershipPurchase: true,
                 memberMembership: true,
             },
         });
@@ -421,12 +582,17 @@ class MembershipActivationService {
             throw new Error("Invalid activation token.");
         }
         const booking = activation.booking;
-        // Use the email associated with the original booking.
-        const email = booking.email?.trim().toLowerCase();
+        const purchase = activation.membershipPurchase;
+        // An activation must belong to exactly one source.
+        if (Boolean(booking) === Boolean(purchase)) {
+            throw new Error("Invalid activation record. Please contact Sculpt LAB.");
+        }
+        const source = booking ?? purchase;
+        const email = source.email?.trim().toLowerCase();
         if (!email) {
             throw new Error("Email address is required. Please contact Sculpt LAB admin.");
         }
-        // Prevent activation with a different email address.
+        // The activation must use the email from the original purchase or booking.
         if (data.email &&
             data.email.trim().toLowerCase() !== email) {
             throw new Error("The email must match the email associated with this membership.");
@@ -438,15 +604,21 @@ class MembershipActivationService {
                     email,
                 },
             });
+            // Do not allow a purchase already attached to another account
+            // to be linked to a different account.
+            if (purchase?.userId &&
+                purchase.userId !== user?.id) {
+                throw new Error("This membership purchase is already linked to another account.");
+            }
             if (!user) {
                 user = await tx.user.create({
                     data: {
                         fullName: data.fullName?.trim() ||
-                            booking.fullName ||
+                            source.fullName ||
                             "Sculpt LAB Member",
                         email,
                         phone: data.phone?.trim() ||
-                            booking.phone ||
+                            source.phone ||
                             null,
                         password: hashedPassword,
                         provider: AuthProvider.LOCAL,
@@ -473,14 +645,27 @@ class MembershipActivationService {
                     },
                 });
             }
-            const updatedBooking = await tx.booking.update({
-                where: {
-                    id: booking.id,
-                },
-                data: {
-                    userId: user.id,
-                },
-            });
+            // Attach the account to the original booking OR purchase.
+            if (booking) {
+                await tx.booking.update({
+                    where: {
+                        id: booking.id,
+                    },
+                    data: {
+                        userId: user.id,
+                    },
+                });
+            }
+            else if (purchase) {
+                await tx.membershipPurchase.update({
+                    where: {
+                        id: purchase.id,
+                    },
+                    data: {
+                        userId: user.id,
+                    },
+                });
+            }
             const memberMembership = await tx.memberMembership.update({
                 where: {
                     id: activation.memberMembershipId,
@@ -490,17 +675,21 @@ class MembershipActivationService {
                     status: MembershipStatus.ACTIVE,
                 },
             });
-            await tx.membershipActivation.update({
+            // Only one request should be allowed to consume this activation.
+            const activationUpdate = await tx.membershipActivation.updateMany({
                 where: {
                     id: activation.id,
+                    usedAt: null,
                 },
                 data: {
                     usedAt: new Date(),
                 },
             });
+            if (activationUpdate.count !== 1) {
+                throw new Error("This activation has already been used.");
+            }
             return {
                 user,
-                booking: updatedBooking,
                 memberMembership,
             };
         });
@@ -515,8 +704,7 @@ class MembershipActivationService {
             data: {
                 token: refreshToken,
                 userId: result.user.id,
-                expiresAt: new Date(Date.now() +
-                    30 * 24 * 60 * 60 * 1000),
+                expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
             },
         });
         return {
@@ -537,17 +725,40 @@ class MembershipActivationService {
         const activation = await prisma.membershipActivation.findFirst({
             where: {
                 usedAt: null,
-                booking: {
-                    email: {
-                        equals: normalizedEmail,
-                        mode: "insensitive",
+                OR: [
+                    {
+                        booking: {
+                            is: {
+                                email: {
+                                    equals: normalizedEmail,
+                                    mode: "insensitive",
+                                },
+                                paymentStatus: "PAID",
+                                paymentMethod: "OFFLINE",
+                            },
+                        },
                     },
-                    paymentStatus: "PAID",
-                    paymentMethod: "OFFLINE",
-                },
+                    {
+                        membershipPurchase: {
+                            is: {
+                                email: {
+                                    equals: normalizedEmail,
+                                    mode: "insensitive",
+                                },
+                                paymentStatus: "PAID",
+                                paymentMethod: "OFFLINE",
+                            },
+                        },
+                    },
+                ],
             },
             include: {
                 booking: {
+                    include: {
+                        membership: true,
+                    },
+                },
+                membershipPurchase: {
                     include: {
                         membership: true,
                     },
@@ -558,14 +769,26 @@ class MembershipActivationService {
             },
         });
         if (!activation) {
-            return { found: false, emailSent: false };
+            return {
+                found: false,
+                emailSent: false,
+            };
         }
+        const booking = activation.booking;
+        const purchase = activation.membershipPurchase;
+        // An activation must belong to exactly one source.
+        if (Boolean(booking) === Boolean(purchase)) {
+            throw new Error("Invalid activation record. Please contact Sculpt LAB.");
+        }
+        const source = booking ?? purchase;
         const activationToken = generateActivationToken();
         const tokenHash = hashActivationToken(activationToken);
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
         await prisma.membershipActivation.update({
-            where: { id: activation.id },
+            where: {
+                id: activation.id,
+            },
             data: {
                 tokenHash,
                 expiresAt,
@@ -574,18 +797,24 @@ class MembershipActivationService {
         try {
             await sendActivationEmail({
                 email: normalizedEmail,
-                fullName: activation.booking.fullName || "Sculpt LAB Member",
-                membershipName: activation.booking.membership.name,
+                fullName: source.fullName || "Sculpt LAB Member",
+                membershipName: source.membership.name,
                 membershipNumber: activation.membershipNumber,
                 activationToken,
-                amount: activation.booking.amount,
+                amount: source.amount,
             });
             console.log("Membership activation email resent:", normalizedEmail);
-            return { found: true, emailSent: true };
+            return {
+                found: true,
+                emailSent: true,
+            };
         }
         catch (error) {
             console.error("Failed to resend membership activation email:", normalizedEmail, error);
-            return { found: true, emailSent: false };
+            return {
+                found: true,
+                emailSent: false,
+            };
         }
     }
 }

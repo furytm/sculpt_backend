@@ -1,5 +1,5 @@
 import prisma from "../config/prisma.js";
-import { MembershipStatus, MembershipPurchaseType, PaymentStatus, } from "@prisma/client";
+import { MembershipStatus, MembershipPurchaseType, PaymentStatus, PaymentMethod, SessionStatus, } from "@prisma/client";
 import bookingService from "../booking/booking.service.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
 import paymentService from "../payment/payment.service.js";
@@ -94,9 +94,7 @@ class MembershipService {
             throw new Error("Target membership is required.");
         }
         const targetMembership = await prisma.membership.findUnique({
-            where: {
-                id: targetMembershipId,
-            },
+            where: { id: targetMembershipId },
         });
         if (!targetMembership) {
             throw new Error("Target membership not found.");
@@ -104,22 +102,17 @@ class MembershipService {
         if (!targetMembership.isActive) {
             throw new Error("This membership is no longer available.");
         }
+        const now = new Date();
         /*
-         * Find the member's active membership.
+         * First find a membership whose validity period
+         * has not expired, regardless of its status field.
          */
-        const currentMembership = await prisma.memberMembership.findFirst({
+        let currentMembership = await prisma.memberMembership.findFirst({
             where: {
                 userId,
-                status: MembershipStatus.ACTIVE,
                 OR: [
-                    {
-                        expiryDate: null,
-                    },
-                    {
-                        expiryDate: {
-                            gt: new Date(),
-                        },
-                    },
+                    { expiryDate: null },
+                    { expiryDate: { gt: now } },
                 ],
             },
             include: {
@@ -129,39 +122,50 @@ class MembershipService {
                 expiryDate: "asc",
             },
         });
+        /*
+         * If there is no valid membership, use the latest
+         * membership record, even if it has expired.
+         */
         if (!currentMembership) {
-            throw new Error("You do not have an active membership to upgrade.");
+            currentMembership = await prisma.memberMembership.findFirst({
+                where: { userId },
+                include: {
+                    membership: true,
+                },
+                orderBy: {
+                    createdAt: "desc",
+                },
+            });
         }
-        if (currentMembership.membershipId ===
-            targetMembership.id) {
+        if (!currentMembership) {
+            throw new Error("No previous membership found. Please purchase a new membership first.");
+        }
+        if (currentMembership.membershipId === targetMembership.id) {
             throw new Error("You are already on this membership.");
         }
-        /*
-         * Calculate unused credits.
-         */
-        const carriedCredits = currentMembership.creditsTotal === null
-            ? 0
-            : Math.max(currentMembership.creditsTotal -
-                currentMembership.creditsUsed, 0);
+        const membershipIsStillValid = currentMembership.expiryDate === null ||
+            currentMembership.expiryDate > now;
+        const carriedCredits = membershipIsStillValid
+            ? Math.max((currentMembership.creditsTotal ?? 0) -
+                currentMembership.creditsUsed, 0)
+            : 0;
+        const previousCreditsUsed = membershipIsStillValid
+            ? currentMembership.creditsUsed ?? 0
+            : 0;
         const newCreditsTotal = targetMembership.classLimit === null
             ? null
             : targetMembership.classLimit +
-                carriedCredits;
+                carriedCredits +
+                previousCreditsUsed;
         const user = await prisma.user.findUnique({
-            where: {
-                id: userId,
-            },
-            select: {
-                email: true,
-            },
+            where: { id: userId },
+            select: { email: true },
         });
         if (!user) {
             throw new Error("User not found.");
         }
         /*
-         * ==================================================
-         * CHECK FOR EXISTING PENDING UPGRADE
-         * ==================================================
+         * Close any previous pending upgrade for this target.
          */
         const existingPendingPurchase = await prisma.membershipPurchase.findFirst({
             where: {
@@ -174,11 +178,6 @@ class MembershipService {
                 createdAt: "desc",
             },
         });
-        /*
-         * ==================================================
-         * REUSE EXISTING PENDING UPGRADE
-         * ==================================================
-         */
         if (existingPendingPurchase) {
             await prisma.membershipPurchase.update({
                 where: {
@@ -189,18 +188,15 @@ class MembershipService {
                 },
             });
         }
-        /*
-         * ==================================================
-         * CREATE NEW UPGRADE PURCHASE
-         * ==================================================
-         */
         const paymentReference = `SL-UPGRADE-${Date.now()}`;
         const purchase = await prisma.membershipPurchase.create({
             data: {
                 userId,
                 email: user.email,
                 membershipId: targetMembership.id,
-                previousMembershipId: currentMembership.membershipId,
+                // This is the previous catalogue membership ID,
+                // matching the existing meaning of this field.
+                previousMemberMembershipId: currentMembership.id,
                 type: MembershipPurchaseType.UPGRADE,
                 amount: targetMembership.price,
                 paymentReference,
@@ -208,22 +204,34 @@ class MembershipService {
                 carriedCredits,
             },
         });
-        const payment = await paymentService.initializeTransaction({
-            email: user.email,
-            amount: targetMembership.price,
-            reference: paymentReference,
-        });
-        return {
-            purchaseId: purchase.id,
-            reference: payment.data.reference ??
-                paymentReference,
-            authorizationUrl: payment.data.authorization_url,
-            amount: targetMembership.price,
-            carriedCredits,
-            newCreditsTotal,
-            membership: targetMembership,
-            reusedPendingPurchase: false,
-        };
+        try {
+            const payment = await paymentService.initializeTransaction({
+                email: user.email,
+                amount: targetMembership.price,
+                reference: paymentReference,
+            });
+            const authorizationUrl = payment?.data?.authorization_url ??
+                payment?.data?.authorizationUrl ??
+                payment?.authorization_url ??
+                payment?.authorizationUrl;
+            if (!authorizationUrl) {
+                throw new Error("Payment provider did not return a payment URL.");
+            }
+            return {
+                purchaseId: purchase.id,
+                reference: paymentReference,
+                authorizationUrl,
+                amount: targetMembership.price,
+                carriedCredits,
+                newCreditsTotal,
+                membership: targetMembership,
+                reusedPendingPurchase: false,
+            };
+        }
+        catch (error) {
+            // Keep the pending purchase for reconciliation.
+            throw error;
+        }
     }
     async initiateRenewal(userId, membershipId) {
         if (!userId) {
@@ -405,6 +413,21 @@ class MembershipService {
         if (!paymentReference) {
             throw new Error("Payment reference is required.");
         }
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: {
+                paymentReference,
+            },
+            select: {
+                paymentMethod: true,
+                paymentStatus: true,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        if (purchase.paymentMethod !== PaymentMethod.PAYMISH) {
+            throw new Error("This purchase cannot be completed through the Paymish payment flow.");
+        }
         const result = await prisma.$transaction(async (tx) => {
             const purchase = await tx.membershipPurchase.findUnique({
                 where: {
@@ -531,18 +554,35 @@ class MembershipService {
             /*
              * Find current active membership.
              */
-            const currentMembership = await tx.memberMembership.findFirst({
-                where: {
-                    userId: purchase.userId,
-                    status: MembershipStatus.ACTIVE,
-                },
-                include: {
-                    membership: true,
-                },
-                orderBy: {
-                    expiryDate: "asc",
-                },
-            });
+            /*
+            * Find the current membership.
+            *
+            * For upgrades, find the previous membership using the
+            * catalogue ID saved on the purchase. This also works
+            * when that membership has already expired.
+            */
+            const currentMembership = purchase.type === MembershipPurchaseType.UPGRADE
+                ? await tx.memberMembership.findFirst({
+                    where: {
+                        id: purchase.previousMemberMembershipId ?? "",
+                        userId: purchase.userId,
+                    },
+                    include: {
+                        membership: true,
+                    },
+                })
+                : await tx.memberMembership.findFirst({
+                    where: {
+                        userId: purchase.userId,
+                        status: MembershipStatus.ACTIVE,
+                    },
+                    include: {
+                        membership: true,
+                    },
+                    orderBy: {
+                        expiryDate: "asc",
+                    },
+                });
             const previousMembership = purchase.userId
                 ? await tx.memberMembership.findFirst({
                     where: {
@@ -578,27 +618,51 @@ class MembershipService {
             }
             const now = new Date();
             /*
-             * ==================================================
-             * UPGRADE
-             * ==================================================
-             */
-            if (purchase.type ===
-                MembershipPurchaseType.UPGRADE) {
+          * ==================================================
+          * UPGRADE
+          * ==================================================
+          */
+            if (purchase.type === MembershipPurchaseType.UPGRADE) {
                 if (!currentMembership) {
-                    throw new Error("Active membership not found for upgrade.");
+                    throw new Error("Previous membership not found for upgrade.");
                 }
-                const remainingCredits = currentMembership.creditsTotal === null
-                    ? 0
-                    : Math.max(currentMembership.creditsTotal -
-                        currentMembership.creditsUsed, 0);
+                const membershipIsStillValid = currentMembership.expiryDate === null ||
+                    currentMembership.expiryDate > now;
+                /*
+                 * Only carry credits if the previous membership
+                 * is still within its validity period.
+                 */
+                const previousCreditsUsed = currentMembership.creditsUsed ?? 0;
+                const remainingCredits = membershipIsStillValid
+                    ? Math.max((currentMembership.creditsTotal ?? 0) -
+                        previousCreditsUsed, 0)
+                    : 0;
+                // Preserve historical usage while carrying forward unused credits.
                 const newCreditsTotal = purchase.membership.classLimit === null
                     ? null
                     : purchase.membership.classLimit +
-                        remainingCredits;
-                const startDate = now;
-                const expiryDate = this.calculateMembershipExpiry(startDate, purchase.membership.duration, purchase.membership.period);
+                        remainingCredits +
+                        (membershipIsStillValid ? previousCreditsUsed : 0);
+                const newCreditsUsed = membershipIsStillValid
+                    ? previousCreditsUsed
+                    : 0;
                 /*
-                 * Expire the old membership.
+                 * The new membership becomes usable immediately.
+                 *
+                 * However, when the previous membership is still
+                 * valid, calculate the new expiry from its existing
+                 * expiry date to preserve the remaining time.
+                 *
+                 * If expired, calculate from today.
+                 */
+                const expiryBaseDate = membershipIsStillValid && currentMembership.expiryDate
+                    ? currentMembership.expiryDate
+                    : now;
+                const startDate = now;
+                const expiryDate = this.calculateMembershipExpiry(expiryBaseDate, purchase.membership.duration, purchase.membership.period);
+                /*
+                 * Expire the previous membership after transferring
+                 * any eligible unused credits.
                  */
                 await tx.memberMembership.update({
                     where: {
@@ -610,11 +674,6 @@ class MembershipService {
                 });
                 /*
                  * Create the upgraded membership.
-                 *
-                 * Example:
-                 * Old remaining = 5
-                 * New plan = 20
-                 * New total = 25
                  */
                 const newMembership = await tx.memberMembership.create({
                     data: {
@@ -626,23 +685,29 @@ class MembershipService {
                         startDate,
                         expiryDate,
                         creditsTotal: newCreditsTotal,
-                        creditsUsed: 0,
+                        creditsUsed: newCreditsUsed,
                     },
                 });
-                await tx.membershipPurchase.update({
+                /*
+                 * Save the final carried credits on the purchase.
+                 */
+                const updatedPurchase = await tx.membershipPurchase.update({
                     where: {
                         id: purchase.id,
                     },
                     data: {
                         carriedCredits: remainingCredits,
+                        paymentStatus: PaymentStatus.PAID,
                     },
                 });
                 return {
-                    purchase,
+                    purchase: updatedPurchase,
                     membership: newMembership,
                     carriedCredits: remainingCredits,
                     creditsTotal: newCreditsTotal,
-                    remainingCredits: newCreditsTotal,
+                    remainingCredits: newCreditsTotal === null
+                        ? null
+                        : Math.max(newCreditsTotal - newCreditsUsed, 0),
                 };
             }
             /*
@@ -985,6 +1050,106 @@ class MembershipService {
             // Keep the pending purchase for reconciliation or a safe retry.
             throw error;
         }
+    }
+    async initiateOfflineMembershipPurchase(data) {
+        const email = data.email.trim().toLowerCase();
+        // 1. Validate required customer and membership details
+        if (!data.membershipId ||
+            !data.fullName?.trim() ||
+            !email ||
+            !data.phone?.trim()) {
+            throw new Error("Membership, name, email, and phone are required.");
+        }
+        // 2. Validate membership
+        const membership = await prisma.membership.findFirst({
+            where: {
+                id: data.membershipId,
+                isActive: true,
+            },
+        });
+        if (!membership) {
+            throw new Error("Membership not found or is not active.");
+        }
+        // 3. Validate Health & Safety declaration when a first session is selected
+        if (data.firstSessionId &&
+            data.healthDeclarationAccepted !== true) {
+            throw new Error("You must accept the Health & Safety declaration to book your first class.");
+        }
+        // 4. Validate selected first session
+        let firstSession = null;
+        if (data.firstSessionId) {
+            firstSession = await prisma.classSession.findUnique({
+                where: {
+                    id: data.firstSessionId,
+                },
+                include: {
+                    schedule: true,
+                },
+            });
+            if (!firstSession) {
+                throw new Error("Selected session not found.");
+            }
+            // Ensure session is open
+            if (firstSession.status !== SessionStatus.OPEN) {
+                throw new Error("This session is no longer available.");
+            }
+            // Ensure the associated schedule is active
+            if (!firstSession.schedule.isActive) {
+                throw new Error("The selected class is no longer available.");
+            }
+            // IMPORTANT:
+            // Add your existing capacity validation and two-hour
+            // booking-window validation here before creating the purchase.
+        }
+        // 5. Generate payment reference
+        const paymentReference = `SL-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+        // 6. Create membership purchase
+        const purchase = await prisma.membershipPurchase.create({
+            data: {
+                userId: data.userId,
+                fullName: data.fullName.trim(),
+                email,
+                phone: data.phone.trim(),
+                membershipId: membership.id,
+                type: MembershipPurchaseType.NEW,
+                amount: membership.price,
+                // First class information
+                firstSessionId: firstSession?.id ?? null,
+                firstClassId: data.firstClassId ?? null,
+                // Health & Safety declaration
+                healthDeclarationAccepted: data.healthDeclarationAccepted ?? false,
+                healthDeclarationNotes: data.healthDeclarationNotes?.trim() || null,
+                // Payment information
+                paymentReference,
+                paymentStatus: PaymentStatus.PENDING,
+                paymentMethod: PaymentMethod.OFFLINE,
+            },
+            include: {
+                membership: true,
+                firstSession: {
+                    include: {
+                        schedule: true,
+                    },
+                },
+            },
+        });
+        // 7. Return purchase details
+        return {
+            success: true,
+            purchaseId: purchase.id,
+            paymentReference: purchase.paymentReference,
+            amount: purchase.amount,
+            membership: purchase.membership,
+            firstSession: purchase.firstSession,
+            firstClassId: purchase.firstClassId,
+            healthDeclarationAccepted: purchase.healthDeclarationAccepted,
+            healthDeclarationNotes: purchase.healthDeclarationNotes,
+            bankDetails: {
+                accountName: "Sculpt LAB Limited",
+                bankName: "Moniepoint",
+                accountNumber: "3001445877",
+            },
+        };
     }
 }
 export default new MembershipService();
