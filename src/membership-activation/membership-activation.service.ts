@@ -46,55 +46,6 @@ function hashActivationToken(token: string): string {
 //   return `SL-${year}-${randomNumber}`;
 // }
 
-function getMembershipExpiry(
-  startDate: Date,
-  duration: string
-): Date | null {
-  const expiry = new Date(startDate);
-
-  const normalized = duration.trim().toLowerCase();
-
-  if (
-    normalized.includes("single") ||
-    normalized.includes("class")
-  ) {
-    expiry.setDate(expiry.getDate() + 30);
-    return expiry;
-  }
-
-  if (normalized.includes("week")) {
-    const match = normalized.match(/\d+/);
-    const weeks = match ? Number(match[0]) : 1;
-
-    expiry.setDate(expiry.getDate() + weeks * 7);
-    return expiry;
-  }
-
-  if (
-    normalized.includes("month") ||
-    normalized.includes("monthly")
-  ) {
-    const match = normalized.match(/\d+/);
-    const months = match ? Number(match[0]) : 1;
-
-    expiry.setMonth(expiry.getMonth() + months);
-    return expiry;
-  }
-
-  if (
-    normalized.includes("year") ||
-    normalized.includes("annual")
-  ) {
-    const match = normalized.match(/\d+/);
-    const years = match ? Number(match[0]) : 1;
-
-    expiry.setFullYear(expiry.getFullYear() + years);
-    return expiry;
-  }
-
-  return null;
-}
-
 async function sendActivationEmail({
   email,
   fullName,
@@ -314,6 +265,7 @@ async createActivationForBooking(
         membership: true,
         memberMembership: true,
         membershipActivation: true,
+        session: true,
       },
     });
 
@@ -339,12 +291,37 @@ async createActivationForBooking(
 
     let memberMembership = booking.memberMembership;
 
-    const startDate = new Date();
+    /*
+     * Validity starts on the first booked session, never the
+     * approval date. A confirmed booking with a session (or a booked
+     * date) starts the membership on that date.
+     *
+     * Otherwise the dates stay null:
+     * - an admin onboarding an offline member (no session): the
+     *   membership waits for its first booked session
+     *   (BookingService.bookMemberSession starts it);
+     * - an offline payment whose selected class is still to be
+     *   confirmed: confirming it sets the dates, and if it can't be
+     *   confirmed the membership waits instead of starting on a class
+     *   the member won't attend.
+     *
+     * The expiry uses the same duration rules as every other path.
+     */
+    const startDate =
+      booking.bookingStatus === "CONFIRMED"
+        ? booking.session?.sessionDate ??
+          booking.bookingDate ??
+          booking.preferredStartDate ??
+          null
+        : null;
 
-    const expiryDate = getMembershipExpiry(
-      startDate,
-      booking.membership.duration
-    );
+    const expiryDate = startDate
+      ? bookingService.calculateMembershipExpiry(
+          startDate,
+          booking.membership.duration,
+          booking.membership.period
+        )
+      : null;
 
  
 if (!memberMembership) {
@@ -531,6 +508,29 @@ async verifyActivation(data: VerifyActivationDto) {
   };
 }
 
+/**
+ * Activate a paid offline membership purchase.
+ *
+ * The activation (and its email) never depends on the selected first
+ * class. The order is:
+ *   1. validate the purchase (OFFLINE, PAID);
+ *   2. create or reuse the account (purchases with a first class) and
+ *      attach the purchase to it;
+ *   3. create or reuse the membership, with no dates;
+ *   4. create the activation and send its email, or reuse an existing
+ *      activation without emailing again;
+ *   5. then try the selected first class through
+ *      BookingService.createMembershipFirstBooking.
+ *
+ * If the class can't be booked, nothing is rolled back: the payment,
+ * membership and activation stay, no credit is used, the dates stay
+ * null, and the purchase keeps its first-session details so an admin
+ * can retry (retryFirstClassBooking). The result reports the class
+ * separately.
+ *
+ * Safe to call again for the same purchase: it reuses the account,
+ * membership and activation, and only retries the class.
+ */
 async createActivationForPurchase(purchaseId: string) {
   const purchase = await prisma.membershipPurchase.findUnique({
     where: { id: purchaseId },
@@ -553,24 +553,12 @@ async createActivationForPurchase(purchaseId: string) {
     throw new Error("Payment must be confirmed before activation.");
   }
 
-  if (purchase.membershipActivation) {
-    throw new Error(
-      "An activation has already been created for this purchase."
-    );
-  }
-
   let memberMembership = purchase.memberMembership;
   let userId = purchase.userId;
 
   // A purchase with a selected first session needs a user account
   // because the first booking must be attached to that account.
   if (purchase.firstSessionId) {
-    if (!purchase.healthDeclarationAccepted) {
-      throw new Error(
-        "The health and safety declaration must be accepted before confirming this purchase."
-      );
-    }
-
     const normalizedEmail = purchase.email.trim().toLowerCase();
 
     // Reuse an existing account where possible.
@@ -595,13 +583,16 @@ async createActivationForPurchase(purchaseId: string) {
     userId = user.id;
 
     // Attach the purchase to the account.
-    await prisma.membershipPurchase.update({
-      where: { id: purchase.id },
-      data: { userId },
-    });
+    if (purchase.userId !== userId) {
+      await prisma.membershipPurchase.update({
+        where: { id: purchase.id },
+        data: { userId },
+      });
+    }
   }
 
-  // Create the membership record if it doesn't exist.
+  // Create the membership record if it doesn't exist. Its dates stay
+  // null: the first confirmed class (now or later) starts it.
   if (!memberMembership) {
     memberMembership = await prisma.memberMembership.create({
       data: {
@@ -622,82 +613,100 @@ async createActivationForPurchase(purchaseId: string) {
     });
   }
 
-  // If a first session was selected, create and confirm its booking.
-  // This does NOT initialize another payment.
-  if (purchase.firstSessionId) {
-    if (!userId) {
-      throw new Error("A user account is required for the first booking.");
-    }
+  // ---------------------------------------------------------------
+  // ACTIVATION (before, and independent of, the first class)
+  // ---------------------------------------------------------------
 
-    await bookingService.createMembershipFirstBooking({
-      purchaseReference: purchase.paymentReference,
-      userId,
-      membershipId: purchase.membershipId,
-      firstSessionId: purchase.firstSessionId,
-      fullName: purchase.fullName || "Sculpt LAB Member",
-      email: purchase.email,
-      phone: purchase.phone || "",
-      healthDeclarationNotes: purchase.healthDeclarationNotes,
-    });
-  }
-
-  // Generate activation credentials.
-  const activationToken = generateActivationToken();
-  const tokenHash = hashActivationToken(activationToken);
-
-  let membershipNumber = generateMembershipNumber();
-
-  while (
-    (await prisma.membershipActivation.findUnique({
-      where: { membershipNumber },
-    })) ||
-    (await prisma.memberMembership.findFirst({
-      where: { membershipNumber },
-    }))
-  ) {
-    membershipNumber = generateMembershipNumber();
-  }
-
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
-
-  // bookingId is intentionally omitted:
-  // this activation belongs to the membership purchase.
-  const activation = await prisma.membershipActivation.create({
-    data: {
-      membershipPurchaseId: purchase.id,
-      memberMembershipId: memberMembership.id,
-      membershipNumber,
-      tokenHash,
-      expiresAt,
-    },
-  });
-
-  await prisma.memberMembership.update({
-    where: { id: memberMembership.id },
-    data: { membershipNumber },
-  });
-
-  const activationUrl = `${FRONTEND_URL}/activate?membership=${encodeURIComponent(
-    membershipNumber
-  )}&token=${encodeURIComponent(activationToken)}`;
-
+  let membershipNumber: string;
+  let activationUrl: string | null = null;
+  let activationStatus: "CREATED" | "EXISTING";
+  let activationEmail: "SENT" | "FAILED" | "NOT_RESENT";
   let emailSent = false;
 
-  try {
-    await sendActivationEmail({
-      email: purchase.email,
-      fullName: purchase.fullName || "Sculpt LAB Member",
-      membershipName: purchase.membership.name,
-      membershipNumber,
-      activationToken,
-      amount: purchase.amount,
+  if (purchase.membershipActivation) {
+    // Reuse it. No new number, record or email; the raw token isn't
+    // stored, so no link is returned. A lost or failed email is
+    // re-sent through resendActivationForEmail.
+    membershipNumber = purchase.membershipActivation.membershipNumber;
+    activationStatus = "EXISTING";
+    activationEmail = "NOT_RESENT";
+
+    if (memberMembership.membershipNumber !== membershipNumber) {
+      await prisma.memberMembership.update({
+        where: { id: memberMembership.id },
+        data: { membershipNumber },
+      });
+    }
+  } else {
+    // Generate activation credentials.
+    const activationToken = generateActivationToken();
+    const tokenHash = hashActivationToken(activationToken);
+
+    membershipNumber = generateMembershipNumber();
+
+    while (
+      (await prisma.membershipActivation.findUnique({
+        where: { membershipNumber },
+      })) ||
+      (await prisma.memberMembership.findFirst({
+        where: { membershipNumber },
+      }))
+    ) {
+      membershipNumber = generateMembershipNumber();
+    }
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
+
+    // bookingId is intentionally omitted:
+    // this activation belongs to the membership purchase.
+    await prisma.membershipActivation.create({
+      data: {
+        membershipPurchaseId: purchase.id,
+        memberMembershipId: memberMembership.id,
+        membershipNumber,
+        tokenHash,
+        expiresAt,
+      },
     });
 
-    emailSent = true;
-  } catch (error) {
-    console.error("Offline purchase activation email failed:", error);
+    await prisma.memberMembership.update({
+      where: { id: memberMembership.id },
+      data: { membershipNumber },
+    });
+
+    activationUrl = `${FRONTEND_URL}/activate?membership=${encodeURIComponent(
+      membershipNumber
+    )}&token=${encodeURIComponent(activationToken)}`;
+
+    activationStatus = "CREATED";
+
+    try {
+      await sendActivationEmail({
+        email: purchase.email,
+        fullName: purchase.fullName || "Sculpt LAB Member",
+        membershipName: purchase.membership.name,
+        membershipNumber,
+        activationToken,
+        amount: purchase.amount,
+      });
+
+      emailSent = true;
+    } catch (error) {
+      console.error("Offline purchase activation email failed:", error);
+    }
+
+    activationEmail = emailSent ? "SENT" : "FAILED";
   }
+
+  // ---------------------------------------------------------------
+  // FIRST CLASS (after activation; its failure is only reported)
+  // ---------------------------------------------------------------
+
+  const firstClass =
+    purchase.firstSessionId && userId
+      ? await this.attemptFirstClassBooking(purchase, userId)
+      : { status: "NOT_SELECTED" as const };
 
   return {
     purchaseId: purchase.id,
@@ -708,7 +717,138 @@ async createActivationForPurchase(purchaseId: string) {
     fullName: purchase.fullName,
     activationUrl,
     emailSent,
+    activationStatus,
+    activationEmail,
+    firstClass,
   };
+}
+
+/**
+ * Admin: retry the selected first class of a paid offline membership
+ * purchase whose first class couldn't be booked when it was activated.
+ *
+ * Only re-runs BookingService.createMembershipFirstBooking with the
+ * purchase's own reference and saved details, which reuses its
+ * existing first booking. It never confirms or charges the payment,
+ * and never creates a purchase, account, membership or activation. An
+ * already-confirmed first class is returned unchanged.
+ */
+async retryFirstClassBooking(purchaseId: string) {
+  const purchase = await prisma.membershipPurchase.findUnique({
+    where: { id: purchaseId },
+    include: {
+      memberMembership: true,
+      membershipActivation: true,
+    },
+  });
+
+  if (!purchase) {
+    throw new Error("Membership purchase not found.");
+  }
+
+  if (purchase.paymentMethod !== "OFFLINE") {
+    throw new Error("This purchase is not an offline payment.");
+  }
+
+  if (purchase.paymentStatus !== "PAID") {
+    throw new Error("This purchase's payment has not been confirmed yet.");
+  }
+
+  if (!purchase.firstSessionId) {
+    throw new Error("This purchase has no selected first class to book.");
+  }
+
+  if (!purchase.userId) {
+    throw new Error("This purchase is not linked to a customer account.");
+  }
+
+  if (
+    !purchase.memberMembership ||
+    purchase.memberMembership.userId !== purchase.userId
+  ) {
+    throw new Error(
+      "This purchase's membership is not linked to the customer's account."
+    );
+  }
+
+  if (!purchase.membershipActivation) {
+    throw new Error(
+      "This purchase has no activation yet. Confirm the payment first."
+    );
+  }
+
+  return {
+    purchaseId: purchase.id,
+    paymentReference: purchase.paymentReference,
+    firstClass: await this.attemptFirstClassBooking(purchase, purchase.userId),
+  };
+}
+
+/**
+ * Book and confirm the purchase's selected first class through the
+ * existing BookingService.createMembershipFirstBooking, which does all
+ * the validation, the membership dates, the credit and the calendar
+ * event. A failure is returned as NOT_CONFIRMED, never thrown.
+ */
+private async attemptFirstClassBooking(
+  purchase: {
+    paymentReference: string;
+    membershipId: string;
+    firstSessionId: string | null;
+    fullName: string | null;
+    email: string;
+    phone: string | null;
+    healthDeclarationNotes: string | null;
+  },
+  userId: string
+) {
+  try {
+    const booking = await bookingService.createMembershipFirstBooking({
+      purchaseReference: purchase.paymentReference,
+      userId,
+      membershipId: purchase.membershipId,
+      firstSessionId: purchase.firstSessionId ?? "",
+      fullName: purchase.fullName || "Sculpt LAB Member",
+      email: purchase.email,
+      phone: purchase.phone || "",
+      healthDeclarationNotes: purchase.healthDeclarationNotes,
+    });
+
+    if (booking.bookingStatus === "CONFIRMED") {
+      return {
+        status: "CONFIRMED" as const,
+        bookingId: booking.id,
+        sessionId: booking.sessionId,
+      };
+    }
+
+    return {
+      status: "NOT_CONFIRMED" as const,
+      sessionId: purchase.firstSessionId,
+      reason: "The first class could not be confirmed.",
+      retryAvailable: true,
+    };
+  } catch (error) {
+    const reason =
+      error instanceof Error
+        ? error.message
+        : "The first class could not be confirmed.";
+
+    console.error(
+      "[OFFLINE PURCHASE] Activated, but the first class could not be booked:",
+      purchase.paymentReference,
+      reason
+    );
+
+    return {
+      status: "NOT_CONFIRMED" as const,
+      sessionId: purchase.firstSessionId,
+      reason,
+      // Retrying can't help once another class has started the
+      // membership; the class must be booked normally instead.
+      retryAvailable: !reason.includes("already started from another booking"),
+    };
+  }
 }
 
 
@@ -784,25 +924,30 @@ async createManualMembershipForRegisteredUser(data: {
     }
   }
 
+  /*
+   * An admin-entered start date records a membership that has
+   * already started (for example, moving an existing member over).
+   * Without one, the membership waits for its first booked session
+   * instead of starting today. BookingService.bookMemberSession
+   * starts it on that session's date.
+   */
   const startDate = data.startDate
     ? new Date(`${data.startDate}T00:00:00.000Z`)
-    : new Date();
+    : null;
 
-  if (Number.isNaN(startDate.getTime())) {
+  if (startDate && Number.isNaN(startDate.getTime())) {
     throw new Error("Invalid membership start date.");
   }
 
-  const expiryDate = getMembershipExpiry(
-    startDate,
-    membership.duration
-  );
-
-  // A finite membership must have a calculated expiry.
-  if (totalCredits !== null && !expiryDate) {
-    throw new Error(
-      "Unable to calculate membership expiry. Please check the membership duration."
-    );
-  }
+  // Same duration rules as every other path. Private session plans
+  // and packages have no expiry; an unknown duration throws.
+  const expiryDate = startDate
+    ? bookingService.calculateMembershipExpiry(
+        startDate,
+        membership.duration,
+        membership.period
+      )
+    : null;
 
   let membershipNumber = generateMembershipNumber();
 

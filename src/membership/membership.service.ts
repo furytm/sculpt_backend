@@ -1,5 +1,5 @@
 import prisma from "../config/prisma.js";
-import { MembershipType } from "@prisma/client";
+import { MembershipType, Prisma } from "@prisma/client";
 import {
   MembershipStatus,
   MembershipPurchaseType,
@@ -10,8 +10,45 @@ import { generateMembershipNumber } from "../utils/membership-number.js";
 
 
 import paymentService from "../payment/payment.service.js";
+import { adminNotificationService } from "../admin/admin-notification.service.js";
 
 import crypto from "crypto";
+
+/**
+ * Reconciliation states for a FAILED purchase that received a
+ * verified payment anyway (the customer paid an old link after the
+ * purchase was cancelled or superseded).
+ *
+ * The schema has no status for this, so the state is stored as a
+ * prefix in MembershipPurchase.paymentRejectionReason. That column
+ * is otherwise only used for rejected offline transfers, and those
+ * never reach the Paymish flow. The purchase stays FAILED until an
+ * admin applies it (it becomes PAID) or records a refund.
+ */
+export const PURCHASE_RECONCILIATION = {
+  NEEDS_REVIEW: "PAID_NEEDS_RECONCILIATION",
+  APPLIED: "RECONCILED_APPLIED",
+  REFUNDED: "RECONCILED_REFUNDED",
+} as const;
+
+/**
+ * Thrown by completeMembershipPurchase for a FAILED (cancelled or
+ * superseded) purchase. Payment callers catch it, because the money
+ * was taken: they record it with recordPaymentForFailedPurchase so an
+ * admin can refund or apply it, and they don't treat it as a failure
+ * to retry.
+ */
+export class PaidFailedPurchaseError extends Error {
+  readonly paymentReference: string;
+
+  constructor(paymentReference: string) {
+    super(
+      "This membership payment was cancelled or replaced by a newer purchase and cannot be completed. Please contact Sculpt LAB."
+    );
+    this.name = "PaidFailedPurchaseError";
+    this.paymentReference = paymentReference;
+  }
+}
 
 
 
@@ -177,12 +214,16 @@ async initiateUpgrade(
   const now = new Date();
 
   /*
-   * First find a membership whose validity period
-   * has not expired, regardless of its status field.
+   * First find an ACTIVE membership whose validity period has not
+   * expired. A row already replaced by an earlier upgrade is
+   * EXPIRED but can still have a future expiry date, so the status
+   * check stops it from being upgraded (and its credits carried)
+   * a second time.
    */
   let currentMembership = await prisma.memberMembership.findFirst({
     where: {
       userId,
+      status: MembershipStatus.ACTIVE,
       OR: [
         { expiryDate: null },
         { expiryDate: { gt: now } },
@@ -222,21 +263,29 @@ async initiateUpgrade(
     throw new Error("You are already on this membership.");
   }
 
-  const membershipIsStillValid =
-    currentMembership.expiryDate === null ||
-    currentMembership.expiryDate > now;
+  /*
+   * Preview using the same rule completion applies: every
+   * membership of this type the member still holds is replaced, its
+   * unused credits carried and its usage kept. Completion
+   * recalculates this when payment is verified.
+   */
+  const chain = await this.getValidityChain(
+    prisma,
+    userId,
+    currentMembership.membership.type,
+    now
+  );
 
-  const carriedCredits = membershipIsStillValid
-    ? Math.max(
-        (currentMembership.creditsTotal ?? 0) -
-          currentMembership.creditsUsed,
-        0
-      )
-    : 0;
+  const carriedCredits = chain.rows.reduce(
+    (total, row) =>
+      total + Math.max((row.creditsTotal ?? 0) - row.creditsUsed, 0),
+    0
+  );
 
-const previousCreditsUsed = membershipIsStillValid
-  ? currentMembership.creditsUsed ?? 0
-  : 0;
+  const previousCreditsUsed = chain.rows.reduce(
+    (total, row) => total + row.creditsUsed,
+    0
+  );
 
 const newCreditsTotal =
   targetMembership.classLimit === null
@@ -255,31 +304,25 @@ const newCreditsTotal =
   }
 
   /*
-   * Close any previous pending upgrade for this target.
+   * Supersede every earlier pending upgrade by this member, for any
+   * target. Only the newest upgrade attempt can complete, so an old
+   * payment link can't later apply a stale upgrade on top of this one.
+   *
+   * The PENDING condition is checked by the UPDATE itself. If an
+   * older upgrade is completing right now, its transaction holds the
+   * purchase row lock; this update waits, sees it is now PAID, and
+   * leaves it alone.
    */
-  const existingPendingPurchase =
-    await prisma.membershipPurchase.findFirst({
-      where: {
-        userId,
-        membershipId: targetMembership.id,
-        type: MembershipPurchaseType.UPGRADE,
-        paymentStatus: PaymentStatus.PENDING,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-    });
-
-  if (existingPendingPurchase) {
-    await prisma.membershipPurchase.update({
-      where: {
-        id: existingPendingPurchase.id,
-      },
-      data: {
-        paymentStatus: PaymentStatus.FAILED,
-      },
-    });
-  }
+  await prisma.membershipPurchase.updateMany({
+    where: {
+      userId,
+      type: MembershipPurchaseType.UPGRADE,
+      paymentStatus: PaymentStatus.PENDING,
+    },
+    data: {
+      paymentStatus: PaymentStatus.FAILED,
+    },
+  });
 
   const paymentReference = `SL-UPGRADE-${Date.now()}`;
 
@@ -301,39 +344,34 @@ const newCreditsTotal =
     },
   });
 
-  try {
     const payment = await paymentService.initializeTransaction({
-      email: user.email,
-      amount: targetMembership.price,
-      reference: paymentReference,
-    });
+    email: user.email,
+    amount: targetMembership.price,
+    reference: paymentReference,
+  });
 
-    const authorizationUrl =
-      payment?.data?.authorization_url ??
-      payment?.data?.authorizationUrl ??
-      payment?.authorization_url ??
-      payment?.authorizationUrl;
+  const authorizationUrl =
+    payment?.data?.authorization_url ??
+    payment?.data?.authorizationUrl ??
+    payment?.authorization_url ??
+    payment?.authorizationUrl;
 
-    if (!authorizationUrl) {
-      throw new Error(
-        "Payment provider did not return a payment URL."
-      );
-    }
-
-    return {
-      purchaseId: purchase.id,
-      reference: paymentReference,
-      authorizationUrl,
-      amount: targetMembership.price,
-      carriedCredits,
-      newCreditsTotal,
-      membership: targetMembership,
-      reusedPendingPurchase: false,
-    };
-  } catch (error) {
-    // Keep the pending purchase for reconciliation.
-    throw error;
+  if (!authorizationUrl) {
+    throw new Error(
+      "Payment provider did not return a payment URL."
+    );
   }
+
+  return {
+    purchaseId: purchase.id,
+    reference: paymentReference,
+    authorizationUrl,
+    amount: targetMembership.price,
+    carriedCredits,
+    newCreditsTotal,
+    membership: targetMembership,
+    reusedPendingPurchase: false,
+  };
 }
 
 async initiateRenewal(
@@ -510,105 +548,88 @@ if (existingPendingPurchase) {
 }
 
 
-private calculateMembershipExpiry(
-  startDate: Date,
-  duration: string,
-  period: string
-): Date {
-  const expiryDate = new Date(startDate);
-
-  // Support existing labels such as "Monthly", "Weekly",
-  // and numeric durations such as "1" with period "month".
-  const normalizedDuration = duration.trim().toLowerCase();
-  const normalizedPeriod = period.trim().toLowerCase();
-
-  let durationValue = Number(normalizedDuration);
-  let effectivePeriod = normalizedPeriod;
-
-  if (!Number.isFinite(durationValue) || durationValue <= 0) {
-    const labelMatch = normalizedDuration.match(
-      /^(\d+(?:\.\d+)?)\s*(day|days|week|weeks|month|months|quarter|quarters|year|years|daily|weekly|monthly|quarterly|yearly)$/
-    );
-
-    if (labelMatch) {
-      durationValue = Number(labelMatch[1]);
-      effectivePeriod = labelMatch[2];
-    } else {
-      const labels: Record<string, { duration: number; period: string }> = {
-        daily: { duration: 1, period: "day" },
-        weekly: { duration: 1, period: "week" },
-        monthly: { duration: 1, period: "month" },
-        quarterly: { duration: 3, period: "month" },
-        yearly: { duration: 1, period: "year" },
-        annually: { duration: 1, period: "year" },
-      };
-
-      const label = labels[normalizedDuration];
-
-      if (!label) {
-        throw new Error(
-          `Invalid membership duration: ${duration}`
-        );
-      }
-
-      durationValue = label.duration;
-      effectivePeriod = label.period;
-    }
-  }
-
-  switch (effectivePeriod) {
-    case "day":
-    case "days":
-      expiryDate.setDate(
-        expiryDate.getDate() + durationValue
-      );
-      break;
-
-    case "week":
-    case "weeks":
-      expiryDate.setDate(
-        expiryDate.getDate() + durationValue * 7
-      );
-      break;
-
-    case "month":
-    case "months":
-      expiryDate.setMonth(
-        expiryDate.getMonth() + durationValue
-      );
-      break;
-
-    case "quarter":
-    case "quarters":
-      expiryDate.setMonth(
-        expiryDate.getMonth() + durationValue * 3
-      );
-      break;
-
-    case "year":
-    case "years":
-      expiryDate.setFullYear(
-        expiryDate.getFullYear() + durationValue
-      );
-      break;
-
-    default:
-      throw new Error(
-        `Unsupported membership period: ${period}`
-      );
-  }
-
-  return expiryDate;
-}
-
-
 private getMembershipCredits(
   classLimit: number | null
 ): number | null {
   return classLimit;
 }
+
+/**
+ * The member's memberships of one type that still hold validity:
+ * ACTIVE and not past their expiry date, oldest first. Rows that
+ * have not started (no dates, awaiting their first booking) are
+ * included.
+ *
+ * validUntil is the latest expiry among the started rows, which is
+ * where their remaining validity ends. Renewals and upgrades add
+ * their duration from there, so buying early never loses days and
+ * each purchase adds its duration once.
+ */
+private async getValidityChain(
+  client: Prisma.TransactionClient,
+  userId: string,
+  type: MembershipType,
+  now: Date
+) {
+  const rows = await client.memberMembership.findMany({
+    where: {
+      userId,
+      status: MembershipStatus.ACTIVE,
+      membership: { type },
+      OR: [
+        { expiryDate: null },
+        { expiryDate: { gt: now } },
+      ],
+    },
+    include: {
+      membership: true,
+      membershipPurchase: {
+        select: {
+          id: true,
+          previousMemberMembershipId: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  });
+
+  const startedRows = rows.filter((row) => row.startDate !== null);
+
+  const startTimes = startedRows.map((row) =>
+    (row.startDate as Date).getTime()
+  );
+
+  const expiryTimes = startedRows
+    .map((row) => row.expiryDate)
+    .filter((date): date is Date => date !== null)
+    .map((date) => date.getTime());
+
+  return {
+    rows,
+
+    // The most recent membership in the chain.
+    end: rows.length ? rows[rows.length - 1] : null,
+
+    validFrom: startTimes.length
+      ? new Date(Math.min(...startTimes))
+      : null,
+
+    validUntil: expiryTimes.length
+      ? new Date(Math.max(...expiryTimes))
+      : null,
+  };
+}
 async completeMembershipPurchase(
-  paymentReference: string
+  paymentReference: string,
+  options: {
+    /**
+     * Admin reconciliation only: apply a FAILED purchase whose
+     * verified payment was recorded by recordPaymentForFailedPurchase.
+     */
+    applyPaidFailedPurchase?: boolean;
+  } = {}
 ) {
   if (!paymentReference) {
     throw new Error(
@@ -638,6 +659,16 @@ if (purchase.paymentMethod !== PaymentMethod.PAYMISH) {
 
 const result = await prisma.$transaction(
   async (tx) => {
+// Lock this purchase. When the webhook and the payment callback
+// complete it at the same time, the second waits here, then finds
+// the membership the first one created and returns it.
+await tx.$queryRaw`
+  SELECT id
+  FROM "MembershipPurchase"
+  WHERE "paymentReference" = ${paymentReference}
+  FOR UPDATE
+`;
+
 const purchase =
   await tx.membershipPurchase.findUnique({
     where: {
@@ -658,6 +689,54 @@ const purchase =
           "Membership purchase not found."
         );
       }
+
+// A FAILED purchase was cancelled or replaced by a newer attempt
+// (initiateUpgrade and initiateRenewal mark older pending attempts
+// FAILED). Paying its old payment link must not apply it on its own.
+// The payment callers record it for an admin to refund or apply.
+if (purchase.paymentStatus === PaymentStatus.FAILED) {
+  if (!options.applyPaidFailedPurchase) {
+    console.error(
+      "[MEMBERSHIP] Refused to complete a FAILED (cancelled or superseded) purchase:",
+      paymentReference
+    );
+
+    throw new PaidFailedPurchaseError(paymentReference);
+  }
+
+  // Admin reconciliation: only a purchase with a recorded, verified
+  // payment can be applied.
+  if (
+    !purchase.paymentRejectionReason?.startsWith(
+      PURCHASE_RECONCILIATION.NEEDS_REVIEW
+    )
+  ) {
+    throw new Error(
+      "No verified payment is recorded for this cancelled purchase, so it cannot be applied."
+    );
+  }
+
+  await tx.membershipPurchase.update({
+    where: { id: purchase.id },
+    data: {
+      paymentRejectionReason: `${PURCHASE_RECONCILIATION.APPLIED} | ${new Date().toISOString()} | ${purchase.paymentRejectionReason}`,
+    },
+  });
+}
+
+// Membership changes for one member run one at a time (see
+// BookingService.bookMemberSession). Two upgrades or renewals
+// completing together would otherwise read the same memberships and
+// carry the same credits or validity twice. Lock order is purchase,
+// then member.
+if (purchase.userId) {
+  await tx.$queryRaw`
+    SELECT id
+    FROM "User"
+    WHERE id = ${purchase.userId}
+    FOR UPDATE
+  `;
+}
 
 // Return the membership linked to this exact purchase.
 // A PAID purchase without a linked membership must be
@@ -880,65 +959,139 @@ if (
     );
   }
 
-  const membershipIsStillValid =
-    currentMembership.expiryDate === null ||
-    currentMembership.expiryDate > now;
+  if (!purchase.userId) {
+    throw new Error(
+      "Upgrade purchase is not linked to a member."
+    );
+  }
 
   /*
-   * Only carry credits if the previous membership
-   * is still within its validity period.
+   * The upgrade replaces every membership of this type the member
+   * still holds (ACTIVE and not past its expiry), not only the row
+   * chosen when the upgrade started. That includes early renewals
+   * waiting their turn, so none of them stays ACTIVE next to the
+   * upgraded row.
    */
-const previousCreditsUsed = currentMembership.creditsUsed ?? 0;
-
-const remainingCredits = membershipIsStillValid
-  ? Math.max(
-      (currentMembership.creditsTotal ?? 0) -
-        previousCreditsUsed,
-      0
-    )
-  : 0;
-
-// Preserve historical usage while carrying forward unused credits.
-const newCreditsTotal =
-  purchase.membership.classLimit === null
-    ? null
-    : purchase.membership.classLimit +
-      remainingCredits +
-      (membershipIsStillValid ? previousCreditsUsed : 0);
-
-const newCreditsUsed = membershipIsStillValid
-  ? previousCreditsUsed
-  : 0;
-
-  /*
-   * The new membership becomes usable immediately.
-   *
-   * However, when the previous membership is still
-   * valid, calculate the new expiry from its existing
-   * expiry date to preserve the remaining time.
-   *
-   * If expired, calculate from today.
-   */
-  const expiryBaseDate =
-    membershipIsStillValid && currentMembership.expiryDate
-      ? currentMembership.expiryDate
-      : now;
-
-  const startDate = now;
-
-  const expiryDate = this.calculateMembershipExpiry(
-    expiryBaseDate,
-    purchase.membership.duration,
-    purchase.membership.period
+  const chain = await this.getValidityChain(
+    tx,
+    purchase.userId,
+    currentMembership.membership.type,
+    now
   );
 
+  const replacedRows = chain.rows;
+
   /*
-   * Expire the previous membership after transferring
-   * any eligible unused credits.
+   * Existing credit rule, applied to each replaced row: unused
+   * credits carry over and historical usage is kept. Expired rows
+   * are not in the chain, so they carry nothing. Each replaced row
+   * is expired below in the same transaction, so its credits can
+   * only be carried once.
    */
-  await tx.memberMembership.update({
+  const remainingCredits = replacedRows.reduce(
+    (total, row) =>
+      total + Math.max((row.creditsTotal ?? 0) - row.creditsUsed, 0),
+    0
+  );
+
+  const previousCreditsUsed = replacedRows.reduce(
+    (total, row) => total + row.creditsUsed,
+    0
+  );
+
+  // Preserve historical usage while carrying forward unused credits.
+  const newCreditsTotal =
+    purchase.membership.classLimit === null
+      ? null
+      : purchase.membership.classLimit +
+        remainingCredits +
+        previousCreditsUsed;
+
+  const newCreditsUsed = previousCreditsUsed;
+
+  /*
+   * Validity: keep all remaining time and add the upgraded
+   * package's full duration.
+   *
+   * - Started and unexpired: the new expiry is the latest expiry
+   *   in the chain plus the upgraded duration. The start date stays
+   *   the date the membership actually started.
+   * - Not started, or expired: dates stay null and the first booking
+   *   starts the upgraded package. For an unstarted chain, that first
+   *   booking also adds the duration of each replaced unstarted
+   *   package (BookingService follows previousMemberMembershipId).
+   *   Expired days are never added.
+   *
+   * The payment date is never used.
+   */
+  const unstartedRows = replacedRows.filter(
+    (row) => row.startDate === null
+  );
+
+  const startDate = chain.validUntil ? chain.validFrom : null;
+
+  let expiryDate: Date | null = null;
+
+  if (chain.validUntil) {
+    // Unstarted packages replaced alongside a running membership
+    // add their full duration too, so carried credits never arrive
+    // without the validity that came with them.
+    let validUntil = chain.validUntil;
+
+    for (const row of unstartedRows) {
+      validUntil =
+        bookingService.calculateMembershipExpiry(
+          validUntil,
+          row.membership.duration,
+          row.membership.period
+        ) ?? validUntil;
+    }
+
+    expiryDate = bookingService.calculateMembershipExpiry(
+      validUntil,
+      purchase.membership.duration,
+      purchase.membership.period
+    );
+  } else {
+    /*
+     * Unstarted chain. The first booking walks back from the upgraded
+     * row through previousMemberMembershipId and adds each replaced
+     * unstarted package once. Separate membership-only purchases are
+     * not linked to each other yet, so link each replaced unstarted
+     * row to the one bought before it, in purchase order. A row whose
+     * purchase already has a link (a renewal of the row before it)
+     * keeps it.
+     */
+    for (let index = 1; index < unstartedRows.length; index += 1) {
+      const rowPurchase = unstartedRows[index].membershipPurchase;
+
+      if (rowPurchase && !rowPurchase.previousMemberMembershipId) {
+        await tx.membershipPurchase.update({
+          where: { id: rowPurchase.id },
+          data: {
+            previousMemberMembershipId: unstartedRows[index - 1].id,
+          },
+        });
+      }
+    }
+  }
+
+  /*
+   * Expire every replaced row, plus the row the upgrade was started
+   * from, which may already be past its expiry and so not be in the
+   * chain.
+   */
+  await tx.memberMembership.updateMany({
     where: {
-      id: currentMembership.id,
+      id: {
+        in: [
+          ...new Set([
+            currentMembership.id,
+            ...replacedRows.map((row) => row.id),
+          ]),
+        ],
+      },
+      userId: purchase.userId,
     },
     data: {
       status: MembershipStatus.EXPIRED,
@@ -973,6 +1126,12 @@ creditsUsed: newCreditsUsed,
       data: {
         carriedCredits: remainingCredits,
         paymentStatus: PaymentStatus.PAID,
+
+        // Link to the most recent replaced row. For an unstarted
+        // chain, the first booking follows these links to add each
+        // replaced package's duration.
+        previousMemberMembershipId:
+          chain.end?.id ?? currentMembership.id,
       },
     });
 
@@ -1012,7 +1171,9 @@ if (purchase.type === MembershipPurchaseType.NEW) {
 
     startDate = firstSession.sessionDate;
 
-    expiryDate = this.calculateMembershipExpiry(
+    // Same duration rules as first-booking activation, which
+    // support every configured plan (Single, Annual, Package, ...).
+    expiryDate = bookingService.calculateMembershipExpiry(
       startDate,
       purchase.membership.duration,
       purchase.membership.period
@@ -1065,26 +1226,44 @@ if (purchase.type === MembershipPurchaseType.NEW) {
        * ==================================================
        */
 
-      let startDate = now;
-
-      /*
-       * If an active membership still exists,
-       * renewal starts when the existing membership ends.
-       */
-      if (
-        currentMembership?.expiryDate &&
-        currentMembership.expiryDate > now
-      ) {
-        startDate =
-          currentMembership.expiryDate;
+      if (!purchase.userId) {
+        throw new Error(
+          "Renewal purchase is not linked to a member."
+        );
       }
 
-      const expiryDate =
-        this.calculateMembershipExpiry(
-          startDate,
-          purchase.membership.duration,
-          purchase.membership.period
-        );
+      /*
+       * Renewal adds the new package's full duration to the validity
+       * the member still holds for this membership type:
+       *
+       * - Started and unexpired: the renewal starts at the latest
+       *   expiry in the chain, so repeated early renewals each add
+       *   their duration once, one after another.
+       * - Not started yet: dates stay null. The first booking starts
+       *   the original package, then this renewal right after it
+       *   (BookingService follows previousMemberMembershipId).
+       * - Expired: no expired days are kept. Dates stay null and the
+       *   first booking starts the renewal.
+       *
+       * The payment date is never used as the start. The existing
+       * membership is left ACTIVE until its own expiry, as before.
+       */
+      const chain = await this.getValidityChain(
+        tx,
+        purchase.userId,
+        purchase.membership.type,
+        now
+      );
+
+      const startDate = chain.validUntil;
+
+      const expiryDate = chain.validUntil
+        ? bookingService.calculateMembershipExpiry(
+            chain.validUntil,
+            purchase.membership.duration,
+            purchase.membership.period
+          )
+        : null;
 
       const creditsTotal =
         this.getMembershipCredits(
@@ -1092,28 +1271,27 @@ if (purchase.type === MembershipPurchaseType.NEW) {
         );
 
       /*
-       * If the current membership is expired,
-       * mark it expired.
-       *
-       * If it is still active, leave it active
-       * until its original expiry date.
+       * Memberships of this type whose validity has ended are marked
+       * expired. Ones still running stay ACTIVE until their own
+       * expiry date.
        */
-      if (
-        currentMembership &&
-        currentMembership.expiryDate &&
-        currentMembership.expiryDate <= now
-      ) {
-        await tx.memberMembership.update({
-          where: {
-            id: currentMembership.id,
+      await tx.memberMembership.updateMany({
+        where: {
+          userId: purchase.userId,
+          status: MembershipStatus.ACTIVE,
+          membership: {
+            type: purchase.membership.type,
           },
+          expiryDate: {
+            lte: now,
+          },
+        },
 
-          data: {
-            status:
-              MembershipStatus.EXPIRED,
-          },
-        });
-      }
+        data: {
+          status:
+            MembershipStatus.EXPIRED,
+        },
+      });
 
       /*
        * Create the renewed membership.
@@ -1143,6 +1321,20 @@ if (purchase.type === MembershipPurchaseType.NEW) {
             creditsUsed: 0,
           },
         });
+
+      // Link the renewal to the membership it follows. When that
+      // membership is unstarted, its first booking uses this link to
+      // start the renewal right after it.
+      if (chain.end) {
+        await tx.membershipPurchase.update({
+          where: {
+            id: purchase.id,
+          },
+          data: {
+            previousMemberMembershipId: chain.end.id,
+          },
+        });
+      }
 
       return {
         purchase,
@@ -1208,6 +1400,195 @@ if (
   return result;
 }
 
+
+// =========================================================
+// PAYMENTS FOR CANCELLED OR SUPERSEDED PURCHASES
+// =========================================================
+
+/**
+ * Record a verified payment for a FAILED (cancelled or superseded)
+ * purchase so the customer is not silently left without their money
+ * or their membership. The purchase stays FAILED and is flagged for
+ * an admin to refund or apply, and every admin is notified.
+ *
+ * Safe to call repeatedly (provider retries, or webhook plus
+ * callback): the purchase row is locked, it is flagged only once, and
+ * the notification is de-duplicated by its event key.
+ */
+async recordPaymentForFailedPurchase(
+  paymentReference: string,
+  source: "payment-callback" | "webhook"
+) {
+  const recorded = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT id
+      FROM "MembershipPurchase"
+      WHERE "paymentReference" = ${paymentReference}
+      FOR UPDATE
+    `;
+
+    const purchase = await tx.membershipPurchase.findUnique({
+      where: { paymentReference },
+      include: { membership: true },
+    });
+
+    if (!purchase || purchase.paymentStatus !== PaymentStatus.FAILED) {
+      return null;
+    }
+
+    const reason = purchase.paymentRejectionReason ?? "";
+    const alreadyRecorded = Object.values(PURCHASE_RECONCILIATION).some(
+      (state) => reason.startsWith(state)
+    );
+
+    if (!alreadyRecorded) {
+      await tx.membershipPurchase.update({
+        where: { id: purchase.id },
+        data: {
+          paymentRejectionReason: [
+            PURCHASE_RECONCILIATION.NEEDS_REVIEW,
+            new Date().toISOString(),
+            source,
+            ...(reason ? [`previous: ${reason}`] : []),
+          ].join(" | "),
+        },
+      });
+    }
+
+    return purchase;
+  });
+
+  if (!recorded) {
+    return null;
+  }
+
+  console.error(
+    "[MEMBERSHIP] Verified payment received for a cancelled or superseded purchase. Refund it or apply it from the admin reconciliation list.",
+    {
+      paymentReference,
+      purchaseId: recorded.id,
+      userId: recorded.userId,
+      type: recorded.type,
+      amount: recorded.amount,
+      source,
+    }
+  );
+
+  try {
+    await adminNotificationService.createForAllAdmins({
+      eventKey: `paid-failed-purchase:${paymentReference}`,
+      type: "PAYMENT",
+      title: "Membership payment needs reconciliation",
+      message: `${recorded.fullName || recorded.email} paid ₦${recorded.amount.toLocaleString()} for a ${recorded.type.toLowerCase()} purchase (${recorded.membership.name}) that had been cancelled or replaced. Refund it or apply it.`,
+      data: {
+        reference: paymentReference,
+        purchaseId: recorded.id,
+        paymentType: `Membership ${recorded.type}`,
+        amount: String(recorded.amount),
+        source,
+      },
+    });
+  } catch (error) {
+    // The purchase is already flagged in the database; the admin
+    // reconciliation list still shows it.
+    console.error(
+      "[MEMBERSHIP] Reconciliation flagged, but admin notification failed:",
+      paymentReference,
+      error
+    );
+  }
+
+  return {
+    purchaseId: recorded.id,
+    paymentReference,
+    status: PURCHASE_RECONCILIATION.NEEDS_REVIEW,
+  };
+}
+
+/** FAILED purchases with a verified payment still to resolve. */
+async getPurchasesNeedingReconciliation() {
+  return prisma.membershipPurchase.findMany({
+    where: {
+      paymentStatus: PaymentStatus.FAILED,
+      paymentRejectionReason: {
+        startsWith: PURCHASE_RECONCILIATION.NEEDS_REVIEW,
+      },
+    },
+    include: {
+      membership: true,
+      user: {
+        select: { id: true, fullName: true, email: true, phone: true },
+      },
+    },
+    orderBy: { updatedAt: "desc" },
+  });
+}
+
+/**
+ * Admin: apply a paid, cancelled purchase as if it had completed.
+ * It goes through the normal completion, with its locks and rules;
+ * an upgrade applies on top of the member's current membership.
+ */
+async applyPaidFailedPurchase(purchaseId: string) {
+  const purchase = await prisma.membershipPurchase.findUnique({
+    where: { id: purchaseId },
+  });
+
+  if (!purchase) {
+    throw new Error("Membership purchase not found.");
+  }
+
+  return this.completeMembershipPurchase(purchase.paymentReference, {
+    applyPaidFailedPurchase: true,
+  });
+}
+
+/**
+ * Admin: record that a paid, cancelled purchase was refunded to the
+ * customer (the refund itself is issued in the Paymish dashboard).
+ * The purchase stays FAILED.
+ */
+async markPaidFailedPurchaseRefunded(purchaseId: string, note?: string) {
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`
+      SELECT id
+      FROM "MembershipPurchase"
+      WHERE id = ${purchaseId}
+      FOR UPDATE
+    `;
+
+    const purchase = await tx.membershipPurchase.findUnique({
+      where: { id: purchaseId },
+    });
+
+    if (!purchase) {
+      throw new Error("Membership purchase not found.");
+    }
+
+    if (
+      purchase.paymentStatus !== PaymentStatus.FAILED ||
+      !purchase.paymentRejectionReason?.startsWith(
+        PURCHASE_RECONCILIATION.NEEDS_REVIEW
+      )
+    ) {
+      throw new Error(
+        "Only a cancelled purchase with a recorded payment awaiting reconciliation can be marked refunded."
+      );
+    }
+
+    return tx.membershipPurchase.update({
+      where: { id: purchase.id },
+      data: {
+        paymentRejectionReason: [
+          PURCHASE_RECONCILIATION.REFUNDED,
+          new Date().toISOString(),
+          note?.trim() || "Refunded",
+          purchase.paymentRejectionReason,
+        ].join(" | "),
+      },
+    });
+  });
+}
 
 async getMembershipPurchase(
   userId: string,
@@ -1443,33 +1824,28 @@ console.log("[MEMBERSHIP] Purchase created", {
   paymentReference: purchase.paymentReference,
   paymentStatus: purchase.paymentStatus,
 });
-  try {
-    const payment = await paymentService.initializeTransaction({
-      email,
-      amount: purchase.amount,
-      reference: paymentReference,
-    });
+   const payment = await paymentService.initializeTransaction({
+    email,
+    amount: purchase.amount,
+    reference: paymentReference,
+  });
 
-    const authorizationUrl =
-      payment?.data?.authorization_url ??
-      payment?.data?.authorizationUrl ??
-      payment?.authorization_url ??
-      payment?.authorizationUrl;
+  const authorizationUrl =
+    payment?.data?.authorization_url ??
+    payment?.data?.authorizationUrl ??
+    payment?.authorization_url ??
+    payment?.authorizationUrl;
 
-    if (!authorizationUrl) {
-      throw new Error("Payment provider did not return a payment URL.");
-    }
-
-    return {
-      success: true,
-      purchaseId: purchase.id,
-      reference: paymentReference,
-      authorizationUrl,
-    };
-  } catch (error) {
-    // Keep the pending purchase for reconciliation or a safe retry.
-    throw error;
+  if (!authorizationUrl) {
+    throw new Error("Payment provider did not return a payment URL.");
   }
+
+  return {
+    success: true,
+    purchaseId: purchase.id,
+    reference: paymentReference,
+    authorizationUrl,
+  };
 }
 
 async initiateOfflineMembershipPurchase(data: {

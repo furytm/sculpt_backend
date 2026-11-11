@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { adminService } from "./admin.service.js";
+import membershipService from "../membership/membership.service.js";
 
 class AdminController {
   async getPendingOfflinePayments(
@@ -45,10 +46,23 @@ async confirmOfflinePayment(req: Request, res: Response) {
     const result =
       await adminService.confirmOfflinePayment(bookingId);
 
+    const classBooking =
+      "classBooking" in result ? result.classBooking : undefined;
+
+    // The payment is confirmed in every case below. Only the selected
+    // class (if any) can still need the admin's attention.
+    const message =
+      classBooking?.status === "NOT_CONFIRMED"
+        ? `Payment confirmed and membership created, but the selected class could not be booked: ${classBooking.reason}`
+        : classBooking?.status === "CONFIRMED"
+          ? "retried" in result
+            ? "The selected class has now been booked."
+            : "Payment confirmed, membership activation email sent and the selected class booked."
+          : "Payment confirmed and membership activation email sent.";
+
     return res.status(200).json({
       success: true,
-      message:
-        "Payment confirmed and membership activation email sent.",
+      message,
       data: result,
     });
   } catch (error: any) {
@@ -667,10 +681,19 @@ async confirmOfflineMembershipPurchase(
       await adminService
         .confirmOfflineMembershipPurchase(purchaseId);
 
+    // The payment is confirmed in every case here; only the first
+    // class (if one was selected) can still need attention.
+    const { summary } = result;
+    const message =
+      summary.firstClass === "NOT_CONFIRMED"
+        ? `Offline membership payment confirmed and activation created, but the first class could not be booked: ${summary.firstClassFailureReason}`
+        : summary.firstClass === "CONFIRMED"
+          ? "Offline membership payment confirmed, activation created and first class booked."
+          : "Offline membership payment confirmed.";
+
     return res.status(200).json({
       success: true,
-      message:
-        "Offline membership payment confirmed.",
+      message,
       data: result,
     });
   } catch (error: any) {
@@ -681,6 +704,49 @@ async confirmOfflineMembershipPurchase(
       message:
         error?.message ||
         "Failed to confirm membership purchase.",
+    });
+  }
+}
+
+async retryOfflineMembershipFirstBooking(
+  req: Request,
+  res: Response
+) {
+  try {
+    const purchaseId = String(req.params.purchaseId || "");
+
+    if (!purchaseId) {
+      return res.status(400).json({
+        success: false,
+        message: "Purchase ID is required.",
+      });
+    }
+
+    const result =
+      await adminService.retryOfflineMembershipFirstBooking(purchaseId);
+
+    const confirmed = result.firstClass.status === "CONFIRMED";
+
+    // 200 either way: the request worked. firstClass says whether
+    // the class is now booked, and why not if it isn't.
+    return res.status(200).json({
+      success: confirmed,
+      message: confirmed
+        ? "The first class is booked."
+        : `The first class could not be booked: ${
+            "reason" in result.firstClass ? result.firstClass.reason : ""
+          }`,
+      data: result,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to retry the first class booking.",
     });
   }
 }
@@ -841,6 +907,97 @@ if (typeof memberId !== "string") {
     return res.status(500).json({
       success: false,
       message,
+    });
+  }
+}
+
+// =====================================================
+// PAYMENTS FOR CANCELLED OR SUPERSEDED PURCHASES
+// =====================================================
+
+async getPurchasesNeedingReconciliation(_req: Request, res: Response) {
+  try {
+    const purchases =
+      await membershipService.getPurchasesNeedingReconciliation();
+
+    return res.status(200).json({
+      success: true,
+      data: purchases,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to retrieve purchases needing reconciliation.",
+    });
+  }
+}
+
+async applyPaidFailedPurchase(req: Request, res: Response) {
+  try {
+    const purchaseId = String(req.params.purchaseId || "");
+
+    if (!purchaseId) {
+      return res.status(400).json({
+        success: false,
+        message: "Purchase ID is required.",
+      });
+    }
+
+    const result =
+      await membershipService.applyPaidFailedPurchase(purchaseId);
+
+    return res.status(200).json({
+      success: true,
+      message: "The paid purchase has been applied to the member.",
+      data: result,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error ? error.message : "Failed to apply the purchase.",
+    });
+  }
+}
+
+async markPaidFailedPurchaseRefunded(req: Request, res: Response) {
+  try {
+    const purchaseId = String(req.params.purchaseId || "");
+
+    if (!purchaseId) {
+      return res.status(400).json({
+        success: false,
+        message: "Purchase ID is required.",
+      });
+    }
+
+    const note =
+      typeof req.body?.note === "string" ? req.body.note : undefined;
+
+    const result =
+      await membershipService.markPaidFailedPurchaseRefunded(
+        purchaseId,
+        note
+      );
+
+    return res.status(200).json({
+      success: true,
+      message: "The purchase has been marked as refunded.",
+      data: result,
+    });
+  } catch (error) {
+    console.error(error);
+
+    return res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "Failed to mark the purchase refunded.",
     });
   }
 }
