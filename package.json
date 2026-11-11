@@ -5,9 +5,9 @@
   "type": "module",
   "main": "dist/server.js",
   "scripts": {
-  "dev": "nodemon",
-    "build": "tsc",
-    "start": "node dist/server.js",
+    "dev": "node init && nodemon",
+    "build": "node init && tsc",
+    "start": "node init && node dist/server.js",
     "clean": "rm -rf dist"
   },
   "keywords": [],

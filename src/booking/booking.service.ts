@@ -785,31 +785,19 @@ if (!this.isSessionAtLeastTwoHoursAhead(
   }
 
   /**
-   * Whether a membership's validity covers a session date.
+   * Whether a membership's validity covers a session date: the session
+   * must not be after the membership's expiry (no expiry = no limit).
    *
-   * A queued renewal has a future startDate and only covers sessions
-   * from that day. startDate is compared by calendar day, since
-   * sessionDate is the session's day at UTC midnight and older rows
-   * can store a time of day. A null startDate puts no start limit on
-   * the row (legacy and admin rows). Rows awaiting their first
-   * booking are picked separately, before this check.
+   * A membership's start date never restricts booking: a queued
+   * membership (one starting later) can pay for any bookable session.
+   * The only time restriction on the session itself is the two-hour
+   * cutoff, checked separately.
    */
   private coversSessionDate(
-    item: { startDate: Date | null; expiryDate: Date | null },
+    item: { expiryDate: Date | null },
     sessionDate: Date
   ) {
-    if (item.expiryDate && sessionDate > item.expiryDate) {
-      return false;
-    }
-
-    if (
-      item.startDate &&
-      sessionDate < this.startOfUtcDay(item.startDate)
-    ) {
-      return false;
-    }
-
-    return true;
+    return !item.expiryDate || sessionDate <= item.expiryDate;
   }
 
   // =========================================================
@@ -3076,11 +3064,11 @@ if (healthDeclaration?.accepted !== true) {
           )
           .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
 
-        // Otherwise use the earliest-expiring record that both has
-        // a remaining credit and whose validity covers the selected
-        // session date. A queued renewal only covers sessions from
-        // its start date, so the current membership is used until it
-        // ends and the renewal's credits are not used early.
+        // Otherwise use the earliest-expiring record that both has a
+        // remaining credit and has not expired by the session date.
+        // Start dates don't restrict booking. Because the soonest-
+        // expiring record is used first, the current membership's
+        // credits are used before a queued renewal's.
         const membership =
           awaitingMembership ??
           memberships.find((item) =>
@@ -3096,20 +3084,6 @@ if (healthDeclaration?.accepted !== true) {
           if (!hasCredit) {
             throw new Error(
               `You do not have any remaining ${bookingType.toLowerCase()} class credits.`
-            );
-          }
-
-          const startsLater = memberships.find((item) =>
-            this.hasRemainingCredit(item) &&
-            item.startDate !== null &&
-            session.sessionDate < this.startOfUtcDay(item.startDate)
-          );
-
-          if (startsLater?.startDate) {
-            throw new Error(
-              `Your next membership starts on ${startsLater.startDate
-                .toISOString()
-                .slice(0, 10)}. Please choose a session from that date.`
             );
           }
 
