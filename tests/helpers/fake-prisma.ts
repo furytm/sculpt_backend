@@ -275,12 +275,32 @@ export function createFakePrisma() {
         return !matches(table, row, condition);
       }
 
+      // Compound unique key, e.g. scheduleId_sessionDate: { scheduleId, sessionDate }.
+      if (
+        !RELATIONS[table][key] &&
+        key.includes("_") &&
+        !(key in row) &&
+        isPlainObject(condition)
+      ) {
+        return matches(table, row, condition);
+      }
+
       const relation = RELATIONS[table][key];
 
       if (relation) {
         if (relation.kind === "one") {
           const related = resolveOne(relation, row);
           if (condition === null) return related === null;
+          if (isPlainObject(condition) && "is" in condition) {
+            return condition.is === null
+              ? related === null
+              : related !== null && matches(relation.table, related, condition.is);
+          }
+          if (isPlainObject(condition) && "isNot" in condition) {
+            return condition.isNot === null
+              ? related !== null
+              : related === null || !matches(relation.table, related, condition.isNot);
+          }
           return related !== null && matches(relation.table, related, condition);
         }
 

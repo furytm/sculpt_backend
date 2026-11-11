@@ -1067,6 +1067,22 @@ async completeActivation(data: CompleteActivationDto) {
   }
 
   if (activation.usedAt) {
+    // Already activated. With the right token, confirm it is linked to
+    // its owner and report success (idempotent). A used link never
+    // logs anyone in again, and never re-links anything.
+    if (tokenHash === activation.tokenHash) {
+      const linked = await this.getActivatedOwner(activation);
+
+      if (linked) {
+        return {
+          alreadyActivated: true as const,
+          existingAccount: true,
+          user: linked.user,
+          membership: linked.membership,
+        };
+      }
+    }
+
     throw new Error("This activation has already been used.");
   }
 
@@ -1085,6 +1101,19 @@ async completeActivation(data: CompleteActivationDto) {
   if (Boolean(booking) === Boolean(purchase)) {
     throw new Error(
       "Invalid activation record. Please contact Sculpt LAB."
+    );
+  }
+
+  // The membership must be the one created for this booking or
+  // purchase; otherwise the records need an admin to look at them.
+  if (
+    (booking?.memberMembershipId &&
+      booking.memberMembershipId !== activation.memberMembershipId) ||
+    (purchase &&
+      activation.memberMembership.membershipPurchaseId !== purchase.id)
+  ) {
+    throw new Error(
+      "This activation's membership does not match its booking or purchase. Please contact Sculpt LAB."
     );
   }
 
@@ -1113,20 +1142,44 @@ async completeActivation(data: CompleteActivationDto) {
   );
 
   const result = await prisma.$transaction(async (tx) => {
-    let user = await tx.user.findUnique({
+    // The account registered with this email, if any (emails compared
+    // case-insensitively, so a differently-cased address never gets a
+    // second account). The activation link, sent to that email, is the
+    // proof of ownership that lets the membership join that account.
+    let user = await tx.user.findFirst({
       where: {
-        email,
+        email: {
+          equals: email,
+          mode: "insensitive",
+        },
       },
     });
 
-    // Do not allow a purchase already attached to another account
-    // to be linked to a different account.
+    const existingAccount = Boolean(user);
+    const ownerId = user?.id ?? null;
+
+    // Never move records that already belong to a different account.
     if (
       purchase?.userId &&
-      purchase.userId !== user?.id
+      purchase.userId !== ownerId
     ) {
       throw new Error(
         "This membership purchase is already linked to another account."
+      );
+    }
+
+    if (booking?.userId && booking.userId !== ownerId) {
+      throw new Error(
+        "This booking is already linked to a different account. Please contact Sculpt LAB."
+      );
+    }
+
+    if (
+      activation.memberMembership.userId &&
+      activation.memberMembership.userId !== ownerId
+    ) {
+      throw new Error(
+        "This membership is already linked to a different account. Please contact Sculpt LAB."
       );
     }
 
@@ -1174,36 +1227,42 @@ async completeActivation(data: CompleteActivationDto) {
       });
     }
 
-    // Attach the account to the original booking OR purchase.
-    if (booking) {
-      await tx.booking.update({
-        where: {
-          id: booking.id,
-        },
-        data: {
-          userId: user.id,
-        },
+    // Attach the account to the original booking OR purchase, and to
+    // its membership. Each update only applies while the record is
+    // unlinked or already this user's, so a concurrent link to someone
+    // else is never overwritten. Nothing else about the records changes:
+    // dates, credits, status, membership number and history stay as
+    // they are (an expired membership stays expired).
+    const linkFilter = {
+      OR: [{ userId: null }, { userId: user.id }],
+    };
+
+    const linked =
+      booking
+        ? await tx.booking.updateMany({
+            where: { id: booking.id, ...linkFilter },
+            data: { userId: user.id },
+          })
+        : await tx.membershipPurchase.updateMany({
+            where: { id: purchase!.id, ...linkFilter },
+            data: { userId: user.id },
+          });
+
+    const membershipLinked =
+      await tx.memberMembership.updateMany({
+        where: { id: activation.memberMembershipId, ...linkFilter },
+        data: { userId: user.id },
       });
-    } else if (purchase) {
-      await tx.membershipPurchase.update({
-        where: {
-          id: purchase.id,
-        },
-        data: {
-          userId: user.id,
-        },
-      });
+
+    if (linked.count !== 1 || membershipLinked.count !== 1) {
+      throw new Error(
+        "This membership is already linked to a different account. Please contact Sculpt LAB."
+      );
     }
 
     const memberMembership =
-      await tx.memberMembership.update({
-        where: {
-          id: activation.memberMembershipId,
-        },
-        data: {
-          userId: user.id,
-          status: MembershipStatus.ACTIVE,
-        },
+      await tx.memberMembership.findUniqueOrThrow({
+        where: { id: activation.memberMembershipId },
       });
 
     // Only one request should be allowed to consume this activation.
@@ -1227,6 +1286,7 @@ async completeActivation(data: CompleteActivationDto) {
     return {
       user,
       memberMembership,
+      existingAccount,
     };
   });
 
@@ -1263,8 +1323,52 @@ async completeActivation(data: CompleteActivationDto) {
 
     membership: result.memberMembership,
 
+    // The membership joined an account that was already registered
+    // with this email (its password is unchanged).
+    existingAccount: result.existingAccount,
+
     accessToken,
     refreshToken,
+  };
+}
+
+/**
+ * For a used activation: the account it was completed for, if its
+ * booking or purchase and its membership are all linked to the account
+ * registered with the activation's email. Used to answer a repeated
+ * activation idempotently.
+ */
+private async getActivatedOwner(activation: {
+  memberMembership: { userId: string | null } & Record<string, unknown>;
+  booking: { userId: string | null; email: string | null } | null;
+  membershipPurchase: { userId: string | null; email: string } | null;
+}) {
+  const ownerId = activation.memberMembership.userId;
+  const source = activation.booking ?? activation.membershipPurchase;
+
+  if (!ownerId || !source || source.userId !== ownerId) {
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: ownerId } });
+
+  if (
+    !user ||
+    !source.email ||
+    user.email.trim().toLowerCase() !== source.email.trim().toLowerCase()
+  ) {
+    return null;
+  }
+
+  return {
+    user: {
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+    },
+    membership: activation.memberMembership,
   };
 }
 

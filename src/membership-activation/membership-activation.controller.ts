@@ -79,6 +79,21 @@ class MembershipActivationController {
           password,
         });
 
+      // Already activated for this customer: nothing to do, and a used
+      // link doesn't sign anyone in again.
+      if ("alreadyActivated" in result) {
+        return res.status(200).json({
+          success: true,
+          message:
+            "This membership is already linked to your account. Please sign in.",
+          data: {
+            user: result.user,
+            membership: result.membership,
+            alreadyActivated: true,
+          },
+        });
+      }
+
       res.cookie("accessToken", result.accessToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
@@ -101,11 +116,13 @@ class MembershipActivationController {
 
       return res.status(200).json({
         success: true,
-        message:
-          "Account created and membership activated successfully.",
+        message: result.existingAccount
+          ? "Membership added to your existing account. Your existing password is unchanged."
+          : "Account created and membership activated successfully.",
         data: {
           user: result.user,
           membership: result.membership,
+          existingAccount: result.existingAccount,
         },
       });
     } catch (error: any) {

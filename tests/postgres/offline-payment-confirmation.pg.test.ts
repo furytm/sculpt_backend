@@ -188,7 +188,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL: offline payment confirmation", 
 
     // One membership per confirmed payment, none extra.
     expect(await prisma.memberMembership.count()).toBe(5);
-  });
+  }, 30_000); // five rounds against the real database
 
   it("an admin retry racing the customer's own confirmation books the class once", async () => {
     for (let round = 0; round < 3; round += 1) {
@@ -227,7 +227,7 @@ describe.skipIf(!TEST_DATABASE_URL)("PostgreSQL: offline payment confirmation", 
         (await prisma.booking.findUnique({ where: { id: booking.id } })).bookingStatus
       ).toBe("CONFIRMED");
     }
-  });
+  }, 30_000); // several rounds with real bcrypt hashing
 
   it("repeated failures notify each admin once", async () => {
     const session = await addSession();

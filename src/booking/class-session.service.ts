@@ -17,8 +17,12 @@ class ClassSessionService {
    * Generate future ClassSession records from the existing
    * recurring Schedule records.
    *
-   * Sessions start from tomorrow and are generated for the
-   * next 30 calendar days.
+   * Sessions start from today (the Lagos calendar date) and are
+   * generated for 30 calendar days: today through today + 29.
+   * Today's sessions are included; availability and booking apply
+   * the two-hour cutoff separately.
+   *
+   * Runs at startup and then every 24 hours (see server.ts).
    */
   async generateFutureSessions(daysAhead = GENERATION_DAYS) {
     const schedules = await prisma.schedule.findMany({
