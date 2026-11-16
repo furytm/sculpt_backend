@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { UserRole } from "@prisma/client";
 import authenticate from "../middleware/authenticate.js";
 import requireAdmin from "../middleware/requireAdmin.js";
+import requireRole from "../middleware/requireRole.js";
 import { adminController } from "./admin.controller.js";
 import adminSessionController from "./admin-session.controller.js";
 import adminNotificationController from "./admin-notification.controller.js";
@@ -108,7 +110,9 @@ router.get("/bookings", authenticate, requireAdmin, adminController.getAllBookin
 // =====================================================
 // ADMIN TUTOR SCHEDULE CALENDAR
 // =====================================================
-router.get("/tutor-schedule", authenticate, requireAdmin, adminController.getTutorSchedule);
+// ADMIN sees every tutor; TUTOR sees only their own schedule
+// (read-only, scoped in the controller from their own account).
+router.get("/tutor-schedule", authenticate, requireRole(UserRole.ADMIN, UserRole.TUTOR), adminController.getTutorSchedule);
 /**
  * @openapi
  * /api/admin/bookings/{bookingId}:

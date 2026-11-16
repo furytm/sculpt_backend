@@ -1,4 +1,5 @@
 import { verifyAccessToken } from "../utils/jwt.js";
+import { rejectTutorOutsideAllowedRoutes } from "./tutorAccess.js";
 export default function authenticate(req, res, next) {
     try {
         // Prefer the HttpOnly cookie
@@ -13,6 +14,10 @@ export default function authenticate(req, res, next) {
         }
         const payload = verifyAccessToken(token);
         req.user = payload;
+        // Tutors may only use their allow-listed routes.
+        if (rejectTutorOutsideAllowedRoutes(req, res)) {
+            return;
+        }
         next();
     }
     catch {

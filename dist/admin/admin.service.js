@@ -1402,7 +1402,25 @@ class AdminService {
             upcomingClasses,
         };
     }
-    async getTutorSchedule(startDate, endDate) {
+    /**
+     * The Tutor record linked to a TUTOR user account, or null if the
+     * account isn't linked to one.
+     */
+    async getTutorIdForUser(userId) {
+        const tutor = await prisma.tutor.findUnique({
+            where: { userId },
+            select: { id: true },
+        });
+        return tutor?.id ?? null;
+    }
+    /**
+     * Bookings for classes in a Lagos date range.
+     *
+     * `tutorScope` restricts the result to one tutor's schedules and leaves
+     * members' contact details (email, phone) out. It is set from the
+     * authenticated TUTOR's own account, never from the request.
+     */
+    async getTutorSchedule(startDate, endDate, tutorScope) {
         const parseDate = (value) => {
             if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
                 throw new Error("Dates must use YYYY-MM-DD format.");
@@ -1437,6 +1455,10 @@ class AdminService {
                             gte: startUtc,
                             lt: endExclusiveUtc,
                         },
+                        // A tutor only sees classes on their own schedules.
+                        ...(tutorScope
+                            ? { schedule: { tutorId: tutorScope.tutorId } }
+                            : {}),
                     },
                 },
             },
@@ -1486,12 +1508,19 @@ class AdminService {
                 },
                 class: schedule?.className ?? null,
                 tutor: schedule?.tutorName ?? null,
-                customer: {
-                    id: booking.user?.id ?? booking.userId,
-                    name: booking.user?.fullName ?? booking.fullName,
-                    email: booking.user?.email ?? booking.email,
-                    phone: booking.user?.phone ?? booking.phone,
-                },
+                // Tutors get the member's name only: contact details are not
+                // part of their response at all.
+                customer: tutorScope
+                    ? {
+                        id: booking.user?.id ?? booking.userId,
+                        name: booking.user?.fullName ?? booking.fullName,
+                    }
+                    : {
+                        id: booking.user?.id ?? booking.userId,
+                        name: booking.user?.fullName ?? booking.fullName,
+                        email: booking.user?.email ?? booking.email,
+                        phone: booking.user?.phone ?? booking.phone,
+                    },
             };
         });
     }

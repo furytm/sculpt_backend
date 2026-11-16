@@ -1,6 +1,7 @@
 import { Router } from "express";
 import authenticate from "../middleware/authenticate.js";
 import optionalAuthenticate from "../middleware/Optionalauthenticat.js";
+import requireAdmin from "../middleware/requireAdmin.js";
 import membershipController, { purchaseNewMembership } from "./membership.controller.js";
 const router = Router();
 console.log("membership.route.ts loaded");
@@ -102,7 +103,8 @@ router.get("/:id", membershipController.getMembership);
  *       400:
  *         description: Invalid membership data
  */
-router.post("/", membershipController.createMembership);
+// Membership PLAN management (the plan catalogue): admins only.
+router.post("/", authenticate, requireAdmin, membershipController.createMembership);
 /**
  * @openapi
  * /api/memberships/{id}:
@@ -149,7 +151,7 @@ router.post("/", membershipController.createMembership);
  *       404:
  *         description: Membership not found
  */
-router.patch("/:id", membershipController.updateMembership);
+router.patch("/:id", authenticate, requireAdmin, membershipController.updateMembership);
 /**
  * @openapi
  * /api/memberships/{id}:
@@ -172,6 +174,6 @@ router.patch("/:id", membershipController.updateMembership);
  *       404:
  *         description: Membership not found
  */
-router.delete("/:id", membershipController.deleteMembership);
+router.delete("/:id", authenticate, requireAdmin, membershipController.deleteMembership);
 export default router;
 //# sourceMappingURL=membership.route.js.map

@@ -314,17 +314,66 @@ describe("queued early renewal", () => {
     expect(row(renewal.id).creditsUsed).toBe(0);
   });
 
-  it("does not use the renewal's credits for a session before it starts", async () => {
+  it("a membership's start date never blocks a booking: the renewal pays once current credits run out", async () => {
     await bookSession(d("2026-11-20")); // uses the last current credit
 
-    const bookingsBefore = fake.tables.booking.length;
+    // Before the renewal's start date (Dec 1): still bookable.
+    const booking = await bookSession(d("2026-11-25"));
 
-    await expect(bookSession(d("2026-11-25"))).rejects.toThrow(
-      "Your next membership starts on 2026-12-01"
+    expect(booking.memberMembershipId).toBe(renewal.id);
+    expect(row(renewal.id).creditsUsed).toBe(1);
+    // Its stored dates are unchanged.
+    expect(row(renewal.id).startDate).toEqual(d("2026-12-01"));
+    expect(row(renewal.id).expiryDate).toEqual(addMonths(d("2026-12-01"), 1));
+  });
+
+  it("every session returned by availability can be booked, regardless of membership start dates; the two-hour cutoff still applies", async () => {
+    const addTimedSession = (sessionDate: Date, startTime: string) => {
+      const schedule = fake.insert("schedule", {
+        className: "Reformer",
+        tutorName: "Tutor",
+        code: `REF-T-${fake.tables.schedule.length + 1}`,
+        dayOfWeek: "MONDAY",
+        startTime,
+        endTime: "23:00",
+        capacity: 5,
+        isActive: true,
+      });
+      return fake.insert("classSession", { scheduleId: schedule.id, sessionDate, status: "OPEN" });
+    };
+
+    // Now is 8 Nov, ~01:01 Lagos. All of these are before the renewal's
+    // Dec 1 start except the last.
+    const tooSoon = addTimedSession(d("2026-11-08"), "02:30"); // ~1.5h away
+    for (const date of ["2026-11-08", "2026-11-12", "2026-11-20", "2026-11-28", "2026-12-03"]) {
+      addTimedSession(d(date), "10:00");
+    }
+
+    const available = await bookingService.getClassAvailability("Reformer");
+    const availableIds = available.map((session: Row) => session.id);
+
+    expect(availableIds).not.toContain(tooSoon.id);
+    expect(available).toHaveLength(5);
+
+    for (const session of available) {
+      await bookingService.bookMemberSession(USER_ID, session.id, { accepted: true }, "GROUP");
+    }
+
+    // 1 current credit, then 4 from the renewal; nothing over-deducted.
+    expect(row(current.id).creditsUsed).toBe(8);
+    expect(row(renewal.id).creditsUsed).toBe(4);
+
+    // The two-hour cutoff is unchanged.
+    await expect(
+      bookingService.bookMemberSession(USER_ID, tooSoon.id, { accepted: true }, "GROUP")
+    ).rejects.toThrow("This session must start at least two hours from now.");
+    expect(row(renewal.id).creditsUsed).toBe(4);
+  });
+
+  it("the expiry check is unchanged: a session after every membership's expiry is still refused", async () => {
+    await expect(bookSession(d("2027-02-01"))).rejects.toThrow(
+      "This session is outside your membership validity period."
     );
-
-    expect(row(renewal.id).creditsUsed).toBe(0);
-    expect(fake.tables.booking).toHaveLength(bookingsBefore);
   });
 
   it("uses the renewal for sessions from its start date", async () => {

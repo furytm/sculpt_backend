@@ -1,3 +1,4 @@
+import { UserRole } from "@prisma/client";
 import { adminService } from "./admin.service.js";
 import membershipService from "../membership/membership.service.js";
 class AdminController {
@@ -123,7 +124,21 @@ class AdminController {
                     message: "startDate and endDate are required in YYYY-MM-DD format.",
                 });
             }
-            const data = await adminService.getTutorSchedule(startDate, endDate);
+            // A tutor only ever sees their own schedules. Their tutor comes from
+            // their authenticated account; any tutor named in the request is
+            // ignored. Admins see every tutor, as before.
+            let tutorScope;
+            if (req.user?.role === UserRole.TUTOR) {
+                const tutorId = await adminService.getTutorIdForUser(req.user.userId);
+                if (!tutorId) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "This tutor account is not linked to a tutor.",
+                    });
+                }
+                tutorScope = { tutorId };
+            }
+            const data = await adminService.getTutorSchedule(startDate, endDate, tutorScope);
             return res.status(200).json({
                 success: true,
                 message: "Tutor schedule retrieved successfully.",

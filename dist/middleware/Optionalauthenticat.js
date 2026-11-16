@@ -1,13 +1,14 @@
 import { verifyAccessToken } from "../utils/jwt.js";
+import { rejectTutorOutsideAllowedRoutes } from "./tutorAccess.js";
 export default function optionalAuthenticate(req, res, next) {
     const token = req.cookies?.accessToken ||
         req.headers.authorization?.replace(/^Bearer\s+/, "");
     if (!token) {
         return next();
     }
+    let payload;
     try {
-        req.user = verifyAccessToken(token);
-        return next();
+        payload = verifyAccessToken(token);
     }
     catch {
         return res.status(401).json({
@@ -15,5 +16,12 @@ export default function optionalAuthenticate(req, res, next) {
             message: "Invalid or expired token.",
         });
     }
+    req.user = payload;
+    // Tutors may only use their allow-listed routes (for example, a
+    // signed-in tutor can't make a membership purchase).
+    if (rejectTutorOutsideAllowedRoutes(req, res)) {
+        return;
+    }
+    return next();
 }
 //# sourceMappingURL=Optionalauthenticat.js.map
