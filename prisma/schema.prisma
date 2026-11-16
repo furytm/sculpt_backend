@@ -444,6 +444,7 @@ model MemberMembership {
   updatedAt DateTime @updatedAt
 
   @@index([userId])
+  @@index([membershipNumber])
   @@index([status])
   @@index([expiryDate])
 }
