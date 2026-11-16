@@ -1,7 +1,11 @@
+
 import app from "./app.js";
 import prisma from "./config/prisma.js";
 import classSessionService from "./booking/class-session.service.js";
+import { healthRouter } from "./modules/health/health.route.js";
 import { scheduleDailySessionGeneration } from "./booking/session-generation.scheduler.js";
+
+app.use(healthRouter);
 
 startServer();
 
@@ -13,41 +17,35 @@ async function startServer() {
 
     console.log("✅ Connected to PostgreSQL");
 
-    // Generate missing future class sessions
+    // Generate missing future class sessions on startup.
     await classSessionService.generateFutureSessions();
 
     const server = app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
 
-    // Keep the rolling 30-day window of sessions moving forward while
-    // the server stays up: re-run the same generator every 24 hours.
+    // Keep the rolling session window updated every 24 hours.
     const dailySessionGeneration = scheduleDailySessionGeneration(() =>
       classSessionService.generateFutureSessions()
     );
 
-    // Graceful shutdown: stop the daily job, stop accepting requests,
-    // then disconnect from the database.
-    const shutdown = (signal: string) => {
-      console.log(`🛑 ${signal} received. Shutting down...`);
+    // Graceful shutdown.
+    const shutdown = async () => {
+      console.log("Shutting down server...");
 
       dailySessionGeneration.stop();
 
-      // Don't wait forever for open connections to close.
-      setTimeout(() => process.exit(0), 10_000).unref();
-
-      server.close(() => {
-        prisma
-          .$disconnect()
-          .catch((error) => console.error("❌ Prisma disconnect failed:", error))
-          .finally(() => process.exit(0));
+      server.close(async () => {
+        await prisma.$disconnect();
+        process.exit(0);
       });
     };
 
-    process.once("SIGTERM", () => shutdown("SIGTERM"));
-    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.on("SIGTERM", shutdown);
+    process.on("SIGINT", shutdown);
   } catch (error) {
     console.error("❌ Failed to start server:", error);
+    await prisma.$disconnect();
     process.exit(1);
   }
 }

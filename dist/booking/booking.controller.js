@@ -443,11 +443,18 @@ class BookingController {
                     message: "Unauthorized.",
                 });
             }
-            const { classSessionId, healthDeclaration } = req.body;
+            const { classSessionId, healthDeclaration, bookingType, } = req.body;
             if (!classSessionId || typeof classSessionId !== "string") {
                 return res.status(400).json({
                     success: false,
                     message: "Class session ID is required.",
+                });
+            }
+            if (bookingType !== MembershipType.GROUP &&
+                bookingType !== MembershipType.PRIVATE) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Booking type must be GROUP or PRIVATE.",
                 });
             }
             if (!healthDeclaration || healthDeclaration.accepted !== true) {
@@ -456,7 +463,7 @@ class BookingController {
                     message: "You must accept the Health Declaration to continue.",
                 });
             }
-            const booking = await bookingService.bookMemberSession(userId, classSessionId, healthDeclaration);
+            const booking = await bookingService.bookMemberSession(userId, classSessionId, healthDeclaration, bookingType);
             return res.status(201).json({
                 success: true,
                 message: "Class session booked successfully.",
@@ -467,8 +474,7 @@ class BookingController {
             console.error("Book Member Session Error:", error);
             return res.status(400).json({
                 success: false,
-                message: error?.message ||
-                    "Unable to book class session.",
+                message: error?.message || "Unable to book class session.",
             });
         }
     }

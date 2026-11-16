@@ -1,5 +1,5 @@
 import prisma from "../config/prisma.js";
-import membershipService from "../membership/membership.service.js";
+import membershipService, { PaidFailedPurchaseError, } from "../membership/membership.service.js";
 import paymentService from "./payment.service.js";
 import { sendPaymentConfirmationEmail, sendAdminPaymentNotificationEmail, } from "../utils/mailer.js";
 import bookingService from "../booking/booking.service.js";
@@ -87,7 +87,20 @@ class PaymentController {
             // MEMBERSHIP PURCHASE: NEW, RENEWAL OR UPGRADE
             // --------------------------------------------------
             if (membershipPurchase) {
-                await membershipService.completeMembershipPurchase(reference);
+                try {
+                    await membershipService.completeMembershipPurchase(reference);
+                }
+                catch (error) {
+                    if (error instanceof PaidFailedPurchaseError) {
+                        // Paid, but the purchase had been cancelled or replaced.
+                        // Record it for an admin to refund or apply, and tell the
+                        // customer the payment was received and is under review,
+                        // rather than that it succeeded or failed.
+                        await membershipService.recordPaymentForFailedPurchase(reference, "payment-callback");
+                        return res.redirect(`${frontendUrl}/confirmation?payment=review&type=membership&reference=${encodeURIComponent(reference)}`);
+                    }
+                    throw error;
+                }
                 const customerName = membershipPurchase.fullName || "Sculpt LAB customer";
                 // Create the admin database notification.
                 // Notification failures must not interrupt a successful payment.

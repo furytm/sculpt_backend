@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyAccessToken } from "../utils/jwt.js";
+import { rejectTutorOutsideAllowedRoutes } from "./tutorAccess.js";
 
 export default function authenticate(
   req: Request,
@@ -23,6 +24,11 @@ export default function authenticate(
     const payload = verifyAccessToken(token);
 
     req.user = payload;
+
+    // Tutors may only use their allow-listed routes.
+    if (rejectTutorOutsideAllowedRoutes(req, res)) {
+      return;
+    }
 
     next();
   } catch {

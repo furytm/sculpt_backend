@@ -519,7 +519,20 @@ router.post("/members/:memberId/memberships", authenticate, requireAdmin, adminC
 router.get("/membership-purchases/pending", authenticate, requireAdmin, adminController.getPendingOfflineMembershipPurchases);
 // Confirm an offline membership purchase
 router.post("/membership-purchases/:purchaseId/confirm", authenticate, requireAdmin, adminController.confirmOfflineMembershipPurchase);
+// Retry the selected first class of a paid, activated offline
+// membership purchase (never confirms or charges the payment again)
+router.post("/membership-purchases/:purchaseId/first-booking/retry", authenticate, requireAdmin, adminController.retryOfflineMembershipFirstBooking.bind(adminController));
 // Reject an offline membership purchase
 router.post("/membership-purchases/:purchaseId/reject", authenticate, requireAdmin, adminController.rejectOfflineMembershipPurchase);
+// =====================================================
+// PAYMENTS FOR CANCELLED OR SUPERSEDED PURCHASES
+// =====================================================
+// A customer paid a purchase that had been cancelled or replaced.
+// The payment is recorded and admins are notified; an admin then
+// either applies the purchase or refunds it (in the Paymish
+// dashboard) and records the refund here.
+router.get("/membership-purchases/reconciliation", authenticate, requireAdmin, adminController.getPurchasesNeedingReconciliation.bind(adminController));
+router.post("/membership-purchases/:purchaseId/reconciliation/apply", authenticate, requireAdmin, adminController.applyPaidFailedPurchase.bind(adminController));
+router.post("/membership-purchases/:purchaseId/reconciliation/refunded", authenticate, requireAdmin, adminController.markPaidFailedPurchaseRefunded.bind(adminController));
 export default router;
 //# sourceMappingURL=admin.route.js.map

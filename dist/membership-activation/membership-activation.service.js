@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import bcrypt from "bcrypt";
-import { AuthProvider, MembershipStatus, UserRole } from "@prisma/client";
+import { AuthProvider, MembershipStatus, MembershipType, UserRole, } from "@prisma/client";
 import prisma from "../config/prisma.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
 import bookingService from "../booking/booking.service.js";
@@ -23,36 +23,6 @@ function hashActivationToken(token) {
 //   const randomNumber = crypto.randomInt(100000, 999999);
 //   return `SL-${year}-${randomNumber}`;
 // }
-function getMembershipExpiry(startDate, duration) {
-    const expiry = new Date(startDate);
-    const normalized = duration.trim().toLowerCase();
-    if (normalized.includes("single") ||
-        normalized.includes("class")) {
-        expiry.setDate(expiry.getDate() + 30);
-        return expiry;
-    }
-    if (normalized.includes("week")) {
-        const match = normalized.match(/\d+/);
-        const weeks = match ? Number(match[0]) : 1;
-        expiry.setDate(expiry.getDate() + weeks * 7);
-        return expiry;
-    }
-    if (normalized.includes("month") ||
-        normalized.includes("monthly")) {
-        const match = normalized.match(/\d+/);
-        const months = match ? Number(match[0]) : 1;
-        expiry.setMonth(expiry.getMonth() + months);
-        return expiry;
-    }
-    if (normalized.includes("year") ||
-        normalized.includes("annual")) {
-        const match = normalized.match(/\d+/);
-        const years = match ? Number(match[0]) : 1;
-        expiry.setFullYear(expiry.getFullYear() + years);
-        return expiry;
-    }
-    return null;
-}
 async function sendActivationEmail({ email, fullName, membershipName, membershipNumber, activationToken, amount, }) {
     const resendApiKey = process.env.RESEND_API_KEY;
     const fromEmail = process.env.EMAIL_FROM;
@@ -242,6 +212,7 @@ class MembershipActivationService {
                 membership: true,
                 memberMembership: true,
                 membershipActivation: true,
+                session: true,
             },
         });
         if (!booking) {
@@ -257,8 +228,31 @@ class MembershipActivationService {
             throw new Error("An activation has already been created for this booking.");
         }
         let memberMembership = booking.memberMembership;
-        const startDate = new Date();
-        const expiryDate = getMembershipExpiry(startDate, booking.membership.duration);
+        /*
+         * Validity starts on the first booked session, never the
+         * approval date. A confirmed booking with a session (or a booked
+         * date) starts the membership on that date.
+         *
+         * Otherwise the dates stay null:
+         * - an admin onboarding an offline member (no session): the
+         *   membership waits for its first booked session
+         *   (BookingService.bookMemberSession starts it);
+         * - an offline payment whose selected class is still to be
+         *   confirmed: confirming it sets the dates, and if it can't be
+         *   confirmed the membership waits instead of starting on a class
+         *   the member won't attend.
+         *
+         * The expiry uses the same duration rules as every other path.
+         */
+        const startDate = booking.bookingStatus === "CONFIRMED"
+            ? booking.session?.sessionDate ??
+                booking.bookingDate ??
+                booking.preferredStartDate ??
+                null
+            : null;
+        const expiryDate = startDate
+            ? bookingService.calculateMembershipExpiry(startDate, booking.membership.duration, booking.membership.period)
+            : null;
         if (!memberMembership) {
             const classLimit = booking.membership.classLimit;
             const creditsUsed = classLimit === null || remainingCredits === undefined
@@ -409,6 +403,29 @@ class MembershipActivationService {
             membership: source.membership,
         };
     }
+    /**
+     * Activate a paid offline membership purchase.
+     *
+     * The activation (and its email) never depends on the selected first
+     * class. The order is:
+     *   1. validate the purchase (OFFLINE, PAID);
+     *   2. create or reuse the account (purchases with a first class) and
+     *      attach the purchase to it;
+     *   3. create or reuse the membership, with no dates;
+     *   4. create the activation and send its email, or reuse an existing
+     *      activation without emailing again;
+     *   5. then try the selected first class through
+     *      BookingService.createMembershipFirstBooking.
+     *
+     * If the class can't be booked, nothing is rolled back: the payment,
+     * membership and activation stay, no credit is used, the dates stay
+     * null, and the purchase keeps its first-session details so an admin
+     * can retry (retryFirstClassBooking). The result reports the class
+     * separately.
+     *
+     * Safe to call again for the same purchase: it reuses the account,
+     * membership and activation, and only retries the class.
+     */
     async createActivationForPurchase(purchaseId) {
         const purchase = await prisma.membershipPurchase.findUnique({
             where: { id: purchaseId },
@@ -427,17 +444,11 @@ class MembershipActivationService {
         if (purchase.paymentStatus !== "PAID") {
             throw new Error("Payment must be confirmed before activation.");
         }
-        if (purchase.membershipActivation) {
-            throw new Error("An activation has already been created for this purchase.");
-        }
         let memberMembership = purchase.memberMembership;
         let userId = purchase.userId;
         // A purchase with a selected first session needs a user account
         // because the first booking must be attached to that account.
         if (purchase.firstSessionId) {
-            if (!purchase.healthDeclarationAccepted) {
-                throw new Error("The health and safety declaration must be accepted before confirming this purchase.");
-            }
             const normalizedEmail = purchase.email.trim().toLowerCase();
             // Reuse an existing account where possible.
             let user = await prisma.user.findUnique({
@@ -458,12 +469,15 @@ class MembershipActivationService {
             }
             userId = user.id;
             // Attach the purchase to the account.
-            await prisma.membershipPurchase.update({
-                where: { id: purchase.id },
-                data: { userId },
-            });
+            if (purchase.userId !== userId) {
+                await prisma.membershipPurchase.update({
+                    where: { id: purchase.id },
+                    data: { userId },
+                });
+            }
         }
-        // Create the membership record if it doesn't exist.
+        // Create the membership record if it doesn't exist. Its dates stay
+        // null: the first confirmed class (now or later) starts it.
         if (!memberMembership) {
             memberMembership = await prisma.memberMembership.create({
                 data: {
@@ -484,68 +498,82 @@ class MembershipActivationService {
                 data: { userId },
             });
         }
-        // If a first session was selected, create and confirm its booking.
-        // This does NOT initialize another payment.
-        if (purchase.firstSessionId) {
-            if (!userId) {
-                throw new Error("A user account is required for the first booking.");
-            }
-            await bookingService.createMembershipFirstBooking({
-                purchaseReference: purchase.paymentReference,
-                userId,
-                membershipId: purchase.membershipId,
-                firstSessionId: purchase.firstSessionId,
-                fullName: purchase.fullName || "Sculpt LAB Member",
-                email: purchase.email,
-                phone: purchase.phone || "",
-                healthDeclarationNotes: purchase.healthDeclarationNotes,
-            });
-        }
-        // Generate activation credentials.
-        const activationToken = generateActivationToken();
-        const tokenHash = hashActivationToken(activationToken);
-        let membershipNumber = generateMembershipNumber();
-        while ((await prisma.membershipActivation.findUnique({
-            where: { membershipNumber },
-        })) ||
-            (await prisma.memberMembership.findFirst({
-                where: { membershipNumber },
-            }))) {
-            membershipNumber = generateMembershipNumber();
-        }
-        const expiresAt = new Date();
-        expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
-        // bookingId is intentionally omitted:
-        // this activation belongs to the membership purchase.
-        const activation = await prisma.membershipActivation.create({
-            data: {
-                membershipPurchaseId: purchase.id,
-                memberMembershipId: memberMembership.id,
-                membershipNumber,
-                tokenHash,
-                expiresAt,
-            },
-        });
-        await prisma.memberMembership.update({
-            where: { id: memberMembership.id },
-            data: { membershipNumber },
-        });
-        const activationUrl = `${FRONTEND_URL}/activate?membership=${encodeURIComponent(membershipNumber)}&token=${encodeURIComponent(activationToken)}`;
+        // ---------------------------------------------------------------
+        // ACTIVATION (before, and independent of, the first class)
+        // ---------------------------------------------------------------
+        let membershipNumber;
+        let activationUrl = null;
+        let activationStatus;
+        let activationEmail;
         let emailSent = false;
-        try {
-            await sendActivationEmail({
-                email: purchase.email,
-                fullName: purchase.fullName || "Sculpt LAB Member",
-                membershipName: purchase.membership.name,
-                membershipNumber,
-                activationToken,
-                amount: purchase.amount,
+        if (purchase.membershipActivation) {
+            // Reuse it. No new number, record or email; the raw token isn't
+            // stored, so no link is returned. A lost or failed email is
+            // re-sent through resendActivationForEmail.
+            membershipNumber = purchase.membershipActivation.membershipNumber;
+            activationStatus = "EXISTING";
+            activationEmail = "NOT_RESENT";
+            if (memberMembership.membershipNumber !== membershipNumber) {
+                await prisma.memberMembership.update({
+                    where: { id: memberMembership.id },
+                    data: { membershipNumber },
+                });
+            }
+        }
+        else {
+            // Generate activation credentials.
+            const activationToken = generateActivationToken();
+            const tokenHash = hashActivationToken(activationToken);
+            membershipNumber = generateMembershipNumber();
+            while ((await prisma.membershipActivation.findUnique({
+                where: { membershipNumber },
+            })) ||
+                (await prisma.memberMembership.findFirst({
+                    where: { membershipNumber },
+                }))) {
+                membershipNumber = generateMembershipNumber();
+            }
+            const expiresAt = new Date();
+            expiresAt.setDate(expiresAt.getDate() + ACTIVATION_EXPIRY_DAYS);
+            // bookingId is intentionally omitted:
+            // this activation belongs to the membership purchase.
+            await prisma.membershipActivation.create({
+                data: {
+                    membershipPurchaseId: purchase.id,
+                    memberMembershipId: memberMembership.id,
+                    membershipNumber,
+                    tokenHash,
+                    expiresAt,
+                },
             });
-            emailSent = true;
+            await prisma.memberMembership.update({
+                where: { id: memberMembership.id },
+                data: { membershipNumber },
+            });
+            activationUrl = `${FRONTEND_URL}/activate?membership=${encodeURIComponent(membershipNumber)}&token=${encodeURIComponent(activationToken)}`;
+            activationStatus = "CREATED";
+            try {
+                await sendActivationEmail({
+                    email: purchase.email,
+                    fullName: purchase.fullName || "Sculpt LAB Member",
+                    membershipName: purchase.membership.name,
+                    membershipNumber,
+                    activationToken,
+                    amount: purchase.amount,
+                });
+                emailSent = true;
+            }
+            catch (error) {
+                console.error("Offline purchase activation email failed:", error);
+            }
+            activationEmail = emailSent ? "SENT" : "FAILED";
         }
-        catch (error) {
-            console.error("Offline purchase activation email failed:", error);
-        }
+        // ---------------------------------------------------------------
+        // FIRST CLASS (after activation; its failure is only reported)
+        // ---------------------------------------------------------------
+        const firstClass = purchase.firstSessionId && userId
+            ? await this.attemptFirstClassBooking(purchase, userId)
+            : { status: "NOT_SELECTED" };
         return {
             purchaseId: purchase.id,
             paymentReference: purchase.paymentReference,
@@ -555,7 +583,103 @@ class MembershipActivationService {
             fullName: purchase.fullName,
             activationUrl,
             emailSent,
+            activationStatus,
+            activationEmail,
+            firstClass,
         };
+    }
+    /**
+     * Admin: retry the selected first class of a paid offline membership
+     * purchase whose first class couldn't be booked when it was activated.
+     *
+     * Only re-runs BookingService.createMembershipFirstBooking with the
+     * purchase's own reference and saved details, which reuses its
+     * existing first booking. It never confirms or charges the payment,
+     * and never creates a purchase, account, membership or activation. An
+     * already-confirmed first class is returned unchanged.
+     */
+    async retryFirstClassBooking(purchaseId) {
+        const purchase = await prisma.membershipPurchase.findUnique({
+            where: { id: purchaseId },
+            include: {
+                memberMembership: true,
+                membershipActivation: true,
+            },
+        });
+        if (!purchase) {
+            throw new Error("Membership purchase not found.");
+        }
+        if (purchase.paymentMethod !== "OFFLINE") {
+            throw new Error("This purchase is not an offline payment.");
+        }
+        if (purchase.paymentStatus !== "PAID") {
+            throw new Error("This purchase's payment has not been confirmed yet.");
+        }
+        if (!purchase.firstSessionId) {
+            throw new Error("This purchase has no selected first class to book.");
+        }
+        if (!purchase.userId) {
+            throw new Error("This purchase is not linked to a customer account.");
+        }
+        if (!purchase.memberMembership ||
+            purchase.memberMembership.userId !== purchase.userId) {
+            throw new Error("This purchase's membership is not linked to the customer's account.");
+        }
+        if (!purchase.membershipActivation) {
+            throw new Error("This purchase has no activation yet. Confirm the payment first.");
+        }
+        return {
+            purchaseId: purchase.id,
+            paymentReference: purchase.paymentReference,
+            firstClass: await this.attemptFirstClassBooking(purchase, purchase.userId),
+        };
+    }
+    /**
+     * Book and confirm the purchase's selected first class through the
+     * existing BookingService.createMembershipFirstBooking, which does all
+     * the validation, the membership dates, the credit and the calendar
+     * event. A failure is returned as NOT_CONFIRMED, never thrown.
+     */
+    async attemptFirstClassBooking(purchase, userId) {
+        try {
+            const booking = await bookingService.createMembershipFirstBooking({
+                purchaseReference: purchase.paymentReference,
+                userId,
+                membershipId: purchase.membershipId,
+                firstSessionId: purchase.firstSessionId ?? "",
+                fullName: purchase.fullName || "Sculpt LAB Member",
+                email: purchase.email,
+                phone: purchase.phone || "",
+                healthDeclarationNotes: purchase.healthDeclarationNotes,
+            });
+            if (booking.bookingStatus === "CONFIRMED") {
+                return {
+                    status: "CONFIRMED",
+                    bookingId: booking.id,
+                    sessionId: booking.sessionId,
+                };
+            }
+            return {
+                status: "NOT_CONFIRMED",
+                sessionId: purchase.firstSessionId,
+                reason: "The first class could not be confirmed.",
+                retryAvailable: true,
+            };
+        }
+        catch (error) {
+            const reason = error instanceof Error
+                ? error.message
+                : "The first class could not be confirmed.";
+            console.error("[OFFLINE PURCHASE] Activated, but the first class could not be booked:", purchase.paymentReference, reason);
+            return {
+                status: "NOT_CONFIRMED",
+                sessionId: purchase.firstSessionId,
+                reason,
+                // Retrying can't help once another class has started the
+                // membership; the class must be booked normally instead.
+                retryAvailable: !reason.includes("already started from another booking"),
+            };
+        }
     }
     async createManualMembershipForRegisteredUser(data) {
         const user = await prisma.user.findUnique({
@@ -572,6 +696,10 @@ class MembershipActivationService {
         }
         if (!membership.isActive) {
             throw new Error("This membership is not active.");
+        }
+        if (membership.type !== MembershipType.GROUP &&
+            membership.type !== MembershipType.PRIVATE) {
+            throw new Error("Unsupported membership type.");
         }
         const usedCredits = data.usedCredits ?? 0;
         let totalCredits = membership.classLimit;
@@ -594,13 +722,24 @@ class MembershipActivationService {
                 throw new Error("Used credits must be between 0 and total credits.");
             }
         }
+        /*
+         * An admin-entered start date records a membership that has
+         * already started (for example, moving an existing member over).
+         * Without one, the membership waits for its first booked session
+         * instead of starting today. BookingService.bookMemberSession
+         * starts it on that session's date.
+         */
         const startDate = data.startDate
             ? new Date(`${data.startDate}T00:00:00.000Z`)
-            : new Date();
-        if (Number.isNaN(startDate.getTime())) {
+            : null;
+        if (startDate && Number.isNaN(startDate.getTime())) {
             throw new Error("Invalid membership start date.");
         }
-        const expiryDate = getMembershipExpiry(startDate, membership.duration);
+        // Same duration rules as every other path. Private session plans
+        // and packages have no expiry; an unknown duration throws.
+        const expiryDate = startDate
+            ? bookingService.calculateMembershipExpiry(startDate, membership.duration, membership.period)
+            : null;
         let membershipNumber = generateMembershipNumber();
         while ((await prisma.memberMembership.findFirst({
             where: { membershipNumber },
@@ -610,28 +749,74 @@ class MembershipActivationService {
             }))) {
             membershipNumber = generateMembershipNumber();
         }
-        return prisma.memberMembership.create({
-            data: {
-                userId: user.id,
-                membershipId: membership.id,
-                status: MembershipStatus.ACTIVE,
-                startDate,
-                expiryDate,
-                creditsTotal: totalCredits,
-                creditsUsed: usedCredits,
-                membershipNumber,
-            },
-            include: {
-                membership: true,
-                user: {
-                    select: {
-                        id: true,
-                        fullName: true,
-                        email: true,
-                        phone: true,
+        return prisma.$transaction(async (tx) => {
+            const now = new Date();
+            // Find the member's existing active memberships.
+            const existingMemberships = await tx.memberMembership.findMany({
+                where: {
+                    userId: user.id,
+                    status: MembershipStatus.ACTIVE,
+                    OR: [
+                        { expiryDate: null },
+                        { expiryDate: { gt: now } },
+                    ],
+                },
+                include: {
+                    membership: true,
+                },
+            });
+            // Only combine credits belonging to the same membership type.
+            const sameTypeMemberships = existingMemberships.filter((item) => {
+                const sameType = item.membership.type === membership.type;
+                const hasRemainingCredits = item.creditsTotal === null ||
+                    item.creditsUsed < item.creditsTotal;
+                return sameType && hasRemainingCredits;
+            });
+            // Extend finite, same-type memberships with remaining credits to the
+            // newly assigned finite plan's expiry. Keep unlimited memberships
+            // non-expiring, and never turn a finite membership into an unlimited one
+            // merely because the newly assigned plan has no expiry.
+            if (expiryDate !== null && totalCredits !== null) {
+                for (const existing of sameTypeMemberships) {
+                    // An unlimited existing record must remain unlimited.
+                    if (existing.creditsTotal === null) {
+                        continue;
+                    }
+                    await tx.memberMembership.update({
+                        where: {
+                            id: existing.id,
+                        },
+                        data: {
+                            expiryDate,
+                        },
+                    });
+                }
+            }
+            // Create a separate record for the newly added plan.
+            // Its credits join the existing balance through aggregation.
+            return tx.memberMembership.create({
+                data: {
+                    userId: user.id,
+                    membershipId: membership.id,
+                    status: MembershipStatus.ACTIVE,
+                    startDate,
+                    expiryDate,
+                    creditsTotal: totalCredits,
+                    creditsUsed: usedCredits,
+                    membershipNumber,
+                },
+                include: {
+                    membership: true,
+                    user: {
+                        select: {
+                            id: true,
+                            fullName: true,
+                            email: true,
+                            phone: true,
+                        },
                     },
                 },
-            },
+            });
         });
     }
     async completeActivation(data) {
@@ -650,6 +835,20 @@ class MembershipActivationService {
             throw new Error("Invalid membership number.");
         }
         if (activation.usedAt) {
+            // Already activated. With the right token, confirm it is linked to
+            // its owner and report success (idempotent). A used link never
+            // logs anyone in again, and never re-links anything.
+            if (tokenHash === activation.tokenHash) {
+                const linked = await this.getActivatedOwner(activation);
+                if (linked) {
+                    return {
+                        alreadyActivated: true,
+                        existingAccount: true,
+                        user: linked.user,
+                        membership: linked.membership,
+                    };
+                }
+            }
             throw new Error("This activation has already been used.");
         }
         if (activation.expiresAt < new Date()) {
@@ -664,6 +863,14 @@ class MembershipActivationService {
         if (Boolean(booking) === Boolean(purchase)) {
             throw new Error("Invalid activation record. Please contact Sculpt LAB.");
         }
+        // The membership must be the one created for this booking or
+        // purchase; otherwise the records need an admin to look at them.
+        if ((booking?.memberMembershipId &&
+            booking.memberMembershipId !== activation.memberMembershipId) ||
+            (purchase &&
+                activation.memberMembership.membershipPurchaseId !== purchase.id)) {
+            throw new Error("This activation's membership does not match its booking or purchase. Please contact Sculpt LAB.");
+        }
         const source = booking ?? purchase;
         const email = source.email?.trim().toLowerCase();
         if (!email) {
@@ -676,16 +883,31 @@ class MembershipActivationService {
         }
         const hashedPassword = await bcrypt.hash(data.password, 12);
         const result = await prisma.$transaction(async (tx) => {
-            let user = await tx.user.findUnique({
+            // The account registered with this email, if any (emails compared
+            // case-insensitively, so a differently-cased address never gets a
+            // second account). The activation link, sent to that email, is the
+            // proof of ownership that lets the membership join that account.
+            let user = await tx.user.findFirst({
                 where: {
-                    email,
+                    email: {
+                        equals: email,
+                        mode: "insensitive",
+                    },
                 },
             });
-            // Do not allow a purchase already attached to another account
-            // to be linked to a different account.
+            const existingAccount = Boolean(user);
+            const ownerId = user?.id ?? null;
+            // Never move records that already belong to a different account.
             if (purchase?.userId &&
-                purchase.userId !== user?.id) {
+                purchase.userId !== ownerId) {
                 throw new Error("This membership purchase is already linked to another account.");
+            }
+            if (booking?.userId && booking.userId !== ownerId) {
+                throw new Error("This booking is already linked to a different account. Please contact Sculpt LAB.");
+            }
+            if (activation.memberMembership.userId &&
+                activation.memberMembership.userId !== ownerId) {
+                throw new Error("This membership is already linked to a different account. Please contact Sculpt LAB.");
             }
             if (!user) {
                 user = await tx.user.create({
@@ -722,35 +944,33 @@ class MembershipActivationService {
                     },
                 });
             }
-            // Attach the account to the original booking OR purchase.
-            if (booking) {
-                await tx.booking.update({
-                    where: {
-                        id: booking.id,
-                    },
-                    data: {
-                        userId: user.id,
-                    },
+            // Attach the account to the original booking OR purchase, and to
+            // its membership. Each update only applies while the record is
+            // unlinked or already this user's, so a concurrent link to someone
+            // else is never overwritten. Nothing else about the records changes:
+            // dates, credits, status, membership number and history stay as
+            // they are (an expired membership stays expired).
+            const linkFilter = {
+                OR: [{ userId: null }, { userId: user.id }],
+            };
+            const linked = booking
+                ? await tx.booking.updateMany({
+                    where: { id: booking.id, ...linkFilter },
+                    data: { userId: user.id },
+                })
+                : await tx.membershipPurchase.updateMany({
+                    where: { id: purchase.id, ...linkFilter },
+                    data: { userId: user.id },
                 });
+            const membershipLinked = await tx.memberMembership.updateMany({
+                where: { id: activation.memberMembershipId, ...linkFilter },
+                data: { userId: user.id },
+            });
+            if (linked.count !== 1 || membershipLinked.count !== 1) {
+                throw new Error("This membership is already linked to a different account. Please contact Sculpt LAB.");
             }
-            else if (purchase) {
-                await tx.membershipPurchase.update({
-                    where: {
-                        id: purchase.id,
-                    },
-                    data: {
-                        userId: user.id,
-                    },
-                });
-            }
-            const memberMembership = await tx.memberMembership.update({
-                where: {
-                    id: activation.memberMembershipId,
-                },
-                data: {
-                    userId: user.id,
-                    status: MembershipStatus.ACTIVE,
-                },
+            const memberMembership = await tx.memberMembership.findUniqueOrThrow({
+                where: { id: activation.memberMembershipId },
             });
             // Only one request should be allowed to consume this activation.
             const activationUpdate = await tx.membershipActivation.updateMany({
@@ -768,6 +988,7 @@ class MembershipActivationService {
             return {
                 user,
                 memberMembership,
+                existingAccount,
             };
         });
         const jwtPayload = {
@@ -793,8 +1014,40 @@ class MembershipActivationService {
                 role: result.user.role,
             },
             membership: result.memberMembership,
+            // The membership joined an account that was already registered
+            // with this email (its password is unchanged).
+            existingAccount: result.existingAccount,
             accessToken,
             refreshToken,
+        };
+    }
+    /**
+     * For a used activation: the account it was completed for, if its
+     * booking or purchase and its membership are all linked to the account
+     * registered with the activation's email. Used to answer a repeated
+     * activation idempotently.
+     */
+    async getActivatedOwner(activation) {
+        const ownerId = activation.memberMembership.userId;
+        const source = activation.booking ?? activation.membershipPurchase;
+        if (!ownerId || !source || source.userId !== ownerId) {
+            return null;
+        }
+        const user = await prisma.user.findUnique({ where: { id: ownerId } });
+        if (!user ||
+            !source.email ||
+            user.email.trim().toLowerCase() !== source.email.trim().toLowerCase()) {
+            return null;
+        }
+        return {
+            user: {
+                id: user.id,
+                fullName: user.fullName,
+                email: user.email,
+                phone: user.phone,
+                role: user.role,
+            },
+            membership: activation.memberMembership,
         };
     }
     async resendActivationForEmail(email) {

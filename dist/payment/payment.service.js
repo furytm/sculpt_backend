@@ -1,7 +1,7 @@
 import axios from "axios";
 import crypto from "node:crypto";
 import prisma from "../config/prisma.js";
-import membershipService from "../membership/membership.service.js";
+import membershipService, { PaidFailedPurchaseError, } from "../membership/membership.service.js";
 import bookingService from "../booking/booking.service.js";
 class PaymentService {
     getHeaders() {
@@ -148,7 +148,26 @@ class PaymentService {
             },
         });
         if (membershipPurchase) {
-            await membershipService.completeMembershipPurchase(reference);
+            try {
+                await membershipService.completeMembershipPurchase(reference);
+            }
+            catch (error) {
+                if (error instanceof PaidFailedPurchaseError) {
+                    // The customer paid a cancelled or superseded purchase.
+                    // Record it for an admin to refund or apply, then acknowledge
+                    // the webhook: retrying could never complete it. Other
+                    // errors still fail the webhook, so they are retried.
+                    await membershipService.recordPaymentForFailedPurchase(reference, "webhook");
+                    return {
+                        received: true,
+                        processed: false,
+                        type: "membership",
+                        reference,
+                        reconciliationRequired: true,
+                    };
+                }
+                throw error;
+            }
             return {
                 received: true,
                 processed: true,

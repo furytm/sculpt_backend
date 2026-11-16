@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
-import { BookingStatus, PaymentMethod, PaymentStatus, MembershipStatus, MembershipType, } from "@prisma/client";
+import { BookingStatus, PaymentMethod, PaymentStatus, MembershipPurchaseType, MembershipStatus, MembershipType, } from "@prisma/client";
 import { googleCalendarService, } from "../google-calendar/google-calendar.service.js";
 class BookingService {
     // =========================================================
@@ -179,6 +179,10 @@ class BookingService {
     }
     /**
      * Calculate membership expiry.
+     *
+     * Public so membership renewal and upgrade use the same duration
+     * rules as first-booking activation. Returns null for packages
+     * with no time limit.
      */
     calculateMembershipExpiry(startDate, duration, period) {
         const expiryDate = new Date(startDate);
@@ -300,6 +304,164 @@ class BookingService {
         }
         return (memberMembership.creditsUsed <
             memberMembership.creditsTotal);
+    }
+    /**
+     * A membership whose validity has not started waits for its first
+     * booked session, and its startDate is still null. That covers:
+     * - a NEW membership bought without a first session;
+     * - a RENEWAL or UPGRADE completed when the member had no running
+     *   validity (expired, or not started yet);
+     * - an offline-onboarded or admin-added membership with no session
+     *   or start date yet (these have no purchase record);
+     * - an offline purchase whose selected first class couldn't be
+     *   booked: whichever class is confirmed first (that one on an admin
+     *   retry, or one the member books) starts it.
+     *
+     * A purchase whose first session was booked at checkout (Paymish) or
+     * confirmed already has a startDate, so it is never awaiting.
+     *
+     * The first booking sets startDate (see bookMemberSession), so a
+     * started membership is never awaiting again, whatever happens
+     * to that booking later. Only a confirmed booking for an actual
+     * session counts as the first session. An offline onboarding
+     * booking is confirmed but has no session, so it doesn't count.
+     * The confirmed-booking check also keeps rows booked before startDate
+     * activation existed (those bookings always have a session) from
+     * being treated as awaiting.
+     */
+    isAwaitingFirstBooking(row) {
+        return (row.startDate === null &&
+            !row.bookings.some((booking) => booking.bookingStatus === BookingStatus.CONFIRMED &&
+                booking.sessionId !== null));
+    }
+    /**
+     * Expiry for a membership started by its first booking.
+     *
+     * When this membership is an upgrade of an unstarted membership,
+     * none of the replaced package's time was used, so its duration is
+     * added before the upgraded package's own. Replaced rows are found
+     * through previousMemberMembershipId. Only rows the upgrade replaced
+     * (EXPIRED) while they were unstarted (startDate null) count. Days
+     * of a membership that had started and expired are never added.
+     */
+    async calculateFirstBookingExpiry(tx, userId, row, startDate) {
+        const replacedPackages = [];
+        if (row.membershipPurchase?.type === MembershipPurchaseType.UPGRADE) {
+            let previousId = row.membershipPurchase.previousMemberMembershipId;
+            const seen = new Set();
+            while (previousId && !seen.has(previousId)) {
+                seen.add(previousId);
+                const previous = await tx.memberMembership.findFirst({
+                    where: { id: previousId, userId },
+                    include: {
+                        membership: true,
+                        membershipPurchase: {
+                            select: { previousMemberMembershipId: true },
+                        },
+                    },
+                });
+                if (!previous ||
+                    previous.startDate !== null ||
+                    previous.status !== MembershipStatus.EXPIRED) {
+                    break;
+                }
+                // Oldest package first.
+                replacedPackages.unshift(previous.membership);
+                previousId =
+                    previous.membershipPurchase?.previousMemberMembershipId ?? null;
+            }
+        }
+        let validUntil = startDate;
+        for (const plan of replacedPackages) {
+            // A package with no time limit adds no days.
+            validUntil =
+                this.calculateMembershipExpiry(validUntil, plan.duration, plan.period) ?? validUntil;
+        }
+        return this.calculateMembershipExpiry(validUntil, row.membership.duration, row.membership.period);
+    }
+    /**
+     * After a first booking starts a membership, start the other
+     * packages of the same type the member bought while it was
+     * unstarted: renewals of it, or further membership-only purchases.
+     * They follow in purchase order. Each begins when the one before
+     * it ends and adds its own full duration, so every package bought
+     * counts once.
+     */
+    async startQueuedMemberships(tx, userId, type, started) {
+        const candidates = await tx.memberMembership.findMany({
+            where: {
+                userId,
+                status: MembershipStatus.ACTIVE,
+                startDate: null,
+                id: { not: started.id },
+                membership: { type },
+            },
+            include: {
+                membership: true,
+                membershipPurchase: {
+                    select: {
+                        type: true,
+                        firstSessionId: true,
+                    },
+                },
+                bookings: {
+                    where: {
+                        bookingStatus: BookingStatus.CONFIRMED,
+                    },
+                    select: {
+                        bookingStatus: true,
+                        sessionId: true,
+                    },
+                    take: 1,
+                },
+            },
+            orderBy: {
+                createdAt: "asc",
+            },
+        });
+        let previous = started;
+        for (const next of candidates) {
+            if (!this.isAwaitingFirstBooking(next)) {
+                continue;
+            }
+            // A package with no time limit has no end date, so the
+            // next one starts with it.
+            const nextStartDate = previous.expiryDate ?? previous.startDate;
+            const nextExpiryDate = this.calculateMembershipExpiry(nextStartDate, next.membership.duration, next.membership.period);
+            // Same guard as the first activation: never overwrite dates
+            // another request has already set.
+            const queued = await tx.memberMembership.updateMany({
+                where: { id: next.id, userId, startDate: null },
+                data: {
+                    startDate: nextStartDate,
+                    expiryDate: nextExpiryDate,
+                },
+            });
+            if (queued.count !== 1) {
+                throw new Error("Your membership was updated by another booking. Please try again.");
+            }
+            previous = {
+                id: next.id,
+                startDate: nextStartDate,
+                expiryDate: nextExpiryDate,
+            };
+        }
+    }
+    /** Midnight UTC on the same calendar day. */
+    startOfUtcDay(date) {
+        return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    }
+    /**
+     * Whether a membership's validity covers a session date: the session
+     * must not be after the membership's expiry (no expiry = no limit).
+     *
+     * A membership's start date never restricts booking: a queued
+     * membership (one starting later) can pay for any bookable session.
+     * The only time restriction on the session itself is the two-hour
+     * cutoff, checked separately.
+     */
+    coversSessionDate(item, sessionDate) {
+        return !item.expiryDate || sessionDate <= item.expiryDate;
     }
     // =========================================================
     // CREATE BOOKING
@@ -1056,6 +1218,46 @@ class BookingService {
      * This creates the membership and consumes the first credit.
      */
     async confirmBooking(bookingId, userId) {
+        return this.confirmBookingFor(bookingId, userId);
+    }
+    /**
+     * Admin offline payment confirmation: confirm the class the customer
+     * selected at checkout, after the admin has confirmed their transfer
+     * and the membership has been created.
+     *
+     * The customer usually has no account yet, so the booking belongs to
+     * no one (userId null). This runs the same confirmation as
+     * confirmBooking, for the booking's recorded owner: the same
+     * transaction, row locks, session, capacity, two-hour, health
+     * declaration and credit rules, and calendar event. A booking that is
+     * already confirmed is returned unchanged.
+     */
+    async confirmOfflinePaidBooking(bookingId) {
+        const booking = await prisma.booking.findUnique({
+            where: { id: bookingId },
+            select: {
+                userId: true,
+                paymentMethod: true,
+                paymentStatus: true,
+            },
+        });
+        if (!booking) {
+            throw new Error("Booking not found.");
+        }
+        if (booking.paymentMethod !== PaymentMethod.OFFLINE) {
+            throw new Error("This booking is not an offline payment.");
+        }
+        if (booking.paymentStatus !== PaymentStatus.PAID) {
+            throw new Error("The offline payment for this booking has not been confirmed.");
+        }
+        return this.confirmBookingFor(bookingId, booking.userId);
+    }
+    /**
+     * Shared confirmation. `userId` is the owner the booking must have:
+     * the logged-in member for confirmBooking, or the booking's own
+     * owner (possibly none yet) for an admin-confirmed offline payment.
+     */
+    async confirmBookingFor(bookingId, userId) {
         const booking = await prisma.booking.findFirst({
             where: {
                 id: bookingId,
@@ -1108,6 +1310,10 @@ class BookingService {
     // CONFIRM GROUP BOOKING
     // =========================================================
     async confirmGroupBooking(bookingId, userId) {
+        // Set when another request had already confirmed this booking,
+        // so this call neither changes it nor creates another calendar
+        // event for it.
+        let alreadyConfirmed = false;
         const confirmedBooking = await prisma.$transaction(async (tx) => {
             // -------------------------------------------------
             // LOCK BOOKING
@@ -1142,6 +1348,7 @@ class BookingService {
             }
             if (currentBooking.bookingStatus ===
                 BookingStatus.CONFIRMED) {
+                alreadyConfirmed = true;
                 return currentBooking;
             }
             if (currentBooking.paymentStatus !==
@@ -1296,7 +1503,13 @@ class BookingService {
         // = one Google Calendar event.
         //
         // Calendar failure does NOT undo the booking.
+        //
+        // Only the call that confirmed the booking creates the event, so a
+        // repeated or concurrent confirmation never adds a second one.
         // =====================================================
+        if (alreadyConfirmed) {
+            return confirmedBooking;
+        }
         try {
             const session = await prisma.classSession.findUnique({
                 where: {
@@ -1354,6 +1567,8 @@ class BookingService {
     // CONFIRM PRIVATE BOOKING
     // =========================================================
     async confirmPrivateBooking(bookingId, userId) {
+        // Set when another request had already confirmed this booking.
+        let alreadyConfirmed = false;
         const confirmedBooking = await prisma.$transaction(async (tx) => {
             await tx.$queryRaw `
       SELECT id
@@ -1378,6 +1593,7 @@ class BookingService {
             }
             // Idempotency: do not consume another credit on retry.
             if (booking.bookingStatus === BookingStatus.CONFIRMED) {
+                alreadyConfirmed = true;
                 return booking;
             }
             if (booking.paymentStatus !== PaymentStatus.PAID) {
@@ -1451,7 +1667,11 @@ class BookingService {
         });
         // Create the tutor/member calendar event only after the booking commits.
         // Calendar failure must never roll back a confirmed private booking.
-        if (confirmedBooking.sessionId && !confirmedBooking.calendarEventId) {
+        // Only the call that confirmed the booking creates the event, so a
+        // repeated or concurrent confirmation never adds a second one.
+        if (!alreadyConfirmed &&
+            confirmedBooking.sessionId &&
+            !confirmedBooking.calendarEventId) {
             try {
                 const session = await prisma.classSession.findUnique({
                     where: { id: confirmedBooking.sessionId },
@@ -1577,12 +1797,16 @@ class BookingService {
      *
      * They can book another session.
      */
-    async bookMemberSession(userId, sessionId, healthDeclaration) {
+    async bookMemberSession(userId, sessionId, healthDeclaration, bookingType) {
         if (!userId) {
             throw new Error("Authentication is required.");
         }
         if (!sessionId) {
             throw new Error("Class session is required.");
+        }
+        if (bookingType !== MembershipType.GROUP &&
+            bookingType !== MembershipType.PRIVATE) {
+            throw new Error("Membership type must be GROUP or PRIVATE.");
         }
         if (healthDeclaration?.accepted !== true) {
             throw new Error("You must accept the Health Declaration to continue.");
@@ -1634,56 +1858,135 @@ class BookingService {
                 throw new Error("This class schedule is no longer active.");
             }
             // -----------------------------------------------------
+            // LOCK THE MEMBER
+            // -----------------------------------------------------
+            // Membership changes for one member (bookings, renewals,
+            // upgrades) run one at a time. Without this, two requests
+            // could read the same credits and both use them, or a booking
+            // could use a credit that an upgrade is carrying over.
+            // Lock order is always session, then member, so this can't
+            // deadlock with purchase completion (purchase, then member).
+            await tx.$queryRaw `
+          SELECT id
+          FROM "User"
+          WHERE id = ${userId}
+          FOR UPDATE
+        `;
+            // -----------------------------------------------------
             // FIND ACTIVE MEMBERSHIP
             // -----------------------------------------------------
             const now = new Date();
-            const membership = await tx.memberMembership.findFirst({
+            // -----------------------------------------------------
+            // FIND ELIGIBLE MEMBERSHIPS IN THE REQUESTED CREDIT POOL
+            // -----------------------------------------------------
+            // Keep each MemberMembership row separate for audit and
+            // cancellation restoration. A booking consumes one row,
+            // but the member can use credits from any active row of
+            // the same membership type.
+            const memberships = await tx.memberMembership.findMany({
                 where: {
                     userId,
                     status: MembershipStatus.ACTIVE,
+                    membership: {
+                        type: bookingType,
+                    },
                     OR: [
-                        {
-                            expiryDate: null,
-                        },
-                        {
-                            expiryDate: {
-                                gt: now,
-                            },
-                        },
+                        { expiryDate: null },
+                        { expiryDate: { gt: now } },
                     ],
                 },
                 include: {
                     membership: true,
+                    membershipPurchase: {
+                        select: {
+                            type: true,
+                            firstSessionId: true,
+                            previousMemberMembershipId: true,
+                        },
+                    },
+                    // Only needed to tell whether a row has already
+                    // had a confirmed booking.
+                    bookings: {
+                        where: {
+                            bookingStatus: BookingStatus.CONFIRMED,
+                        },
+                        select: {
+                            bookingStatus: true,
+                            sessionId: true,
+                        },
+                        take: 1,
+                    },
                 },
                 orderBy: {
                     expiryDate: "asc",
                 },
             });
-            if (!membership) {
-                throw new Error("You do not have an active membership.");
+            // Prefer the finite membership that expires soonest;
+            // keep unlimited/non-expiring records as the fallback.
+            memberships.sort((a, b) => {
+                if (a.expiryDate === null && b.expiryDate === null)
+                    return 0;
+                if (a.expiryDate === null)
+                    return 1;
+                if (b.expiryDate === null)
+                    return -1;
+                return a.expiryDate.getTime() - b.expiryDate.getTime();
+            });
+            if (memberships.length === 0) {
+                throw new Error(`You do not have an active ${bookingType.toLowerCase()} membership.`);
             }
-            // -----------------------------------------------------
-            // CHECK MEMBERSHIP EXPIRY
-            // -----------------------------------------------------
-            if (membership.expiryDate &&
-                session.sessionDate >
-                    membership.expiryDate) {
+            // A membership awaiting its first booking is used first,
+            // so that booking starts it. The query above already
+            // limits rows to this user and the requested type.
+            //
+            // The oldest awaiting row goes first. When unstarted
+            // renewals are queued behind it, it is the head of that
+            // chain, and starting it starts the renewals after it.
+            const awaitingMembership = memberships
+                .filter((item) => this.isAwaitingFirstBooking(item) &&
+                this.hasRemainingCredit(item))
+                .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+            // Otherwise use the earliest-expiring record that both has a
+            // remaining credit and has not expired by the session date.
+            // Start dates don't restrict booking. Because the soonest-
+            // expiring record is used first, the current membership's
+            // credits are used before a queued renewal's.
+            const membership = awaitingMembership ??
+                memberships.find((item) => this.hasRemainingCredit(item) &&
+                    this.coversSessionDate(item, session.sessionDate));
+            if (!membership) {
+                const hasCredit = memberships.some((item) => this.hasRemainingCredit(item));
+                if (!hasCredit) {
+                    throw new Error(`You do not have any remaining ${bookingType.toLowerCase()} class credits.`);
+                }
                 throw new Error("This session is outside your membership validity period.");
             }
             // -----------------------------------------------------
-            // CHECK MEMBERSHIP TYPE AND SESSION AVAILABILITY
+            // CHECK SESSION TYPE AND AVAILABILITY
             // -----------------------------------------------------
-            if (membership.membership.type !== MembershipType.GROUP &&
-                membership.membership.type !== MembershipType.PRIVATE) {
-                throw new Error("Unsupported membership type.");
+            if (membership.membership.type !== bookingType) {
+                throw new Error("The selected membership does not match this booking type.");
             }
-            await this.assertSessionAvailable(tx, session.id, membership.membership.type);
+            await this.assertSessionAvailable(tx, session.id, bookingType);
             // -----------------------------------------------------
             // CHECK CREDIT
             // -----------------------------------------------------
             if (!this.hasRemainingCredit(membership)) {
                 throw new Error("You do not have any remaining class credits.");
             }
+            // -----------------------------------------------------
+            // FIRST-BOOKING VALIDITY PERIOD
+            // -----------------------------------------------------
+            // A membership awaiting its first booking starts on the
+            // date of this session, never the payment date. Work out
+            // the dates before any write so an unsupported duration
+            // rejects the booking without changing anything.
+            const firstBookingStartDate = awaitingMembership
+                ? session.sessionDate
+                : null;
+            const firstBookingExpiryDate = awaitingMembership
+                ? await this.calculateFirstBookingExpiry(tx, userId, awaitingMembership, session.sessionDate)
+                : null;
             // -----------------------------------------------------
             // PREVENT DUPLICATE SESSION BOOKING
             // -----------------------------------------------------
@@ -1767,7 +2070,46 @@ class BookingService {
             // -----------------------------------------------------
             // CONSUME CREDIT
             // -----------------------------------------------------
-            if (membership.creditsTotal !==
+            if (awaitingMembership) {
+                // First booking for a membership-only purchase: its
+                // validity starts on this session's date. Start it and
+                // use the credit in one update on the same row.
+                //
+                // `startDate: null` in the filter means only one booking
+                // can start the membership. A concurrent first booking
+                // waits for the row lock, then matches nothing and rolls
+                // back, instead of overwriting the start date.
+                const activated = await tx.memberMembership.updateMany({
+                    where: {
+                        id: membership.id,
+                        userId,
+                        startDate: null,
+                    },
+                    data: {
+                        startDate: firstBookingStartDate,
+                        expiryDate: firstBookingExpiryDate,
+                        ...(membership.creditsTotal !== null
+                            ? {
+                                creditsUsed: {
+                                    increment: 1,
+                                },
+                            }
+                            : {}),
+                    },
+                });
+                if (activated.count !== 1) {
+                    throw new Error("Your membership was updated by another booking. Please try again.");
+                }
+                // Other packages of this type bought while this one was
+                // unstarted (renewals, or further membership-only
+                // purchases) follow it, each adding its full duration.
+                await this.startQueuedMemberships(tx, userId, bookingType, {
+                    id: membership.id,
+                    startDate: session.sessionDate,
+                    expiryDate: firstBookingExpiryDate,
+                });
+            }
+            else if (membership.creditsTotal !==
                 null) {
                 await tx.memberMembership.update({
                     where: {
@@ -1857,22 +2199,21 @@ class BookingService {
     // MEMBERSHIP CREDIT SUMMARY
     // =========================================================
     async getMembershipCreditSummary(userId) {
-        const memberMembership = await prisma.memberMembership.findFirst({
+        const now = new Date();
+        const memberships = await prisma.memberMembership.findMany({
             where: {
                 userId,
                 status: MembershipStatus.ACTIVE,
                 OR: [
                     { expiryDate: null },
-                    { expiryDate: { gt: new Date() } },
+                    { expiryDate: { gt: now } },
                 ],
             },
             include: {
                 membership: true,
                 membershipPurchase: true,
                 bookings: {
-                    where: {
-                        bookingStatus: "CONFIRMED",
-                    },
+                    where: { bookingStatus: BookingStatus.CONFIRMED },
                     select: {
                         id: true,
                         sessionId: true,
@@ -1884,30 +2225,149 @@ class BookingService {
                 expiryDate: "asc",
             },
         });
-        if (!memberMembership) {
+        if (memberships.length === 0)
             return null;
-        }
-        const remainingCredits = memberMembership.creditsTotal === null
+        // Finite expiries are consumed first; non-expiring records last.
+        memberships.sort((a, b) => {
+            if (a.expiryDate === null && b.expiryDate === null)
+                return 0;
+            if (a.expiryDate === null)
+                return 1;
+            if (b.expiryDate === null)
+                return -1;
+            return a.expiryDate.getTime() - b.expiryDate.getTime();
+        });
+        /*
+         * Current vs queued.
+         *
+         * A queued membership (an early renewal, or a package waiting behind
+         * another) has a start date after today. Its credits are not usable
+         * now, so they are reported separately and never counted in the
+         * current credit fields. They can still pay for sessions dated on or
+         * after their start date (see bookMemberSession), so they are shown
+         * rather than hidden.
+         *
+         * Everything else is current: started on or before today, or not
+         * started yet (awaiting its first booking, which starts it).
+         */
+        const today = this.startOfUtcDay(now);
+        const isQueued = (row) => row.startDate !== null && this.startOfUtcDay(row.startDate) > today;
+        const summariseCredits = (rows) => {
+            const unlimited = rows.some((item) => item.creditsTotal === null);
+            return {
+                unlimited,
+                creditsTotal: unlimited
+                    ? null
+                    : rows.reduce((total, item) => total + (item.creditsTotal ?? 0), 0),
+                creditsUsed: rows.reduce((total, item) => total + item.creditsUsed, 0),
+                remainingCredits: unlimited
+                    ? null
+                    : rows.reduce((total, item) => total + Math.max((item.creditsTotal ?? 0) - item.creditsUsed, 0), 0),
+            };
+        };
+        const earliestStart = (rows) => {
+            const dates = rows
+                .map((item) => item.startDate)
+                .filter((date) => date !== null);
+            return dates.length
+                ? new Date(Math.min(...dates.map((date) => date.getTime())))
+                : null;
+        };
+        // The end of the rows' validity: null if any row has no expiry.
+        const latestExpiry = (rows) => {
+            if (rows.length === 0 || rows.some((row) => row.expiryDate === null)) {
+                return null;
+            }
+            return new Date(Math.max(...rows.map((row) => row.expiryDate.getTime())));
+        };
+        const buildPool = (type) => {
+            const rows = memberships.filter((item) => item.membership.type === type);
+            if (rows.length === 0)
+                return null;
+            const currentRows = rows.filter((row) => !isQueued(row));
+            const queuedRows = rows.filter(isQueued);
+            const current = summariseCredits(currentRows);
+            const firstRow = currentRows[0] ?? rows[0];
+            const firstBookingConfirmed = rows.some((row) => {
+                const purchase = row.membershipPurchase;
+                return row.bookings.some((booking) => booking.bookingStatus === BookingStatus.CONFIRMED &&
+                    (!purchase?.firstSessionId ||
+                        booking.sessionId === purchase.firstSessionId));
+            });
+            const hasFirstSession = rows.some((row) => Boolean(row.membershipPurchase?.firstSessionId)) ||
+                firstBookingConfirmed;
+            return {
+                type,
+                // Usable now.
+                memberMembershipIds: currentRows.map((row) => row.id),
+                membership: firstRow.membership,
+                creditsTotal: current.creditsTotal,
+                creditsUsed: current.creditsUsed,
+                remainingCredits: current.remainingCredits,
+                unlimited: current.unlimited,
+                startDate: earliestStart(currentRows),
+                expiryDate: latestExpiry(currentRows),
+                // Starts later. Not available for sessions before its start date.
+                queued: queuedRows.length
+                    ? {
+                        memberMembershipIds: queuedRows.map((row) => row.id),
+                        ...summariseCredits(queuedRows),
+                        startDate: earliestStart(queuedRows),
+                        expiryDate: latestExpiry(queuedRows),
+                    }
+                    : null,
+                // End of everything the member holds for this type, queued
+                // memberships included.
+                validUntil: latestExpiry(rows),
+                status: MembershipStatus.ACTIVE,
+                hasFirstSession,
+                firstBookingConfirmed,
+                // Same rule bookMemberSession uses to pick the row that the
+                // first booking starts.
+                requiresInitialBooking: rows.some((row) => this.isAwaitingFirstBooking(row)),
+            };
+        };
+        const group = buildPool(MembershipType.GROUP);
+        const privatePool = buildPool(MembershipType.PRIVATE);
+        const primary = group ?? privatePool;
+        const combinedUnlimited = Boolean(group?.unlimited || privatePool?.unlimited);
+        const combinedCreditsTotal = combinedUnlimited
             ? null
-            : Math.max(memberMembership.creditsTotal - memberMembership.creditsUsed, 0);
-        const purchase = memberMembership.membershipPurchase;
-        const firstBookingConfirmed = memberMembership.bookings.some((booking) => booking.bookingStatus === "CONFIRMED" &&
-            (!purchase?.firstSessionId ||
-                booking.sessionId === purchase.firstSessionId));
-        const hasFirstSession = Boolean(purchase?.firstSessionId || firstBookingConfirmed);
+            : (group?.creditsTotal ?? 0) + (privatePool?.creditsTotal ?? 0);
+        const combinedCreditsUsed = (group?.creditsUsed ?? 0) + (privatePool?.creditsUsed ?? 0);
+        const queuedPools = [group?.queued, privatePool?.queued].filter((pool) => Boolean(pool));
+        const queuedUnlimited = queuedPools.some((pool) => pool.unlimited);
         return {
-            memberMembershipId: memberMembership.id,
-            membership: memberMembership.membership,
-            creditsTotal: memberMembership.creditsTotal,
-            creditsUsed: memberMembership.creditsUsed,
-            remainingCredits,
-            unlimited: memberMembership.creditsTotal === null,
-            startDate: memberMembership.startDate,
-            expiryDate: memberMembership.expiryDate,
-            status: memberMembership.status,
-            hasFirstSession,
-            firstBookingConfirmed,
-            requiresInitialBooking: purchase?.type === "NEW" && !hasFirstSession,
+            // Legacy top-level fields remain for existing clients. Credit
+            // fields count only memberships usable now.
+            memberMembershipId: primary?.memberMembershipIds[0] ?? null,
+            memberMembershipIds: [
+                ...(group?.memberMembershipIds ?? []),
+                ...(privatePool?.memberMembershipIds ?? []),
+            ],
+            membership: primary?.membership ?? null,
+            creditsTotal: combinedCreditsTotal,
+            creditsUsed: combinedCreditsUsed,
+            remainingCredits: combinedUnlimited
+                ? null
+                : (group?.remainingCredits ?? 0) +
+                    (privatePool?.remainingCredits ?? 0),
+            unlimited: combinedUnlimited,
+            startDate: primary?.startDate ?? null,
+            expiryDate: primary?.expiryDate ?? null,
+            // Credits of queued memberships (null when one is unlimited).
+            queuedCredits: queuedUnlimited
+                ? null
+                : queuedPools.reduce((total, pool) => total + (pool.remainingCredits ?? 0), 0),
+            validUntil: primary?.validUntil ?? null,
+            status: MembershipStatus.ACTIVE,
+            hasFirstSession: Boolean(group?.hasFirstSession || privatePool?.hasFirstSession),
+            firstBookingConfirmed: Boolean(group?.firstBookingConfirmed || privatePool?.firstBookingConfirmed),
+            requiresInitialBooking: Boolean(group?.requiresInitialBooking || privatePool?.requiresInitialBooking),
+            creditPools: {
+                GROUP: group,
+                PRIVATE: privatePool,
+            },
         };
     }
     // =========================================================
@@ -2028,7 +2488,7 @@ class BookingService {
     * - Booking must belong to the authenticated user.
     * - Booking must currently be CONFIRMED.
     * - The class session must still be in the future.
-    * - Finite memberships get 1 credit restored.
+    * - Finite credits are restored to the exact membership row used.
     * - Unlimited memberships do not need credit restoration.
     * - Google Calendar event is deleted after the transaction succeeds.
     */
@@ -2110,48 +2570,23 @@ class BookingService {
              */
             let creditRestored = false;
             const originalMembership = booking.memberMembership;
+            // Restore the credit to the exact MemberMembership row that
+            // funded this booking. Never redirect it to a newer purchase.
             if (originalMembership &&
                 originalMembership.creditsTotal !== null &&
                 originalMembership.creditsUsed > 0) {
-                let membershipToRestore = originalMembership;
-                // If the original membership has expired, check whether
-                // it was replaced by an upgrade.
-                if (originalMembership.status === MembershipStatus.EXPIRED) {
-                    const upgradedMembership = await tx.memberMembership.findFirst({
-                        where: {
-                            userId,
-                            status: MembershipStatus.ACTIVE,
-                            OR: [
-                                { expiryDate: null },
-                                { expiryDate: { gt: new Date() } },
-                            ],
-                            membershipPurchase: {
-                                is: {
-                                    type: "UPGRADE",
-                                    previousMemberMembershipId: originalMembership.id,
-                                },
-                            },
-                        },
-                    });
-                    if (upgradedMembership) {
-                        membershipToRestore = upgradedMembership;
-                    }
-                }
-                // Only restore finite credits, and never allow creditsUsed
-                // to become negative.
-                if (membershipToRestore.creditsTotal !== null &&
-                    membershipToRestore.creditsUsed > 0) {
-                    const restored = await tx.memberMembership.updateMany({
-                        where: {
-                            id: membershipToRestore.id,
-                            creditsUsed: { gt: 0 },
-                        },
-                        data: {
-                            creditsUsed: { decrement: 1 },
-                        },
-                    });
-                    creditRestored = restored.count === 1;
-                }
+                const restored = await tx.memberMembership.updateMany({
+                    where: {
+                        id: originalMembership.id,
+                        userId,
+                        creditsUsed: { gt: 0 },
+                        creditsTotal: { not: null },
+                    },
+                    data: {
+                        creditsUsed: { decrement: 1 },
+                    },
+                });
+                creditRestored = restored.count === 1;
             }
             /**
              * Recalculate confirmed bookings after cancellation.
@@ -2240,6 +2675,7 @@ class BookingService {
             },
             select: {
                 id: true,
+                healthDeclarationAccepted: true,
             },
         });
         if (!purchase) {
@@ -2269,6 +2705,27 @@ class BookingService {
             if (existingBooking.bookingStatus === BookingStatus.CONFIRMED) {
                 return existingBooking;
             }
+        }
+        // The checkout's health declaration covers this first class.
+        // Without it the class can't be booked; the membership itself is
+        // unaffected.
+        if (!purchase.healthDeclarationAccepted) {
+            throw new Error("The health and safety declaration must be accepted before the first class can be booked.");
+        }
+        // Once another class has started this membership, confirming the
+        // original first class now would move its validity to that class's
+        // date. It has to be booked as a normal class instead.
+        const otherConfirmedBooking = await prisma.booking.findFirst({
+            where: {
+                memberMembershipId: memberMembership.id,
+                bookingStatus: BookingStatus.CONFIRMED,
+                sessionId: { not: null },
+                paymentReference: { not: bookingReference },
+            },
+            select: { id: true },
+        });
+        if (otherConfirmedBooking) {
+            throw new Error("The membership has already started from another booking, so the original first class can't be booked as its first class. Book it as a normal class instead.");
         }
         const [membership, session] = await Promise.all([
             prisma.membership.findUnique({

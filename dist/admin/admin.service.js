@@ -4,6 +4,8 @@ import prisma from "../config/prisma.js";
 import { sendPaymentConfirmationEmail, } from "../utils/mailer.js";
 import { membershipActivationService } from "../membership-activation/membership-activation.service.js";
 import { googleCalendarService } from "../google-calendar/google-calendar.service.js";
+import bookingService from "../booking/booking.service.js";
+import { adminNotificationService } from "./admin-notification.service.js";
 console.log("🔥 ACTIVATION SERVICE IMPORT:", membershipActivationService);
 function hasSessionEnded(sessionDate, endTime) {
     // Sculpt LAB operates in Nigeria (WAT = UTC+1).
@@ -449,24 +451,64 @@ class AdminService {
         if (booking.paymentMethod !== PaymentMethod.OFFLINE) {
             throw new Error("This booking is not an offline payment.");
         }
+        const hasSelectedClass = Boolean(booking.sessionId);
+        // Payment already confirmed: a duplicate confirmation, or a retry
+        // after the selected class could not be confirmed.
         if (booking.paymentStatus === PaymentStatus.PAID) {
+            const classStillToConfirm = hasSelectedClass &&
+                booking.bookingStatus === BookingStatus.PENDING;
+            if (classStillToConfirm && booking.membershipActivation) {
+                // Once another booking has started the membership, confirming
+                // this class would move its validity to this class's date.
+                if (booking.memberMembership?.startDate) {
+                    throw new Error("The membership has already started from another booking. Book this class through the member's normal booking instead.");
+                }
+                // Retry only the class. The membership and activation already
+                // exist and are not created (or emailed) again.
+                return {
+                    bookingId: booking.id,
+                    paymentReference: booking.paymentReference,
+                    paymentConfirmed: true,
+                    retried: true,
+                    classBooking: await this.confirmSelectedOfflineClass(booking.id),
+                };
+            }
+            if (classStillToConfirm) {
+                // Another request has claimed the payment and is still creating
+                // the membership.
+                throw new Error("This payment is already being confirmed. Please refresh in a moment.");
+            }
             throw new Error("This payment has already been confirmed.");
         }
         if (booking.paymentStatus !== PaymentStatus.PENDING) {
             throw new Error("Only pending payments can be confirmed.");
         }
-        await prisma.booking.update({
+        // Claim the confirmation atomically: of two simultaneous requests,
+        // only one moves the payment from PENDING to PAID and creates the
+        // membership.
+        //
+        // Without a selected class the booking is confirmed now, as before.
+        // With one, it stays PENDING until the class itself is confirmed
+        // below, through the normal booking confirmation.
+        const claimed = await prisma.booking.updateMany({
             where: {
                 id: booking.id,
+                paymentStatus: PaymentStatus.PENDING,
             },
             data: {
                 paymentStatus: PaymentStatus.PAID,
-                bookingStatus: BookingStatus.CONFIRMED,
+                ...(hasSelectedClass
+                    ? {}
+                    : { bookingStatus: BookingStatus.CONFIRMED }),
             },
         });
+        if (claimed.count !== 1) {
+            throw new Error("This payment has already been confirmed.");
+        }
+        let activation;
         try {
-            const activation = await membershipActivationService.createActivationForBooking(booking.id);
-            return activation;
+            activation =
+                await membershipActivationService.createActivationForBooking(booking.id);
         }
         catch (error) {
             // If membership/activation/email fails,
@@ -481,6 +523,63 @@ class AdminService {
                 },
             });
             throw error;
+        }
+        if (!hasSelectedClass) {
+            return activation;
+        }
+        return {
+            ...activation,
+            paymentConfirmed: true,
+            classBooking: await this.confirmSelectedOfflineClass(booking.id),
+        };
+    }
+    /**
+     * Confirm the class an offline customer selected at checkout, through
+     * the normal booking confirmation (BookingService), after their payment
+     * is confirmed and their membership exists. That confirmation checks the
+     * session, capacity, two-hour cutoff and health declaration, uses one
+     * credit from the new membership, starts its validity on the class date,
+     * and creates the calendar event, all in its own transaction.
+     *
+     * If it fails, nothing is confirmed or charged. The payment stays
+     * recorded as PAID and the membership keeps all its credits, waiting for
+     * its first booked class. The admin gets a result explaining what
+     * happened, plus one notification (keyed by booking, so retries don't
+     * repeat it), and can retry, arrange another session, or refund.
+     */
+    async confirmSelectedOfflineClass(bookingId) {
+        try {
+            const confirmed = await bookingService.confirmOfflinePaidBooking(bookingId);
+            return {
+                status: "CONFIRMED",
+                bookingId,
+                sessionId: confirmed.sessionId,
+                memberMembershipId: confirmed.memberMembershipId,
+            };
+        }
+        catch (error) {
+            const reason = error instanceof Error
+                ? error.message
+                : "The selected class could not be confirmed.";
+            console.error("[OFFLINE PAYMENT] Payment confirmed, but the selected class could not be confirmed:", bookingId, reason);
+            try {
+                await adminNotificationService.createForAllAdmins({
+                    eventKey: `offline-class-not-confirmed:${bookingId}`,
+                    type: "BOOKING",
+                    title: "Paid offline booking needs attention",
+                    message: `The offline payment was confirmed and the membership created, but the selected class could not be booked: ${reason}`,
+                    data: { bookingId, reason },
+                });
+            }
+            catch (notificationError) {
+                console.error("[OFFLINE PAYMENT] Admin notification failed:", bookingId, notificationError);
+            }
+            return {
+                status: "NOT_CONFIRMED",
+                bookingId,
+                reason,
+                resolution: "The payment is recorded and the membership is active with all its credits, waiting for its first booked class. Retry this confirmation once the problem is fixed, have the member book another session, or refund the payment.",
+            };
         }
     }
     async getPaymentDetails(bookingId) {
@@ -1003,20 +1102,67 @@ class AdminService {
             },
         });
         const registeredMembers = users.map((user) => {
-            const currentMembership = user.memberships.find((item) => {
+            // Keep only memberships that are currently active and not expired.
+            const eligibleMemberships = user.memberships.filter((item) => {
                 const isActive = item.status === MembershipStatus.ACTIVE &&
                     (!item.expiryDate || item.expiryDate > now);
-                const hasCredits = item.creditsTotal === null ||
-                    item.creditsUsed < item.creditsTotal;
-                return isActive && hasCredits;
-            }) ?? null;
+                return isActive;
+            });
+            // Credits are pooled independently by membership type.
+            // The underlying MemberMembership records remain separate.
+            const buildCreditPool = (type) => {
+                const rows = eligibleMemberships.filter((item) => item.membership.type === type);
+                if (rows.length === 0) {
+                    return {
+                        membershipType: type,
+                        hasMembership: false,
+                        isUnlimited: false,
+                        creditsTotal: 0,
+                        creditsUsed: 0,
+                        creditsRemaining: 0,
+                        expiryDate: null,
+                        membershipIds: [],
+                    };
+                }
+                const isUnlimited = rows.some((item) => item.creditsTotal === null);
+                const creditsTotal = isUnlimited
+                    ? null
+                    : rows.reduce((total, item) => total + (item.creditsTotal ?? 0), 0);
+                const creditsUsed = rows.reduce((total, item) => total + item.creditsUsed, 0);
+                // Sum each row's remaining credits independently so an overused
+                // row cannot be offset by unused credits in another row.
+                const creditsRemaining = isUnlimited
+                    ? null
+                    : rows.reduce((total, item) => total +
+                        Math.max((item.creditsTotal ?? 0) - item.creditsUsed, 0), 0);
+                const expiryDates = rows
+                    .map((item) => item.expiryDate)
+                    .filter((date) => date !== null);
+                return {
+                    membershipType: type,
+                    hasMembership: true,
+                    isUnlimited,
+                    creditsTotal,
+                    creditsUsed,
+                    creditsRemaining,
+                    expiryDate: expiryDates.length > 0
+                        ? new Date(Math.max(...expiryDates.map((date) => date.getTime())))
+                        : null,
+                    membershipIds: rows.map((item) => item.id),
+                };
+            };
+            const groupCreditPool = buildCreditPool("GROUP");
+            const privateCreditPool = buildCreditPool("PRIVATE");
+            // Retain the legacy single-membership fields for existing admin UI
+            // consumers while exposing the authoritative type-specific pools.
+            const currentMembership = eligibleMemberships[0] ?? null;
             const creditsTotal = currentMembership?.creditsTotal ?? null;
             const creditsUsed = currentMembership?.creditsUsed ?? null;
             const classLimit = currentMembership?.membership.classLimit;
             const creditsRemaining = !currentMembership || classLimit === null
                 ? null
                 : creditsTotal !== null && creditsUsed !== null
-                    ? creditsTotal - creditsUsed
+                    ? Math.max(creditsTotal - creditsUsed, 0)
                     : null;
             return {
                 id: user.id,
@@ -1024,15 +1170,23 @@ class AdminService {
                 email: user.email,
                 phone: user.phone,
                 membership: currentMembership?.membership ?? null,
-                membershipStatus: currentMembership ? currentMembership.status : "NO_ACTIVE_MEMBERSHIP",
+                membershipStatus: currentMembership
+                    ? currentMembership.status
+                    : "NO_ACTIVE_MEMBERSHIP",
                 membershipNumber: currentMembership?.membershipNumber ??
                     currentMembership?.activation?.membershipNumber ??
                     null,
                 expiryDate: currentMembership?.expiryDate ?? null,
                 createdAt: currentMembership?.createdAt ?? user.createdAt,
+                // Legacy fields retained for backward compatibility.
                 creditsTotal,
                 creditsUsed,
                 creditsRemaining,
+                // New pooled balances, separated by class type.
+                creditPools: {
+                    GROUP: groupCreditPool,
+                    PRIVATE: privateCreditPool,
+                },
             };
         });
         // Offline customers without a User account.
@@ -1100,8 +1254,19 @@ class AdminService {
             const creditsRemaining = classLimit === null
                 ? null
                 : creditsTotal !== null
-                    ? creditsTotal - creditsUsed
+                    ? Math.max(creditsTotal - creditsUsed, 0)
                     : null;
+            const membershipType = member.membership.type;
+            const offlinePool = {
+                membershipType,
+                hasMembership: true,
+                isUnlimited: creditsTotal === null,
+                creditsTotal,
+                creditsUsed,
+                creditsRemaining,
+                expiryDate: member.expiryDate,
+                membershipIds: [member.id],
+            };
             offlineMembers.push({
                 id: member.id,
                 fullName: booking.fullName,
@@ -1117,6 +1282,33 @@ class AdminService {
                 creditsTotal,
                 creditsUsed,
                 creditsRemaining,
+                // Offline records have one underlying membership row.
+                creditPools: {
+                    GROUP: membershipType === "GROUP"
+                        ? offlinePool
+                        : {
+                            membershipType: "GROUP",
+                            hasMembership: false,
+                            isUnlimited: false,
+                            creditsTotal: 0,
+                            creditsUsed: 0,
+                            creditsRemaining: 0,
+                            expiryDate: null,
+                            membershipIds: [],
+                        },
+                    PRIVATE: membershipType === "PRIVATE"
+                        ? offlinePool
+                        : {
+                            membershipType: "PRIVATE",
+                            hasMembership: false,
+                            isUnlimited: false,
+                            creditsTotal: 0,
+                            creditsUsed: 0,
+                            creditsRemaining: 0,
+                            expiryDate: null,
+                            membershipIds: [],
+                        },
+                },
             });
         }
         return [...registeredMembers, ...offlineMembers];
@@ -1346,23 +1538,41 @@ class AdminService {
         if (purchase.paymentStatus !== PaymentStatus.PENDING) {
             throw new Error("Only pending offline purchases can be confirmed.");
         }
-        // The admin has verified the actual bank transfer.
-        await prisma.membershipPurchase.update({
+        // The admin has verified the actual bank transfer. Only one of two
+        // simultaneous confirmations moves it from PENDING to PAID, so a
+        // double click can't create two activations.
+        const claimed = await prisma.membershipPurchase.updateMany({
             where: {
                 id: purchase.id,
+                paymentStatus: PaymentStatus.PENDING,
             },
             data: {
                 paymentStatus: PaymentStatus.PAID,
             },
         });
+        if (claimed.count !== 1) {
+            throw new Error("Only pending offline purchases can be confirmed.");
+        }
         try {
+            // The first class is attempted after the activation and reported
+            // separately: a class that can't be booked never undoes the
+            // payment or stops the activation email.
             const activation = await membershipActivationService
                 .createActivationForPurchase(purchase.id);
+            const firstClass = activation.firstClass;
             return {
                 purchaseId: purchase.id,
                 paymentReference: purchase.paymentReference,
                 paymentStatus: PaymentStatus.PAID,
                 activation,
+                summary: {
+                    payment: PaymentStatus.PAID,
+                    membershipActivation: activation.activationStatus,
+                    activationEmail: activation.activationEmail,
+                    firstClass: firstClass.status,
+                    firstClassFailureReason: firstClass.status === "NOT_CONFIRMED" ? firstClass.reason : null,
+                    retryAvailable: firstClass.status === "NOT_CONFIRMED" && firstClass.retryAvailable,
+                },
             };
         }
         catch (error) {
@@ -1371,6 +1581,13 @@ class AdminService {
             console.error("Offline membership activation failed:", error);
             throw new Error("Payment was confirmed, but membership activation failed. Please retry activation or resend the registration email.");
         }
+    }
+    /**
+     * Retry the selected first class of an already-paid, activated offline
+     * membership purchase. Never confirms or charges the payment again.
+     */
+    async retryOfflineMembershipFirstBooking(purchaseId) {
+        return membershipActivationService.retryFirstClassBooking(purchaseId);
     }
     async rejectOfflineMembershipPurchase(purchaseId, reason) {
         const purchase = await prisma.membershipPurchase.findUnique({
