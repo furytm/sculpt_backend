@@ -330,8 +330,10 @@ model User {
 
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  emailChangeRequest      EmailChangeRequest?
+  activityLogs            MemberActivityLog[]
 
-  memberSchedules     MemberSchedule[]
+  memberSchedules    MemberSchedule[]
   memberships         MemberMembership[]
   healthSafetyForms   HealthSafetyForm[]
   membershipPurchases MembershipPurchase[]
@@ -507,6 +509,103 @@ model PasswordResetToken {
   createdAt DateTime @default(now())
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+// What a member (or guest, admin, the system or a payment webhook) tried
+// to do, and how it ended. Written by src/activity-log/activity-log.service.ts
+// only, outside business transactions. Metadata is allow-listed and never
+// holds secrets or raw request/provider bodies.
+//
+// Deleting a member keeps their history (userId becomes null); any
+// subjectEmail stays until retention removes the row.
+model MemberActivityLog {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // Only for guests without an account (normalized).
+  subjectEmail String?
+
+  // MEMBER | GUEST | ADMIN | SYSTEM | WEBHOOK
+  actorType   String
+  actorUserId String?
+
+  // e.g. "membership.upgrade", "payment.callback"
+  action String
+  // e.g. INITIATED, PAYMENT_INITIALIZED, PROVIDER_FAILED, SUCCEEDED, FAILED
+  stage  String
+  // SUCCESS | FAILURE | INFO | WARNING
+  status String
+
+  description  String?
+  errorCode    String?
+  errorMessage String?
+  httpStatus   Int?
+
+  // MEMBERSHIP_PURCHASE | BOOKING
+  entityType       String?
+  entityId         String?
+  paymentReference String?
+
+  correlationId String?
+  requestId     String?
+
+  // Unique when set: a retried callback or webhook records one event.
+  dedupeKey String? @unique
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([correlationId])
+  @@index([paymentReference])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+enum EmailChangeStage {
+  VERIFY_CURRENT
+  VERIFY_NEW
+}
+
+// A member's pending email change: a code to the current address, then a
+// code to the new address. User.email only changes after both succeed.
+// One pending request per member (userId is unique).
+model EmailChangeRequest {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The account email when the request started; the change is refused
+  // if it no longer matches.
+  currentEmail String
+  newEmail     String
+
+  stage EmailChangeStage @default(VERIFY_CURRENT)
+
+  // HMAC of the code for the current stage; null once used.
+  codeHash      String?
+  codeExpiresAt DateTime?
+
+  // Code checks and code emails for the current stage.
+  attempts   Int       @default(0)
+  sendCount  Int       @default(0)
+  lastSentAt DateTime?
+
+  currentVerifiedAt DateTime?
+
+  // The whole request expires at this time, whatever the stage.
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([newEmail])
   @@index([expiresAt])
 }
 

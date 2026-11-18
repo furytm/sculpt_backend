@@ -4,6 +4,8 @@ import prisma from "./config/prisma.js";
 import classSessionService from "./booking/class-session.service.js";
 import { healthRouter } from "./modules/health/health.route.js";
 import { scheduleDailySessionGeneration } from "./booking/session-generation.scheduler.js";
+import { createGracefulShutdown } from "./lifecycle/graceful-shutdown.js";
+import activityLog from "./activity-log/activity-log.service.js";
 
 app.use(healthRouter);
 
@@ -29,17 +31,15 @@ async function startServer() {
       classSessionService.generateFutureSessions()
     );
 
-    // Graceful shutdown.
-    const shutdown = async () => {
-      console.log("Shutting down server...");
-
-      dailySessionGeneration.stop();
-
-      server.close(async () => {
-        await prisma.$disconnect();
-        process.exit(0);
-      });
-    };
+    // Graceful shutdown: stop jobs, finish active requests, flush the
+    // activity log (bounded), then disconnect Prisma.
+    const shutdown = createGracefulShutdown({
+      server,
+      stopJobs: () => dailySessionGeneration.stop(),
+      flushActivityLog: (timeoutMs) => activityLog.flush(timeoutMs),
+      disconnect: () => prisma.$disconnect(),
+      exit: (code) => process.exit(code),
+    });
 
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);

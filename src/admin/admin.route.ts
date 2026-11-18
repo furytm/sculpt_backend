@@ -9,6 +9,8 @@ import requireRole from "../middleware/requireRole.js";
 import { adminController } from "./admin.controller.js";
 import adminSessionController from "./admin-session.controller.js";
 import adminNotificationController from "./admin-notification.controller.js";
+import { adminAudit } from "./admin-activity-audit.js";
+import { activityLogController } from "../activity-log/activity-log.controller.js";
 
 const router = Router();
 
@@ -109,10 +111,42 @@ router.get(
   requireAdmin,
   adminController.getDashboard
 );
+
+// =====================================================
+// ACTIVITY LOGS (admin only, read only)
+// =====================================================
+router.get(
+  "/activity-logs",
+  authenticate,
+  requireAdmin,
+  activityLogController.list
+);
+
+router.get(
+  "/activity-logs/errors",
+  authenticate,
+  requireAdmin,
+  activityLogController.errors
+);
+
+router.get(
+  "/activity-logs/operations/:correlationId",
+  authenticate,
+  requireAdmin,
+  activityLogController.operation
+);
+
+router.get(
+  "/members/:memberId/activity-logs",
+  authenticate,
+  requireAdmin,
+  activityLogController.forMember
+);
 router.post(
   "/resend-registration-email",
    authenticate,
   requireAdmin,
+  adminAudit.resendActivation,
   adminController.resendRegistrationEmail
 );
 
@@ -120,6 +154,7 @@ router.post(
   "/sessions/:sessionId/offline-attendees",
   authenticate,
   requireAdmin,
+  adminAudit.addOfflineAttendee,
   adminSessionController.addOfflineAttendee
 );
 
@@ -269,6 +304,7 @@ router.post(
   "/bookings/:bookingId/cancel",
   authenticate,
   requireAdmin,
+  adminAudit.cancelBooking,
   adminController.cancelBooking
 );
 
@@ -304,6 +340,7 @@ router.delete(
   "/bookings/:bookingId",
   authenticate,
   requireAdmin,
+  adminAudit.deleteBooking,
   adminController.deleteBooking
 );
 
@@ -386,6 +423,7 @@ router.post(
   "/payments/:bookingId/confirm",
   authenticate,
   requireAdmin,
+  adminAudit.confirmOfflinePayment,
   adminController.confirmOfflinePayment
 );
 
@@ -428,6 +466,7 @@ router.post(
   "/payments/:bookingId/reject",
   authenticate,
   requireAdmin,
+  adminAudit.rejectOfflinePayment,
   adminController.rejectOfflinePayment
 );
 
@@ -531,6 +570,7 @@ router.post(
   "/sessions/:sessionId/cancel",
   authenticate,
   requireAdmin,
+  adminAudit.cancelSession,
   adminSessionController.cancelSession
 );
 
@@ -569,6 +609,7 @@ router.post(
   "/sessions/:sessionId/reopen",
   authenticate,
   requireAdmin,
+  adminAudit.reopenSession,
   adminSessionController.reopenSession
 );
 
@@ -626,6 +667,7 @@ router.post(
   "/members/offline",
   authenticate,
   requireAdmin,
+  adminAudit.createOfflineMember,
   adminController.createOfflineMember
 );
 
@@ -641,6 +683,7 @@ router.delete(
   "/members/:memberId",
   authenticate,
   requireAdmin,
+  adminAudit.deleteMember,
   adminController.deleteMember.bind(adminController)
 );
 router.get(
@@ -696,6 +739,7 @@ router.post(
   "/members/:memberId/memberships",
   authenticate,
   requireAdmin,
+  adminAudit.addMembershipToMember,
   adminController.addMembershipToMember.bind(adminController)
 );
 // =====================================================
@@ -715,6 +759,7 @@ router.post(
   "/membership-purchases/:purchaseId/confirm",
   authenticate,
   requireAdmin,
+  adminAudit.confirmMembershipPurchase,
   adminController.confirmOfflineMembershipPurchase
 );
 
@@ -724,6 +769,7 @@ router.post(
   "/membership-purchases/:purchaseId/first-booking/retry",
   authenticate,
   requireAdmin,
+  adminAudit.retryFirstBooking,
   adminController.retryOfflineMembershipFirstBooking.bind(adminController)
 );
 
@@ -732,6 +778,7 @@ router.post(
   "/membership-purchases/:purchaseId/reject",
   authenticate,
   requireAdmin,
+  adminAudit.rejectMembershipPurchase,
   adminController.rejectOfflineMembershipPurchase
 );
 
@@ -754,6 +801,7 @@ router.post(
   "/membership-purchases/:purchaseId/reconciliation/apply",
   authenticate,
   requireAdmin,
+  adminAudit.applyPaidFailedPurchase,
   adminController.applyPaidFailedPurchase.bind(adminController)
 );
 
@@ -761,6 +809,7 @@ router.post(
   "/membership-purchases/:purchaseId/reconciliation/refunded",
   authenticate,
   requireAdmin,
+  adminAudit.markPurchaseRefunded,
   adminController.markPaidFailedPurchaseRefunded.bind(adminController)
 );
 

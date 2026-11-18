@@ -1,8 +1,27 @@
 import { Router } from "express";
 
 import { membershipActivationController } from "./membership-activation.controller.js";
+import { auditAction } from "../activity-log/activity-audit.middleware.js";
 
 const router = Router();
+
+// Activity auditing (observes only). Public routes: anonymous failures
+// are capped at one event a minute so they cannot flood the log.
+const activationAudit = {
+  verify: auditAction({
+    action: "membership.activation",
+    description: "Activation link checked",
+    capAnonymousFailures: true,
+  }),
+  complete: auditAction({
+    action: "membership.activation",
+    description: "Membership activation completed",
+    entityType: "USER",
+    entityIdFromResponse: (payload) => payload?.user?.id ?? null,
+    subjectFromResponse: (payload) => payload?.user?.id ?? null,
+    capAnonymousFailures: true,
+  }),
+};
 
 /**
  * @openapi
@@ -32,6 +51,7 @@ const router = Router();
  */
 router.post(
   "/verify",
+  activationAudit.verify,
   membershipActivationController.verify
 );
 
@@ -63,6 +83,7 @@ router.post(
  */
 router.post(
   "/complete",
+  activationAudit.complete,
   membershipActivationController.complete
 );
 router.post(

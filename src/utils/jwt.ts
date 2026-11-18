@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 import { JwtPayload } from "../auth/auth.types.js";
 
@@ -45,6 +46,10 @@ export function generateRefreshToken(
     getRefreshSecret(),
     {
       expiresIn: "30d",
+      // A random ID per token: two tokens for the same user issued in
+      // the same second would otherwise be identical, and RefreshToken.token
+      // is unique.
+      jwtid: randomUUID(),
     }
   );
 }

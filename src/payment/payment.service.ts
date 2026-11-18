@@ -6,6 +6,11 @@ import membershipService, {
   PaidFailedPurchaseError,
 } from "../membership/membership.service.js";
 import bookingService from "../booking/booking.service.js";
+import { isPaymentProviderFailure, toPaymentProviderError } from "./payment-provider.error.js";
+import { setCorrelationId } from "../observability/request-context.js";
+import { logger } from "../observability/logger.js";
+import { describeError } from "../observability/errors.js";
+import activityLog from "../activity-log/activity-log.service.js";
 
 export interface InitializePaymentDto {
   email: string;
@@ -19,6 +24,43 @@ export interface InitializePaymentDto {
   bearer?: string;
   callback_url?: string;
 }
+/**
+ * An unexpected (non-Paymish) error around a Paymish call. Logged with a
+ * sanitized stack for the server only; the activity log gets the code
+ * and cleaned message, never the stack. Never throws.
+ */
+function recordInternalPaymentFailure(
+  operation: "initialize" | "verify",
+  reference: string | undefined,
+  error: unknown
+) {
+  try {
+    const description = describeError(error);
+
+    logger.error(`paymish.${operation}.internal_error`, {
+      reference: reference ?? null,
+      errorCode: description.code,
+      errorKind: description.kind,
+      errorMessage: description.logMessage,
+      // Server logs only.
+      stack: description.logStack,
+    });
+
+    activityLog.record({
+      action: operation === "initialize" ? "payment.initialize" : "payment.verify",
+      stage: "FAILED",
+      status: "FAILURE",
+      paymentReference: reference ?? null,
+      errorCode: description.code,
+      errorMessage: description.logMessage,
+      httpStatus: description.httpStatus,
+      metadata: { operation, errorKind: description.kind },
+    });
+  } catch {
+    // Logging must never change the outcome.
+  }
+}
+
 class PaymentService {
 private getHeaders() {
   return {
@@ -55,6 +97,10 @@ async initializeTransaction(data: InitializePaymentDto) {
       reference: data.reference,
     };
 
+    // This payment's reference ties the rest of the request's events
+    // (and the later callback and webhook) into one operation.
+    setCorrelationId(data.reference);
+
     const response = await axios.post(
       `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/transaction-initialize`,
       payload,
@@ -63,24 +109,62 @@ async initializeTransaction(data: InitializePaymentDto) {
       }
     );
 
-    console.log("========== PAYMISH INITIALIZE ==========");
-    console.log(response.data);
-    console.log("=========================================");
+    const hasPaymentUrl = Boolean(
+      response.data?.data?.authorization_url ??
+        response.data?.data?.authorizationUrl ??
+        response.data?.authorization_url ??
+        response.data?.authorizationUrl
+    );
 
-    return response.data;
-  } catch (error: any) {
-    if (axios.isAxiosError(error)) {
-      console.error(
-        "========== PAYMISH INITIALIZE FAILED =========="
-      );
-      console.error("STATUS:", error.response?.status);
-      console.error("DATA:", error.response?.data);
-      console.error("===============================================");
+    // Safe fields only: no customer data, no payment URL.
+    logger.info("paymish.initialize.ok", {
+      reference: data.reference,
+      providerStatus: response.data?.status ?? null,
+      hasPaymentUrl,
+    });
 
-      throw error.response?.data ?? error.message;
+    if (!hasPaymentUrl) {
+      activityLog.record({
+        action: "payment.initialize",
+        stage: "WARNING",
+        status: "WARNING",
+        paymentReference: data.reference,
+        errorCode: "PAYMENT_URL_MISSING",
+        description: "Paymish accepted the request but returned no payment URL.",
+        metadata: { operation: "initialize", providerCode: response.data?.status ?? null },
+      });
     }
 
-    throw error;
+    return response.data;
+  } catch (error: unknown) {
+    // Not a Paymish failure (a bug, bad data, a missing setting):
+    // recorded as internal and rethrown unchanged, as before.
+    if (!isPaymentProviderFailure(error)) {
+      recordInternalPaymentFailure("initialize", data?.reference, error);
+      throw error;
+    }
+
+    const providerError = toPaymentProviderError(error, "initialize", data.reference);
+
+    logger.warn("paymish.initialize.failed", {
+      reference: data.reference,
+      ...providerError.toLogFields(),
+    });
+
+    // Recorded against the payment reference; the purchase or booking
+    // it belongs to is looked up when the event is stored.
+    activityLog.record({
+      action: "payment.initialize",
+      stage: "PROVIDER_FAILED",
+      status: "FAILURE",
+      paymentReference: data.reference,
+      errorCode: providerError.code,
+      errorMessage: describeError(providerError).logMessage,
+      httpStatus: 502,
+      metadata: providerError.toLogFields(),
+    });
+
+    throw providerError;
   }
 }
 
@@ -94,6 +178,8 @@ async initializeTransaction(data: InitializePaymentDto) {
 
 async verifyTransaction(reference: string) {
   try {
+    setCorrelationId(reference);
+
     const response = await axios.get(
       `${process.env.PAYMISH_BASE_URL}/api/transaction-service/external/v1/verify/${encodeURIComponent(
         reference
@@ -103,24 +189,39 @@ async verifyTransaction(reference: string) {
       }
     );
 
-    console.log("========== PAYMISH VERIFY ==========");
-    console.log(response.data);
-    console.log("=====================================");
+    // Safe fields only: no customer data.
+    logger.info("paymish.verify.ok", {
+      reference,
+      verificationStatus: response.data?.status ?? null,
+      transactionStatus: response.data?.data?.status ?? null,
+    });
 
     return response.data;
-  } catch (error: any) {
-    if (axios.isAxiosError(error)) {
-      console.error(
-        "========== PAYMISH VERIFY FAILED =========="
-      );
-      console.error("STATUS:", error.response?.status);
-      console.error("DATA:", error.response?.data);
-      console.error("============================================");
-
-      throw error.response?.data ?? error.message;
+  } catch (error: unknown) {
+    if (!isPaymentProviderFailure(error)) {
+      recordInternalPaymentFailure("verify", reference, error);
+      throw error;
     }
 
-    throw error;
+    const providerError = toPaymentProviderError(error, "verify", reference);
+
+    logger.warn("paymish.verify.failed", {
+      reference,
+      ...providerError.toLogFields(),
+    });
+
+    activityLog.record({
+      action: "payment.verify",
+      stage: "PROVIDER_FAILED",
+      status: "FAILURE",
+      paymentReference: reference,
+      errorCode: providerError.code,
+      errorMessage: describeError(providerError).logMessage,
+      httpStatus: 502,
+      metadata: providerError.toLogFields(),
+    });
+
+    throw providerError;
   }
 }
   // =========================================================
@@ -196,17 +297,16 @@ async handleWebhook(
     );
   }
 
-  console.log(
-    "========== PAYMISH WEBHOOK =========="
-  );
+  // Safe fields only: never the payload (it holds customer details).
+  const webhookReference =
+    typeof payload?.data?.reference === "string" ? payload.data.reference : null;
 
-  console.log(
-    JSON.stringify(payload, null, 2)
-  );
+  setCorrelationId(webhookReference);
 
-  console.log(
-    "====================================="
-  );
+  logger.info("paymish.webhook.received", {
+    webhookEvent: typeof payload?.event === "string" ? payload.event : null,
+    reference: webhookReference,
+  });
 
   // =====================================================
   // CHECK EVENT
@@ -215,6 +315,16 @@ async handleWebhook(
   const event = payload?.event;
 
   if (event !== "transaction.successful") {
+    activityLog.record({
+      action: "payment.webhook",
+      stage: "RECEIVED",
+      status: "INFO",
+      actorType: "WEBHOOK",
+      paymentReference: webhookReference,
+      description: "Webhook event not processed (not a successful transaction).",
+      metadata: { webhookEvent: typeof event === "string" ? event : null, processed: false },
+    });
+
     return {
       received: true,
       processed: false,
@@ -272,6 +382,18 @@ async handleWebhook(
           "webhook"
         );
 
+        activityLog.record({
+          action: "payment.webhook",
+          stage: "WARNING",
+          status: "WARNING",
+          actorType: "WEBHOOK",
+          paymentReference: reference,
+          errorCode: "PAID_FAILED_PURCHASE",
+          description: "Paid a cancelled or superseded purchase; recorded for admin review.",
+          dedupeKey: `payment.webhook.reconciliation:${reference}`,
+          metadata: { processed: false, reconciliationRequired: true },
+        });
+
         return {
           received: true,
           processed: false,
@@ -283,6 +405,17 @@ async handleWebhook(
 
       throw error;
     }
+
+    activityLog.record({
+      action: "payment.webhook",
+      stage: "SUCCEEDED",
+      status: "SUCCESS",
+      actorType: "WEBHOOK",
+      paymentReference: reference,
+      description: "Membership payment webhook processed.",
+      dedupeKey: `payment.webhook.processed:${reference}`,
+      metadata: { processed: true, purchaseType: membershipPurchase.type },
+    });
 
     return {
       received: true,
@@ -304,10 +437,19 @@ async handleWebhook(
     });
 
   if (!booking) {
-    console.warn(
-      "Paymish webhook reference does not match a Sculpt LAB booking or membership purchase:",
-      reference
-    );
+    logger.warn("paymish.webhook.unknown_reference", { reference });
+
+    activityLog.record({
+      action: "payment.webhook",
+      stage: "WARNING",
+      status: "WARNING",
+      actorType: "WEBHOOK",
+      paymentReference: reference,
+      errorCode: "PAYMENT_REFERENCE_NOT_FOUND",
+      description: "Successful payment webhook for a reference with no booking or membership purchase.",
+      dedupeKey: `payment.webhook.unknown:${reference}`,
+      metadata: { processed: false },
+    });
 
     return {
       received: true,
@@ -325,6 +467,17 @@ async handleWebhook(
   await bookingService.markBookingPaid(
     reference
   );
+
+  activityLog.record({
+    action: "payment.webhook",
+    stage: "SUCCEEDED",
+    status: "SUCCESS",
+    actorType: "WEBHOOK",
+    paymentReference: reference,
+    description: "Booking payment webhook processed.",
+    dedupeKey: `payment.webhook.processed:${reference}`,
+    metadata: { processed: true },
+  });
 
   return {
     received: true,

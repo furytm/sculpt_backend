@@ -10,10 +10,46 @@ import {
 } from "../utils/mailer.js";
 import bookingService from "../booking/booking.service.js";
 import { adminNotificationService } from "../admin/admin-notification.service.js";
+import { getRequestId, setCorrelationId } from "../observability/request-context.js";
+import { logger } from "../observability/logger.js";
+import { describeError } from "../observability/errors.js";
+import activityLog, { unmatchedDedupeKey } from "../activity-log/activity-log.service.js";
 
 
 interface VerifyParams {
   reference: string;
+}
+
+/**
+ * A notification or email failed after a successful payment. The
+ * payment stands; this only records it (as before, it is not retried).
+ */
+function recordNotificationFailure(
+  reference: string,
+  notification: "admin_database" | "customer_email" | "admin_email",
+  error: unknown
+) {
+  const description = describeError(error);
+
+  logger.warn("payment.callback.notification_failed", {
+    reference,
+    notification,
+    errorMessage: description.logMessage,
+    // Server logs only; never sent to the browser or the activity log.
+    stack: description.logStack,
+  });
+
+  activityLog.record({
+    action: "payment.callback",
+    stage: "WARNING",
+    status: "WARNING",
+    paymentReference: reference,
+    errorCode: "NOTIFICATION_FAILED",
+    errorMessage: description.logMessage,
+    description: "Payment succeeded, but a notification could not be sent.",
+    dedupeKey: `payment.callback.notification_failed:${notification}:${reference}`,
+    metadata: { notification },
+  });
 }
 
 class PaymentController {
@@ -22,23 +58,28 @@ class PaymentController {
   // =========================================================
 
   async initializePayment(req: Request, res: Response) {
-    console.log("========== INITIALIZE PAYMENT HIT ==========", {
-  method: req.method,
-  url: req.originalUrl,
-  time: new Date().toISOString(),
-});
+    logger.info("payment.initialize.request");
     try {
       const payment =
         await paymentService.initializeTransaction(req.body);
 
       return res.status(200).json(payment);
     } catch (error) {
-      console.error("Paymish Initialize Error:", error);
+      const description = describeError(error);
+      logger.error("payment.initialize.error", {
+        errorCode: description.code,
+        errorMessage: description.logMessage,
+        // Server logs only; never sent to the browser or the activity log.
+        stack: description.logStack,
+      });
 
+      // Unchanged status and message; the raw provider error is no
+      // longer included.
       return res.status(500).json({
         success: false,
         message: "Unable to initialize payment.",
-        error,
+        code: description.code,
+        requestId: getRequestId(),
       });
     }
   }
@@ -62,12 +103,21 @@ class PaymentController {
 
       return res.status(200).json(payment);
     } catch (error) {
-      console.error("Paymish Verify Error:", error);
+      const description = describeError(error);
+      logger.error("payment.verify.error", {
+        errorCode: description.code,
+        errorMessage: description.logMessage,
+        // Server logs only; never sent to the browser or the activity log.
+        stack: description.logStack,
+      });
 
+      // Unchanged status and message; the raw provider error is no
+      // longer included.
       return res.status(500).json({
         success: false,
         message: "Unable to verify payment.",
-        error,
+        code: description.code,
+        requestId: getRequestId(),
       });
     }
   }
@@ -76,18 +126,15 @@ class PaymentController {
 
 
 async callback(req: Request, res: Response) {
-  console.log("========== PAYMISH CALLBACK HIT ==========", {
-  method: req.method,
-  url: req.originalUrl,
-  reference: req.query.reference,
-  time: new Date().toISOString(),
-});
   const frontendUrl = process.env.FRONTEND_URL?.replace(/\/$/, "");
 
   const reference =
     typeof req.query.reference === "string"
       ? req.query.reference.trim()
       : "";
+
+  setCorrelationId(reference);
+  logger.info("payment.callback.received", { reference: reference || null });
 
   let paymentVerified = false;
 
@@ -97,6 +144,17 @@ async callback(req: Request, res: Response) {
     }
 
     if (!reference) {
+      activityLog.record({
+        action: "payment.callback",
+        stage: "VALIDATION_FAILED",
+        status: "FAILURE",
+        errorCode: "MISSING_REFERENCE",
+        description: "Payment callback without a payment reference.",
+        // Public endpoint: at most one such event a minute.
+        dedupeKey: unmatchedDedupeKey("payment.callback", "VALIDATION_FAILED"),
+        metadata: { outcome: "payment=failed" },
+      });
+
       return res.redirect(
         `${frontendUrl}/confirmation?payment=failed`
       );
@@ -114,7 +172,21 @@ async callback(req: Request, res: Response) {
       transaction?.reference === reference;
 
     if (!isVerified) {
-      console.warn("Payment not verified:", reference);
+      logger.warn("payment.callback.not_verified", { reference });
+
+      activityLog.record({
+        action: "payment.callback",
+        stage: "VERIFICATION_FAILED",
+        status: "FAILURE",
+        paymentReference: reference,
+        errorCode: "PAYMENT_NOT_VERIFIED",
+        description: "Paymish did not confirm a completed payment for this reference.",
+        metadata: {
+          verificationStatus: typeof verification?.status === "string" ? verification.status : null,
+          transactionStatus: typeof transaction?.status === "string" ? transaction.status : null,
+          outcome: "payment=failed",
+        },
+      });
 
       return res.redirect(
         `${frontendUrl}/confirmation?payment=failed&reference=${encodeURIComponent(reference)}`
@@ -123,7 +195,16 @@ async callback(req: Request, res: Response) {
 
     paymentVerified = true;
 
-    console.log("Payment successfully verified:", reference);
+    logger.info("payment.callback.verified", { reference });
+
+    activityLog.record({
+      action: "payment.callback",
+      stage: "VERIFIED",
+      status: "SUCCESS",
+      paymentReference: reference,
+      description: "Paymish confirmed the payment.",
+      dedupeKey: `payment.callback.verified:${reference}`,
+    });
 
     // Check whether this is a membership purchase.
     const membershipPurchase =
@@ -148,6 +229,17 @@ async callback(req: Request, res: Response) {
             reference,
             "payment-callback"
           );
+
+          activityLog.record({
+            action: "payment.callback",
+            stage: "WARNING",
+            status: "WARNING",
+            paymentReference: reference,
+            errorCode: "PAID_FAILED_PURCHASE",
+            description: "Paid a cancelled or superseded purchase; recorded for admin review.",
+            dedupeKey: `payment.callback.reconciliation:${reference}`,
+            metadata: { reconciliationRequired: true, outcome: "payment=review" },
+          });
 
           return res.redirect(
             `${frontendUrl}/confirmation?payment=review&type=membership&reference=${encodeURIComponent(reference)}`
@@ -175,11 +267,7 @@ async callback(req: Request, res: Response) {
           },
         });
       } catch (notificationError) {
-        console.error(
-          "Membership paid, but admin database notification failed:",
-          reference,
-          notificationError
-        );
+        recordNotificationFailure(reference, "admin_database", notificationError);
       }
 
       // Preserve the existing customer email for new memberships.
@@ -198,11 +286,7 @@ async callback(req: Request, res: Response) {
               `${frontendUrl}/login?reference=${encodeURIComponent(reference)}`,
           });
         } catch (error) {
-          console.error(
-            "Membership paid, but customer email failed:",
-            reference,
-            error
-          );
+          recordNotificationFailure(reference, "customer_email", error);
         }
       }
 
@@ -216,11 +300,7 @@ async callback(req: Request, res: Response) {
           paymentType: `Membership ${membershipPurchase.type}`,
         });
       } catch (error) {
-        console.error(
-          "Membership paid, but admin email failed:",
-          reference,
-          error
-        );
+        recordNotificationFailure(reference, "admin_email", error);
       }
 
       if (membershipPurchase.type === "NEW") {
@@ -274,11 +354,7 @@ async callback(req: Request, res: Response) {
         },
       });
     } catch (notificationError) {
-      console.error(
-        "Booking paid, but admin database notification failed:",
-        reference,
-        notificationError
-      );
+      recordNotificationFailure(reference, "admin_database", notificationError);
     }
 
     // Send customer and admin emails independently.
@@ -307,19 +383,16 @@ async callback(req: Request, res: Response) {
         })
       );
     } else {
-      console.error(
-        "Verified booking has no customer email:",
-        reference
-      );
+      logger.error("payment.callback.booking_without_email", { reference });
     }
 
     const emailResults = await Promise.allSettled(emailTasks);
 
     emailResults.forEach((result, index) => {
       if (result.status === "rejected") {
-        console.error(
-          `Payment notification email ${index + 1} failed:`,
+        recordNotificationFailure(
           reference,
+          index === 0 ? "customer_email" : "admin_email",
           result.reason
         );
       }
@@ -329,7 +402,32 @@ async callback(req: Request, res: Response) {
       `${frontendUrl}/confirmation?status=success&reference=${encodeURIComponent(reference)}`
     );
   } catch (error) {
-    console.error("Paymish Callback Error:", error);
+    const description = describeError(error);
+
+    logger.error("payment.callback.error", {
+      reference: reference || null,
+      paymentVerified,
+      errorCode: description.code,
+      errorMessage: description.logMessage,
+      // Server logs only; never sent to the browser or the activity log.
+      stack: description.logStack,
+    });
+
+    activityLog.record({
+      action: "payment.callback",
+      stage: description.kind === "provider" ? "PROVIDER_FAILED" : "FAILED",
+      status: "FAILURE",
+      paymentReference: reference || null,
+      errorCode: description.code,
+      errorMessage: description.logMessage,
+      description: paymentVerified
+        ? "Payment was verified, but processing it failed."
+        : "The payment could not be verified.",
+      metadata: {
+        errorKind: description.kind,
+        outcome: paymentVerified ? "status=success" : "payment=failed",
+      },
+    });
 
     if (!frontendUrl) {
       return res.status(500).json({
@@ -376,17 +474,41 @@ async webhook(req: Request, res: Response) {
       );
 
     return res.status(200).json(response);
-  } catch (error: any) {
-    console.error(
-      "Paymish Webhook Error:",
-      error
-    );
+  } catch (error: unknown) {
+    const description = describeError(error);
+    const signatureFailure =
+      description.kind === "business" &&
+      /webhook signature/i.test(description.publicMessage);
 
+    logger.error("payment.webhook.error", {
+      errorCode: description.code,
+      errorMessage: description.logMessage,
+      // Server logs only; never sent to the browser or the activity log.
+      stack: description.logStack,
+    });
+
+    activityLog.record({
+      action: "payment.webhook",
+      stage: "FAILED",
+      status: "FAILURE",
+      actorType: "WEBHOOK",
+      errorCode: signatureFailure ? "WEBHOOK_SIGNATURE_INVALID" : description.code,
+      errorMessage: description.logMessage,
+      httpStatus: 400,
+      // Anyone can post a bad signature: at most one such event a minute.
+      dedupeKey: signatureFailure ? unmatchedDedupeKey("payment.webhook", "SIGNATURE_INVALID") : null,
+      metadata: { errorKind: description.kind },
+    });
+
+    // Status stays 400 for every failure (Paymish's retry behaviour is
+    // unchanged). Our own messages are kept; internal errors (database,
+    // provider) no longer leak their text.
     return res.status(400).json({
       success: false,
       message:
-        error?.message ||
+        (description.kind === "business" && description.publicMessage) ||
         "Webhook processing failed.",
+      requestId: getRequestId(),
     });
   }
 }

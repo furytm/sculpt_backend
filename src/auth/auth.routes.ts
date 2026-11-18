@@ -1,6 +1,8 @@
 import { Router } from "express";
 import authController from "./auth.controller.js";
 import authenticate from "../middleware/authenticate.js";
+import requireMember from "../middleware/requireMember.js";
+import emailChangeController from "./email-change.controller.js";
 
 const router = Router();
 
@@ -103,6 +105,16 @@ router.patch(
   authenticate,
   authController.updateProfile
 );
+
+/*
+ * Member email change (two verified stages). MEMBER accounts only.
+ * Error responses: { success: false, code, message, data? }.
+ */
+router.post("/email-change/request", authenticate, requireMember, emailChangeController.request);
+router.post("/email-change/verify-current", authenticate, requireMember, emailChangeController.verifyCurrent);
+router.post("/email-change/verify-new", authenticate, requireMember, emailChangeController.verifyNew);
+router.post("/email-change/resend", authenticate, requireMember, emailChangeController.resend);
+router.delete("/email-change", authenticate, requireMember, emailChangeController.cancel);
 /**
  * @openapi
  * /api/auth/logout:

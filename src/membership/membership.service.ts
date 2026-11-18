@@ -11,6 +11,9 @@ import { generateMembershipNumber } from "../utils/membership-number.js";
 
 import paymentService from "../payment/payment.service.js";
 import { adminNotificationService } from "../admin/admin-notification.service.js";
+import activityLog from "../activity-log/activity-log.service.js";
+import { describeError } from "../observability/errors.js";
+import { getRequestContext, setCorrelationIdIfUnset } from "../observability/request-context.js";
 
 import crypto from "crypto";
 
@@ -621,6 +624,11 @@ private async getValidityChain(
       : null,
   };
 }
+/**
+ * Completes a paid membership purchase (unchanged behaviour: see
+ * runCompleteMembershipPurchase) and records the outcome in the
+ * activity log. Errors are rethrown exactly as before.
+ */
 async completeMembershipPurchase(
   paymentReference: string,
   options: {
@@ -628,6 +636,64 @@ async completeMembershipPurchase(
      * Admin reconciliation only: apply a FAILED purchase whose
      * verified payment was recorded by recordPaymentForFailedPurchase.
      */
+    applyPaidFailedPurchase?: boolean;
+  } = {}
+) {
+  const source = getRequestContext()?.path ?? "system";
+
+  // The payment reference identifies this operation. Claim it for the
+  // request only if nothing is tracked yet (registration, login, admin
+  // reconciliation); the callback and webhook have already set the same
+  // reference. The events below always carry it explicitly, so another
+  // payment's correlation ID is never overwritten.
+  setCorrelationIdIfUnset(paymentReference);
+  const correlationId = paymentReference || null;
+
+  try {
+    const result = await this.runCompleteMembershipPurchase(paymentReference, options);
+
+    activityLog.record({
+      action: "membership.purchase_completion",
+      stage: "SUCCEEDED",
+      status: "SUCCESS",
+      paymentReference,
+      correlationId,
+      description: "Membership purchase completed.",
+      // The callback and webhook can both complete the same purchase.
+      dedupeKey: `membership.purchase_completion:${paymentReference}`,
+      metadata: { source },
+    });
+
+    return result;
+  } catch (error) {
+    const paidFailed = error instanceof PaidFailedPurchaseError;
+    const description = describeError(error);
+
+    activityLog.record({
+      action: "membership.purchase_completion",
+      stage: paidFailed ? "WARNING" : "FAILED",
+      status: paidFailed ? "WARNING" : "FAILURE",
+      paymentReference: paymentReference || null,
+      correlationId,
+      errorCode: paidFailed ? "PAID_FAILED_PURCHASE" : description.code,
+      errorMessage: description.logMessage,
+      description: paidFailed
+        ? "Payment received for a cancelled or superseded purchase."
+        : "Membership purchase completion failed.",
+      dedupeKey: paidFailed
+        ? `membership.purchase_completion.paid_failed:${paymentReference}`
+        : null,
+      metadata: { source, errorKind: description.kind },
+    });
+
+    throw error;
+  }
+}
+
+/** The original completion logic, unchanged. */
+async runCompleteMembershipPurchase(
+  paymentReference: string,
+  options: {
     applyPaidFailedPurchase?: boolean;
   } = {}
 ) {

@@ -22,6 +22,65 @@ import {
   CreateBookingDto,
   HealthSafetyFormDto,
 } from "./booking.types.js";
+import { record, recordCreditChange, recordFailure } from "../activity-log/activity-events.js";
+import { setCorrelationIdIfUnset } from "../observability/request-context.js";
+
+/**
+ * Activity log for a confirmation that succeeded. Records nothing when
+ * the booking was already confirmed (the call changed nothing). A
+ * booking is confirmed, and uses a credit, at most once, so both events
+ * are de-duplicated per booking. Never throws.
+ */
+function recordBookingConfirmation(
+  booking: {
+    id: string;
+    userId: string | null;
+    paymentReference: string | null;
+    bookingStatus: BookingStatus;
+    memberMembershipId: string | null;
+    sessionId: string | null;
+    updatedAt: Date;
+  } | null | undefined,
+  startedAt: number
+) {
+  try {
+    if (!booking || booking.bookingStatus !== BookingStatus.CONFIRMED) return;
+    // Unchanged by this call: it was already confirmed.
+    if (booking.updatedAt.getTime() < startedAt) return;
+
+    setCorrelationIdIfUnset(booking.paymentReference);
+
+    record({
+      action: "booking.confirmation",
+      stage: "SUCCEEDED",
+      status: "SUCCESS",
+      userId: booking.userId,
+      entityType: "BOOKING",
+      entityId: booking.id,
+      paymentReference: booking.paymentReference,
+      correlationId: booking.paymentReference,
+      description: "Booking confirmed.",
+      dedupeKey: `booking.confirmation:${booking.id}`,
+      metadata: {
+        bookingStatus: booking.bookingStatus,
+        classSessionId: booking.sessionId,
+        memberMembershipId: booking.memberMembershipId,
+      },
+    });
+
+    recordCreditChange({
+      action: "credit.deduction",
+      memberMembershipId: booking.memberMembershipId,
+      bookingId: booking.id,
+      actor: { actorType: booking.userId ? "MEMBER" : "SYSTEM", actorUserId: null, memberUserId: booking.userId },
+      credits: 1,
+      dedupeKey: `credit.deduction:booking:${booking.id}`,
+      correlationId: booking.paymentReference,
+    });
+  } catch {
+    // Logging must never change the outcome.
+  }
+}
 
 class BookingService {
   // =========================================================
@@ -2037,7 +2096,39 @@ return sessions
    * the logged-in member for confirmBooking, or the booking's own
    * owner (possibly none yet) for an admin-confirmed offline payment.
    */
+  /**
+   * Confirms a booking (unchanged behaviour: see runConfirmBookingFor)
+   * and records the outcome in the activity log. Every confirmation
+   * path goes through here: member confirmation, admin offline-payment
+   * confirmation, and first bookings included with a membership.
+   * Errors are rethrown exactly as before.
+   */
   private async confirmBookingFor(
+    bookingId: string,
+    userId: string | null
+  ) {
+    const startedAt = Date.now();
+
+    try {
+      const booking = await this.runConfirmBookingFor(bookingId, userId);
+      recordBookingConfirmation(booking, startedAt);
+      return booking;
+    } catch (error) {
+      recordFailure(
+        {
+          action: "booking.confirmation",
+          userId,
+          entityType: "BOOKING",
+          entityId: bookingId,
+        },
+        error
+      );
+      throw error;
+    }
+  }
+
+  /** The original confirmation logic, unchanged. */
+  private async runConfirmBookingFor(
     bookingId: string,
     userId: string | null
   ) {

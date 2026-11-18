@@ -12,9 +12,10 @@
  *   includes and _count;
  * - orderBy with Postgres null ordering (ASC nulls last, DESC nulls
  *   first);
- * - unique MemberMembership.membershipPurchaseId and
- *   Booking.paymentReference;
- * - $transaction(callback), which restores every table when the
+ * - unique MemberMembership.membershipPurchaseId,
+ *   Booking.paymentReference, User.email, RefreshToken.token and
+ *   EmailChangeRequest.userId;
+ * - $transaction([...]) and $transaction(callback), the latter restoring every table when the
  *   callback throws, like a database rollback.
  *
  * Every delegate method is a vi.fn, so a test can override one call.
@@ -33,7 +34,10 @@ export type TableName =
   | "user"
   | "healthSafetyForm"
   | "membershipActivation"
-  | "refreshToken";
+  | "refreshToken"
+  | "emailChangeRequest"
+  | "passwordResetToken"
+  | "memberActivityLog";
 
 const TABLES: TableName[] = [
   "membership",
@@ -46,6 +50,9 @@ const TABLES: TableName[] = [
   "healthSafetyForm",
   "membershipActivation",
   "refreshToken",
+  "emailChangeRequest",
+  "passwordResetToken",
+  "memberActivityLog",
 ];
 
 interface Relation {
@@ -109,7 +116,16 @@ const RELATIONS: Record<TableName, Record<string, Relation>> = {
     membershipPurchase: one("membershipPurchase", "membershipPurchaseId"),
     memberMembership: one("memberMembership", "memberMembershipId"),
   },
-  refreshToken: {},
+  refreshToken: {
+    user: one("user", "userId"),
+  },
+  emailChangeRequest: {
+    user: one("user", "userId"),
+  },
+  passwordResetToken: {
+    user: one("user", "userId"),
+  },
+  memberActivityLog: {},
 };
 
 const DEFAULTS: Partial<Record<TableName, Row>> = {
@@ -165,6 +181,11 @@ const UNIQUE: Partial<Record<TableName, string[]>> = {
     "membershipNumber",
     "tokenHash",
   ],
+  user: ["email"],
+  refreshToken: ["token"],
+  emailChangeRequest: ["userId"],
+  passwordResetToken: ["tokenHash"],
+  memberActivityLog: ["dedupeKey"],
 };
 
 const isPlainObject = (value: unknown): value is Row =>
@@ -422,6 +443,12 @@ export function createFakePrisma() {
           `Unique constraint failed on the fields: (\`${field}\`)`
         );
         error.code = "P2002";
+        // The same meta structure real Prisma 6 reports, e.g.
+        // { modelName: "User", target: ["email"] }.
+        error.meta = {
+          modelName: table.charAt(0).toUpperCase() + table.slice(1),
+          target: [field],
+        };
         throw error;
       }
     }
@@ -514,7 +541,9 @@ export function createFakePrisma() {
 
   const prisma: any = {
     $queryRaw: vi.fn(async () => []),
-    $transaction: vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
+    $transaction: vi.fn(async (callback: any) => {
+      // Array form: the operations have already started; just await them.
+      if (Array.isArray(callback)) return Promise.all(callback);
       const saved = structuredClone(tables);
       try {
         return await callback(prisma);
