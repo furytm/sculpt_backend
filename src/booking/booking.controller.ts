@@ -11,6 +11,7 @@ import {
   recordFailure,
 } from "../activity-log/activity-events.js";
 import { setCorrelationIdIfUnset } from "../observability/request-context.js";
+import { bookingForViewer, viewerFromRequest } from "./booking-privacy.js";
 
 /** A member booking rejected by the controller's own checks. Never throws. */
 function recordBookingValidation(userId: string, message: string, field: string) {
@@ -205,7 +206,7 @@ record({
 
       return res.status(200).json({
         success: true,
-        data: booking,
+        data: bookingForViewer(booking, viewerFromRequest(req)),
       });
     } catch (error: any) {
       console.error("Get Booking Error:", error);
@@ -372,7 +373,7 @@ record({
         success: true,
         message: "Booking retrieved successfully.",
         data: {
-          booking,
+          booking: bookingForViewer(booking, viewerFromRequest(req)),
         },
       });
     } catch (error: any) {
@@ -407,7 +408,7 @@ const reference = String(req.params.reference);
         success: true,
         message:
           "Booking continuation session created successfully.",
-        data: result,
+        data: result && { ...result, booking: bookingForViewer(result.booking, viewerFromRequest(req)) },
       });
     } catch (error: any) {
       console.error("Continue Guest Booking Error:", error);
@@ -449,7 +450,7 @@ async resumeBookingForUser(req: Request, res: Response) {
 
     return res.status(200).json({
       success: true,
-      data: result,
+      data: result && { ...result, booking: bookingForViewer(result.booking, viewerFromRequest(req)) },
     });
   } catch (error: any) {
     return res.status(400).json({
@@ -480,7 +481,7 @@ async resumeBookingForUser(req: Request, res: Response) {
       return res.status(200).json({
         success: true,
         data: {
-          bookings,
+          bookings: bookings.map((item) => bookingForViewer(item, viewerFromRequest(req))),
         },
       });
     } catch (error: any) {

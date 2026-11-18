@@ -3,6 +3,53 @@ import prisma from "../config/prisma.js";
 import paymentService from "../payment/payment.service.js";
 import { BookingStatus, PaymentMethod, PaymentStatus, MembershipPurchaseType, MembershipStatus, MembershipType, } from "@prisma/client";
 import { googleCalendarService, } from "../google-calendar/google-calendar.service.js";
+import { record, recordCreditChange, recordFailure } from "../activity-log/activity-events.js";
+import { setCorrelationIdIfUnset } from "../observability/request-context.js";
+/**
+ * Activity log for a confirmation that succeeded. Records nothing when
+ * the booking was already confirmed (the call changed nothing). A
+ * booking is confirmed, and uses a credit, at most once, so both events
+ * are de-duplicated per booking. Never throws.
+ */
+function recordBookingConfirmation(booking, startedAt) {
+    try {
+        if (!booking || booking.bookingStatus !== BookingStatus.CONFIRMED)
+            return;
+        // Unchanged by this call: it was already confirmed.
+        if (booking.updatedAt.getTime() < startedAt)
+            return;
+        setCorrelationIdIfUnset(booking.paymentReference);
+        record({
+            action: "booking.confirmation",
+            stage: "SUCCEEDED",
+            status: "SUCCESS",
+            userId: booking.userId,
+            entityType: "BOOKING",
+            entityId: booking.id,
+            paymentReference: booking.paymentReference,
+            correlationId: booking.paymentReference,
+            description: "Booking confirmed.",
+            dedupeKey: `booking.confirmation:${booking.id}`,
+            metadata: {
+                bookingStatus: booking.bookingStatus,
+                classSessionId: booking.sessionId,
+                memberMembershipId: booking.memberMembershipId,
+            },
+        });
+        recordCreditChange({
+            action: "credit.deduction",
+            memberMembershipId: booking.memberMembershipId,
+            bookingId: booking.id,
+            actor: { actorType: booking.userId ? "MEMBER" : "SYSTEM", actorUserId: null, memberUserId: booking.userId },
+            credits: 1,
+            dedupeKey: `credit.deduction:booking:${booking.id}`,
+            correlationId: booking.paymentReference,
+        });
+    }
+    catch {
+        // Logging must never change the outcome.
+    }
+}
 class BookingService {
     // =========================================================
     // CONSTANTS
@@ -1257,7 +1304,32 @@ class BookingService {
      * the logged-in member for confirmBooking, or the booking's own
      * owner (possibly none yet) for an admin-confirmed offline payment.
      */
+    /**
+     * Confirms a booking (unchanged behaviour: see runConfirmBookingFor)
+     * and records the outcome in the activity log. Every confirmation
+     * path goes through here: member confirmation, admin offline-payment
+     * confirmation, and first bookings included with a membership.
+     * Errors are rethrown exactly as before.
+     */
     async confirmBookingFor(bookingId, userId) {
+        const startedAt = Date.now();
+        try {
+            const booking = await this.runConfirmBookingFor(bookingId, userId);
+            recordBookingConfirmation(booking, startedAt);
+            return booking;
+        }
+        catch (error) {
+            recordFailure({
+                action: "booking.confirmation",
+                userId,
+                entityType: "BOOKING",
+                entityId: bookingId,
+            }, error);
+            throw error;
+        }
+    }
+    /** The original confirmation logic, unchanged. */
+    async runConfirmBookingFor(bookingId, userId) {
         const booking = await prisma.booking.findFirst({
             where: {
                 id: bookingId,
@@ -2368,6 +2440,30 @@ class BookingService {
                 GROUP: group,
                 PRIVATE: privatePool,
             },
+            // One entry per membership record (additive). A member can hold a
+            // GROUP and a PRIVATE membership at once; each keeps its own credits,
+            // status and dates, and memberMembershipId identifies the exact
+            // record to renew (membershipId is the catalogue plan).
+            memberships: memberships.map((row) => {
+                const unlimited = row.creditsTotal === null;
+                return {
+                    memberMembershipId: row.id,
+                    membershipId: row.membershipId,
+                    type: row.membership.type,
+                    status: row.status,
+                    startDate: row.startDate,
+                    expiryDate: row.expiryDate,
+                    queued: isQueued(row),
+                    unlimited,
+                    creditsTotal: row.creditsTotal,
+                    creditsUsed: row.creditsUsed,
+                    remainingCredits: unlimited
+                        ? null
+                        : Math.max((row.creditsTotal ?? 0) - row.creditsUsed, 0),
+                    membershipNumber: row.membershipNumber ?? null,
+                    plan: row.membership,
+                };
+            }),
         };
     }
     // =========================================================

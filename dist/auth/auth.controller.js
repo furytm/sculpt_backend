@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import authService from "./auth.service.js";
-import { registerSchema, loginSchema, } from "./auth.validation.js";
+import { registerSchema, loginSchema, updateProfileSchema, } from "./auth.validation.js";
 import { setAuthCookies, clearAuthCookies, } from "../utils/auth-cookies.js";
 class AuthController {
     /**
@@ -155,7 +155,24 @@ class AuthController {
                     message: "Unauthorized.",
                 });
             }
-            const user = await authService.updateProfile(req.user.userId, req.body);
+            const body = req.body ?? {};
+            // Email changes need both addresses verified: see /api/auth/email-change.
+            if (Object.prototype.hasOwnProperty.call(body, "email")) {
+                return res.status(400).json({
+                    success: false,
+                    code: "EMAIL_CHANGE_REQUIRES_VERIFICATION",
+                    message: "Your email address can't be changed here. Please use the email change option, which verifies your current and new email addresses.",
+                });
+            }
+            const { error, value } = updateProfileSchema.validate(body);
+            if (error) {
+                return res.status(400).json({
+                    success: false,
+                    code: "VALIDATION_ERROR",
+                    message: error.details[0].message,
+                });
+            }
+            const user = await authService.updateProfile(req.user.userId, value);
             return res.status(200).json({
                 success: true,
                 message: "Profile updated successfully.",

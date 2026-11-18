@@ -3771,6 +3771,31 @@ async getMembershipCreditSummary(userId: string) {
       GROUP: group,
       PRIVATE: privatePool,
     },
+
+    // One entry per membership record (additive). A member can hold a
+    // GROUP and a PRIVATE membership at once; each keeps its own credits,
+    // status and dates, and memberMembershipId identifies the exact
+    // record to renew (membershipId is the catalogue plan).
+    memberships: memberships.map((row) => {
+      const unlimited = row.creditsTotal === null;
+      return {
+        memberMembershipId: row.id,
+        membershipId: row.membershipId,
+        type: row.membership.type,
+        status: row.status,
+        startDate: row.startDate,
+        expiryDate: row.expiryDate,
+        queued: isQueued(row),
+        unlimited,
+        creditsTotal: row.creditsTotal,
+        creditsUsed: row.creditsUsed,
+        remainingCredits: unlimited
+          ? null
+          : Math.max((row.creditsTotal ?? 0) - row.creditsUsed, 0),
+        membershipNumber: row.membershipNumber ?? null,
+        plan: row.membership,
+      };
+    }),
   };
 }
   // =========================================================

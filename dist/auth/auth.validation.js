@@ -43,4 +43,42 @@ export const resetPasswordSchema = Joi.object({
         "any.only": "Passwords do not match.",
     }),
 });
+// PATCH /api/auth/profile. The email is changed through
+// /api/auth/email-change instead (the controller rejects it first).
+export const updateProfileSchema = Joi.object({
+    fullName: Joi.string().trim().min(3).max(100),
+    phone: Joi.string()
+        .trim()
+        .allow("")
+        .pattern(/^\+?[0-9()\-\s]{7,20}$/)
+        .messages({
+        "string.pattern.base": "Please enter a valid phone number.",
+    }),
+})
+    .min(1)
+    .messages({
+    "object.min": "Please provide at least one field to update.",
+    "object.unknown": "{{#label}} can't be updated here.",
+});
+export const emailChangeRequestSchema = Joi.object({
+    newEmail: Joi.string().trim().lowercase().email().max(254).required().messages({
+        "string.email": "Please enter a valid email address.",
+        "any.required": "A new email address is required.",
+        "string.empty": "A new email address is required.",
+    }),
+    // Required for password accounts; checked in the service so a Google
+    // account gets a clear "managed by Google" answer instead.
+    currentPassword: Joi.string().max(200),
+});
+export const emailChangeCodeSchema = Joi.object({
+    code: Joi.string()
+        .trim()
+        .pattern(/^\d{6}$/)
+        .required()
+        .messages({
+        "string.pattern.base": "Please enter the 6-digit code.",
+        "any.required": "Please enter the 6-digit code.",
+        "string.empty": "Please enter the 6-digit code.",
+    }),
+});
 //# sourceMappingURL=auth.validation.js.map

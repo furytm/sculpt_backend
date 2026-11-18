@@ -361,6 +361,39 @@ router.patch(
 );
 
 // =========================================================
+// CHECKOUT HEALTH & SAFETY (compatibility path)
+// =========================================================
+
+/*
+ * PATCH /api/bookings/:bookingId/health-safety
+ *
+ * The path the checkout frontend calls. It adds no new behaviour:
+ *
+ * - Body has a bookingFlowToken: the guest route above
+ *   (/health-declaration). The token is validated by the service.
+ * - Otherwise: the signed-in route above (/health-declaration/account),
+ *   behind the same authenticate middleware.
+ *
+ * Both keep their checks: owner or valid token, PAID (signed-in),
+ * PENDING bookings only, accepted must be true, one form per booking.
+ * The member dashboard uses /api/members/me/health-safety instead.
+ */
+const hasBookingFlowToken = (body: unknown) => {
+  const token = (body as { bookingFlowToken?: unknown } | undefined)?.bookingFlowToken;
+  return typeof token === "string" && token.length > 0;
+};
+
+router.patch(
+  "/:bookingId/health-safety",
+  (req, res, next) =>
+    hasBookingFlowToken(req.body) ? next() : authenticate(req, res, next),
+  (req, res) =>
+    hasBookingFlowToken(req.body)
+      ? bookingController.saveHealthDeclaration(req, res)
+      : bookingController.saveHealthDeclarationForUser(req, res)
+);
+
+// =========================================================
 // MEMBERSHIP CREDITS
 // =========================================================
 

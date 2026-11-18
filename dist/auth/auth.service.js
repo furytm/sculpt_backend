@@ -928,6 +928,14 @@ class AuthService {
                     userId: storedToken.userId,
                 },
             }),
+            /*
+             * Cancel any pending email change.
+             */
+            prisma.emailChangeRequest.deleteMany({
+                where: {
+                    userId: storedToken.userId,
+                },
+            }),
         ]);
         return {
             success: true,

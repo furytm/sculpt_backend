@@ -1,13 +1,67 @@
 import bookingService from "./booking.service.js";
 import { bookingDocumentsService } from "./booking-documents.service.js";
 import { MembershipType } from "@prisma/client";
+import { actorFromRequest, bestEffort, record, recordCancellationSucceeded, recordCreditChange, recordFailure, } from "../activity-log/activity-events.js";
+import { setCorrelationIdIfUnset } from "../observability/request-context.js";
+import { bookingForViewer, viewerFromRequest } from "./booking-privacy.js";
+/** A member booking rejected by the controller's own checks. Never throws. */
+function recordBookingValidation(userId, message, field) {
+    record({
+        action: "booking",
+        stage: "VALIDATION_FAILED",
+        status: "FAILURE",
+        actorType: "MEMBER",
+        userId,
+        errorCode: "VALIDATION_ERROR",
+        errorMessage: message,
+        httpStatus: 400,
+        metadata: { missingFields: field },
+    });
+}
 class BookingController {
     // =========================================================
     // CREATE BOOKING
     // =========================================================
     async createBooking(req, res) {
         try {
+            record({
+                action: "booking",
+                stage: "INITIATED",
+                status: "INFO",
+                actorType: actorFromRequest(req).actorType,
+                userId: actorFromRequest(req).memberUserId,
+                // Identifies a guest only (stored only when there is no account).
+                subjectEmail: typeof req.body?.email === "string" ? req.body.email : null,
+                description: "Booking checkout started.",
+                metadata: {
+                    paymentMethod: typeof req.body?.paymentMethod === "string" ? req.body.paymentMethod : null,
+                },
+            });
             const booking = await bookingService.createBooking(req.body);
+            // The booking now exists (awaiting payment or confirmation).
+            bestEffort(() => {
+                const created = booking?.booking;
+                if (!created?.id)
+                    return;
+                setCorrelationIdIfUnset(created.paymentReference);
+                record({
+                    action: "booking",
+                    stage: "SUCCEEDED",
+                    status: "SUCCESS",
+                    actorType: actorFromRequest(req).actorType,
+                    entityType: "BOOKING",
+                    entityId: created.id,
+                    paymentReference: created.paymentReference,
+                    correlationId: created.paymentReference,
+                    description: booking.paymentMethod === "OFFLINE"
+                        ? "Booking created; awaiting offline payment confirmation."
+                        : "Booking created; payment link issued (not yet paid).",
+                    metadata: {
+                        bookingStatus: created.bookingStatus,
+                        paymentMethod: booking.paymentMethod,
+                    },
+                });
+            });
             return res.status(201).json({
                 success: true,
                 message: req.body.paymentMethod === "OFFLINE"
@@ -17,6 +71,13 @@ class BookingController {
             });
         }
         catch (error) {
+            recordFailure({
+                action: "booking",
+                actorType: actorFromRequest(req).actorType,
+                userId: actorFromRequest(req).memberUserId,
+                subjectEmail: typeof req.body?.email === "string" ? req.body.email : null,
+                httpStatus: 400,
+            }, error);
             console.error("Create Booking Error:", error);
             return res.status(400).json({
                 success: false,
@@ -44,7 +105,25 @@ class BookingController {
                     message: "Booking continuation token is required.",
                 });
             }
+            record({
+                action: "booking.payment",
+                stage: "INITIATED",
+                status: "INFO",
+                entityType: "BOOKING",
+                entityId: bookingId,
+                description: "Booking payment link requested.",
+            });
             const result = await bookingService.initializePayment(bookingId, bookingFlowToken);
+            record({
+                action: "booking.payment",
+                stage: "PAYMENT_INITIALIZED",
+                status: "INFO",
+                entityType: "BOOKING",
+                entityId: bookingId,
+                paymentReference: result?.reference ?? null,
+                correlationId: result?.reference ?? null,
+                description: "Payment link issued; awaiting the customer's payment.",
+            });
             return res.status(200).json({
                 success: true,
                 message: "Payment initialized successfully.",
@@ -52,6 +131,12 @@ class BookingController {
             });
         }
         catch (error) {
+            recordFailure({
+                action: "booking.payment",
+                entityType: "BOOKING",
+                entityId: String(req.params.bookingId ?? "") || null,
+                httpStatus: 400,
+            }, error);
             console.error("Initialize Payment Error:", error);
             return res.status(400).json({
                 success: false,
@@ -80,7 +165,7 @@ class BookingController {
             }
             return res.status(200).json({
                 success: true,
-                data: booking,
+                data: bookingForViewer(booking, viewerFromRequest(req)),
             });
         }
         catch (error) {
@@ -202,7 +287,7 @@ class BookingController {
                 success: true,
                 message: "Booking retrieved successfully.",
                 data: {
-                    booking,
+                    booking: bookingForViewer(booking, viewerFromRequest(req)),
                 },
             });
         }
@@ -230,7 +315,7 @@ class BookingController {
             return res.status(200).json({
                 success: true,
                 message: "Booking continuation session created successfully.",
-                data: result,
+                data: result && { ...result, booking: bookingForViewer(result.booking, viewerFromRequest(req)) },
             });
         }
         catch (error) {
@@ -261,7 +346,7 @@ class BookingController {
             const result = await bookingService.resumeBookingForUser(reference, userId);
             return res.status(200).json({
                 success: true,
-                data: result,
+                data: result && { ...result, booking: bookingForViewer(result.booking, viewerFromRequest(req)) },
             });
         }
         catch (error) {
@@ -287,7 +372,7 @@ class BookingController {
             return res.status(200).json({
                 success: true,
                 data: {
-                    bookings,
+                    bookings: bookings.map((item) => bookingForViewer(item, viewerFromRequest(req))),
                 },
             });
         }
@@ -445,6 +530,7 @@ class BookingController {
             }
             const { classSessionId, healthDeclaration, bookingType, } = req.body;
             if (!classSessionId || typeof classSessionId !== "string") {
+                recordBookingValidation(userId, "Class session ID is required.", "classSessionId");
                 return res.status(400).json({
                     success: false,
                     message: "Class session ID is required.",
@@ -452,18 +538,62 @@ class BookingController {
             }
             if (bookingType !== MembershipType.GROUP &&
                 bookingType !== MembershipType.PRIVATE) {
+                recordBookingValidation(userId, "Booking type must be GROUP or PRIVATE.", "bookingType");
                 return res.status(400).json({
                     success: false,
                     message: "Booking type must be GROUP or PRIVATE.",
                 });
             }
             if (!healthDeclaration || healthDeclaration.accepted !== true) {
+                recordBookingValidation(userId, "You must accept the Health Declaration to continue.", "healthDeclaration");
                 return res.status(400).json({
                     success: false,
                     message: "You must accept the Health Declaration to continue.",
                 });
             }
+            record({
+                action: "booking",
+                stage: "INITIATED",
+                status: "INFO",
+                actorType: "MEMBER",
+                userId,
+                entityType: "CLASS_SESSION",
+                entityId: classSessionId,
+                description: "Member booking with a membership credit.",
+                metadata: { bookingType, classSessionId },
+            });
             const booking = await bookingService.bookMemberSession(userId, classSessionId, healthDeclaration, bookingType);
+            // Only now does the booking exist (created CONFIRMED, credit used).
+            bestEffort(() => {
+                setCorrelationIdIfUnset(booking.paymentReference);
+                record({
+                    action: "booking",
+                    stage: "SUCCEEDED",
+                    status: "SUCCESS",
+                    actorType: "MEMBER",
+                    userId,
+                    entityType: "BOOKING",
+                    entityId: booking.id,
+                    paymentReference: booking.paymentReference,
+                    correlationId: booking.paymentReference,
+                    description: "Class booked with a membership credit.",
+                    metadata: {
+                        bookingType,
+                        bookingStatus: booking.bookingStatus,
+                        classSessionId,
+                        memberMembershipId: booking.memberMembershipId,
+                    },
+                });
+                recordCreditChange({
+                    action: "credit.deduction",
+                    memberMembershipId: booking.memberMembershipId,
+                    bookingId: booking.id,
+                    actor: actorFromRequest(req),
+                    credits: 1,
+                    dedupeKey: `credit.deduction:booking:${booking.id}`,
+                    correlationId: booking.paymentReference,
+                });
+            });
             return res.status(201).json({
                 success: true,
                 message: "Class session booked successfully.",
@@ -471,6 +601,14 @@ class BookingController {
             });
         }
         catch (error) {
+            recordFailure({
+                action: "booking",
+                actorType: "MEMBER",
+                userId: req.user?.userId ?? null,
+                entityType: "CLASS_SESSION",
+                entityId: typeof req.body?.classSessionId === "string" ? req.body.classSessionId : null,
+                httpStatus: 400,
+            }, error);
             console.error("Book Member Session Error:", error);
             return res.status(400).json({
                 success: false,
@@ -547,13 +685,39 @@ class BookingController {
                     message: "Booking ID is required.",
                 });
             }
+            record({
+                action: "booking.cancellation",
+                stage: "INITIATED",
+                status: "INFO",
+                actorType: "MEMBER",
+                userId,
+                entityType: "BOOKING",
+                entityId: bookingId,
+                description: "Member requested a cancellation.",
+            });
             const result = await bookingService.cancelBooking(bookingId, userId);
+            recordCancellationSucceeded({
+                actor: actorFromRequest(req),
+                userId,
+                bookingId,
+                paymentReference: result?.booking?.paymentReference ?? null,
+                memberMembershipId: result?.booking?.memberMembershipId ?? null,
+                creditRestored: result?.creditRestored === true,
+            });
             return res.status(200).json({
                 success: true,
                 ...result,
             });
         }
         catch (error) {
+            recordFailure({
+                action: "booking.cancellation",
+                actorType: "MEMBER",
+                userId: req.user?.userId ?? null,
+                entityType: "BOOKING",
+                entityId: String(req.params.bookingId ?? "") || null,
+                httpStatus: 400,
+            }, error);
             console.error("Cancel booking error:", error);
             return res.status(400).json({
                 success: false,

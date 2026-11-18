@@ -223,10 +223,19 @@ async initiateUpgrade(
    * check stops it from being upgraded (and its credits carried)
    * a second time.
    */
+  /*
+   * GROUP and PRIVATE are separate categories: only a membership of the
+   * target plan's type can be upgraded. Moving to the other category is
+   * a new purchase (POST /api/memberships/purchase), which never carries
+   * credits across.
+   */
+  const sameCategory = { membership: { type: targetMembership.type } };
+
   let currentMembership = await prisma.memberMembership.findFirst({
     where: {
       userId,
       status: MembershipStatus.ACTIVE,
+      ...sameCategory,
       OR: [
         { expiryDate: null },
         { expiryDate: { gt: now } },
@@ -242,11 +251,11 @@ async initiateUpgrade(
 
   /*
    * If there is no valid membership, use the latest
-   * membership record, even if it has expired.
+   * membership record of this category, even if it has expired.
    */
   if (!currentMembership) {
     currentMembership = await prisma.memberMembership.findFirst({
-      where: { userId },
+      where: { userId, ...sameCategory },
       include: {
         membership: true,
       },
@@ -257,6 +266,18 @@ async initiateUpgrade(
   }
 
   if (!currentMembership) {
+    const otherCategory = await prisma.memberMembership.findFirst({
+      where: { userId },
+      select: { id: true },
+    });
+
+    if (otherCategory) {
+      const label = targetMembership.type === "PRIVATE" ? "Private" : "Group";
+      throw new Error(
+        `Group and Private are separate memberships. You don't have a ${label} membership to upgrade; please purchase this plan as a new membership.`
+      );
+    }
+
     throw new Error(
       "No previous membership found. Please purchase a new membership first."
     );
@@ -379,17 +400,35 @@ const newCreditsTotal =
 
 async initiateRenewal(
   userId: string,
-  membershipId?: string
+  membershipId?: string,
+  /**
+   * Optional: the member's own MemberMembership record being renewed
+   * (from GET /api/bookings/my/credits `memberships[].memberMembershipId`).
+   * It identifies the category unambiguously when the member holds both
+   * a GROUP and a PRIVATE membership.
+   */
+  memberMembershipId?: string
 ) {
   if (!userId) {
     throw new Error("Authentication is required.");
   }
 
   /*
-   * Find the member's latest membership.
+   * The membership being renewed: the one named by memberMembershipId
+   * (it must be this member's), else the member's latest membership.
    */
-  const currentMembership =
-    await prisma.memberMembership.findFirst({
+  const currentMembership = memberMembershipId
+    ? await prisma.memberMembership.findFirst({
+        where: {
+          id: memberMembershipId,
+          userId,
+        },
+
+        include: {
+          membership: true,
+        },
+      })
+    : await prisma.memberMembership.findFirst({
       where: {
         userId,
       },
@@ -403,10 +442,41 @@ async initiateRenewal(
       },
     });
 
+  if (memberMembershipId && !currentMembership) {
+    throw new Error(
+      "Membership to renew was not found."
+    );
+  }
+
   if (!currentMembership && !membershipId) {
     throw new Error(
       "No membership found to renew."
     );
+  }
+
+  /*
+   * Without a plan or record, "the latest membership" is ambiguous for a
+   * member holding both categories: ask which one instead of guessing.
+   */
+  if (!membershipId && !memberMembershipId) {
+    const now = new Date();
+    const activeTypes = await prisma.memberMembership.findMany({
+      where: {
+        userId,
+        status: MembershipStatus.ACTIVE,
+        OR: [
+          { expiryDate: null },
+          { expiryDate: { gt: now } },
+        ],
+      },
+      select: { membership: { select: { type: true } } },
+    });
+
+    if (new Set(activeTypes.map((row) => row.membership.type)).size > 1) {
+      throw new Error(
+        "You have both a Group and a Private membership. Please choose which membership to renew."
+      );
+    }
   }
 
   /*
@@ -427,6 +497,17 @@ async initiateRenewal(
   if (!targetMembership) {
     throw new Error(
       "Membership to renew was not found."
+    );
+  }
+
+  // A renewal stays in the renewed membership's category.
+  if (
+    memberMembershipId &&
+    currentMembership &&
+    currentMembership.membership.type !== targetMembership.type
+  ) {
+    throw new Error(
+      "Group and Private are separate memberships. A renewal must use a plan of the same type; purchase the other type as a new membership."
     );
   }
 

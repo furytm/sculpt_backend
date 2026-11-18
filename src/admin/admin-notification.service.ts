@@ -9,6 +9,8 @@ type CreateAdminNotificationInput = {
   title: string;
   message: string;
   data?: Prisma.InputJsonValue;
+  /** Admin page the push opens. Defaults to "/admin" (existing behaviour). */
+  url?: string;
 };
 
 type PushPayload = {
@@ -16,7 +18,10 @@ type PushPayload = {
   body: string;
   type: string;
   data?: Prisma.InputJsonValue;
+  url?: string;
 };
+
+const DEFAULT_PUSH_URL = "/admin";
 
 type PushSubscriptionInput = {
   endpoint: string;
@@ -274,6 +279,7 @@ class AdminNotificationService {
         body: input.message,
         type: input.type,
         ...(input.data !== undefined ? { data: input.data } : {}),
+        ...(input.url ? { url: input.url } : {}),
       });
     }
 
@@ -313,7 +319,7 @@ class AdminNotificationService {
             JSON.stringify({
               ...payload,
               notificationId: notification.id,
-              url: "/admin",
+              url: payload.url ?? DEFAULT_PUSH_URL,
             })
           );
 

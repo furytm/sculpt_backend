@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { UserRole } from "@prisma/client";
 
-/** Member self-service routes: MEMBER accounts only. */
+/** Member self-service routes (email change, Health & Safety): MEMBER accounts only. */
 export default function requireMember(req: Request, res: Response, next: NextFunction) {
   if (!req.user) {
     return res.status(401).json({
@@ -14,7 +14,7 @@ export default function requireMember(req: Request, res: Response, next: NextFun
     return res.status(403).json({
       success: false,
       code: "MEMBER_ONLY",
-      message: "Only member accounts can change their email here.",
+      message: "This is only available to member accounts.",
     });
   }
 

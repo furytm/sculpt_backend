@@ -13,8 +13,14 @@ import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./config/swagger.js";
 import journalRoutes from './journal/journal.routes.js';
 import publicJournalRoutes from './journal/journal.public.routes.js';
+import { requestContextMiddleware, REQUEST_ID_HEADER } from "./observability/request-context.js";
+import { errorHandler } from "./observability/error-handler.js";
+import memberHealthSafetyRoutes from "./health-safety/member-health-safety.routes.js";
 dotenv.config();
 const app = express();
+// A request ID for every request (X-Request-Id response header), and the
+// request context used by structured and activity logging.
+app.use(requestContextMiddleware);
 // =====================================================
 // PAYMISH WEBHOOK
 // Must receive the raw body for HMAC signature verification
@@ -31,6 +37,8 @@ app.use(cookieParser());
 app.use(cors({
     origin: true,
     credentials: true,
+    // Lets the browser read the request ID, for support.
+    exposedHeaders: [REQUEST_ID_HEADER],
 }));
 // Routes
 app.use("/api/auth", authRoutes);
@@ -42,5 +50,10 @@ app.use("/api/admin", adminRoutes);
 app.use('/api/journal', publicJournalRoutes);
 app.use("/api/membership-activation", membershipActivationRoutes);
 app.use('/api/admin/journal', journalRoutes);
+// Member self-service (signed-in members).
+app.use("/api/members", memberHealthSafetyRoutes);
+// Last: errors no route handled (malformed JSON, escaped exceptions)
+// get a JSON response with the request ID instead of Express's HTML page.
+app.use(errorHandler);
 export default app;
 //# sourceMappingURL=app.js.map

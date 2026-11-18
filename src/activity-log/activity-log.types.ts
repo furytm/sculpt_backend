@@ -41,6 +41,8 @@ export type ActivityAction =
   | "admin.session.cancel"
   | "admin.session.reopen"
   | "admin.session.add_offline_attendee"
+  // Health & Safety (never the notes).
+  | "health_safety.update"
   // Errors no route handled.
   | "system.unhandled_error";
 
@@ -64,7 +66,9 @@ export type EntityType =
   | "BOOKING"
   | "MEMBER_MEMBERSHIP"
   | "USER"
-  | "CLASS_SESSION";
+  | "CLASS_SESSION"
+  | "HEALTH_SAFETY_FORM"
+  | "HEALTH_SAFETY_REVISION";
 
 export const ENTITY_TYPES: readonly EntityType[] = [
   "MEMBERSHIP_PURCHASE",
@@ -72,6 +76,8 @@ export const ENTITY_TYPES: readonly EntityType[] = [
   "MEMBER_MEMBERSHIP",
   "USER",
   "CLASS_SESSION",
+  "HEALTH_SAFETY_FORM",
+  "HEALTH_SAFETY_REVISION",
 ];
 
 export const ACTOR_TYPES: readonly ActorType[] = ["MEMBER", "GUEST", "ADMIN", "SYSTEM", "WEBHOOK"];
@@ -150,4 +156,13 @@ export const ALLOWED_METADATA_KEYS: ReadonlySet<string> = new Set([
   // Phase 2: request outcome (route template, never the query string).
   "route",
   "method",
+  // Health & Safety: identifiers and flags only, never notes.
+  "formId",
+  "revisionId",
+  "declarationKind",
+  "notesProvided",
+  // Health & Safety propagation to upcoming bookings: counts and flags only.
+  "upcomingBookingsUpdated",
+  "declarationFormsCreated",
+  "declarationChanged",
 ]);

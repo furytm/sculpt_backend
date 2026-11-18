@@ -11,6 +11,7 @@ import adminSessionController from "./admin-session.controller.js";
 import adminNotificationController from "./admin-notification.controller.js";
 import { adminAudit } from "./admin-activity-audit.js";
 import { activityLogController } from "../activity-log/activity-log.controller.js";
+import { healthSafetyController, adminMembershipPlansController } from "../health-safety/health-safety.controller.js";
 
 const router = Router();
 
@@ -141,6 +142,33 @@ router.get(
   authenticate,
   requireAdmin,
   activityLogController.forMember
+);
+
+// =====================================================
+// HEALTH & SAFETY (admin only)
+// =====================================================
+router.get(
+  "/health-safety",
+  authenticate,
+  requireAdmin,
+  healthSafetyController.adminList
+);
+
+router.get(
+  "/health-safety/revisions",
+  authenticate,
+  requireAdmin,
+  healthSafetyController.adminRevisions
+);
+
+// =====================================================
+// MEMBERSHIP PLANS (admin only): every plan, active and inactive
+// =====================================================
+router.get(
+  "/memberships",
+  authenticate,
+  requireAdmin,
+  adminMembershipPlansController.list
 );
 router.post(
   "/resend-registration-email",
