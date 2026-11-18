@@ -1,6 +1,24 @@
 import { Router } from "express";
 import { membershipActivationController } from "./membership-activation.controller.js";
+import { auditAction } from "../activity-log/activity-audit.middleware.js";
 const router = Router();
+// Activity auditing (observes only). Public routes: anonymous failures
+// are capped at one event a minute so they cannot flood the log.
+const activationAudit = {
+    verify: auditAction({
+        action: "membership.activation",
+        description: "Activation link checked",
+        capAnonymousFailures: true,
+    }),
+    complete: auditAction({
+        action: "membership.activation",
+        description: "Membership activation completed",
+        entityType: "USER",
+        entityIdFromResponse: (payload) => payload?.user?.id ?? null,
+        subjectFromResponse: (payload) => payload?.user?.id ?? null,
+        capAnonymousFailures: true,
+    }),
+};
 /**
  * @openapi
  * /api/membership-activation/verify:
@@ -27,7 +45,7 @@ const router = Router();
  *       404:
  *         description: Booking or membership not found
  */
-router.post("/verify", membershipActivationController.verify);
+router.post("/verify", activationAudit.verify, membershipActivationController.verify);
 /**
  * @openapi
  * /api/membership-activation/complete:
@@ -54,7 +72,7 @@ router.post("/verify", membershipActivationController.verify);
  *       404:
  *         description: Booking or membership not found
  */
-router.post("/complete", membershipActivationController.complete);
+router.post("/complete", activationAudit.complete, membershipActivationController.complete);
 router.post("/resend", membershipActivationController.resend);
 export default router;
 //# sourceMappingURL=membership-activation.route.js.map

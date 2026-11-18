@@ -1,6 +1,7 @@
 import prisma from "../config/prisma.js";
 import webpush from "web-push";
 import { Prisma } from "@prisma/client";
+const DEFAULT_PUSH_URL = "/admin";
 export class AdminNotificationServiceError extends Error {
     statusCode;
     constructor(message, statusCode) {
@@ -186,6 +187,7 @@ class AdminNotificationService {
                 body: input.message,
                 type: input.type,
                 ...(input.data !== undefined ? { data: input.data } : {}),
+                ...(input.url ? { url: input.url } : {}),
             });
         }
         return { created, pushSent };
@@ -216,7 +218,7 @@ class AdminNotificationService {
                     }, JSON.stringify({
                         ...payload,
                         notificationId: notification.id,
-                        url: "/admin",
+                        url: payload.url ?? DEFAULT_PUSH_URL,
                     }));
                     sent++;
                 }

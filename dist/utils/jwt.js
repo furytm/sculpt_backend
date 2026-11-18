@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import jwt from "jsonwebtoken";
 function getAccessSecret() {
     const secret = process.env.JWT_ACCESS_SECRET;
@@ -21,6 +22,10 @@ export function generateAccessToken(payload) {
 export function generateRefreshToken(payload) {
     return jwt.sign(payload, getRefreshSecret(), {
         expiresIn: "30d",
+        // A random ID per token: two tokens for the same user issued in
+        // the same second would otherwise be identical, and RefreshToken.token
+        // is unique.
+        jwtid: randomUUID(),
     });
 }
 export function verifyAccessToken(token) {

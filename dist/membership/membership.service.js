@@ -4,6 +4,9 @@ import bookingService from "../booking/booking.service.js";
 import { generateMembershipNumber } from "../utils/membership-number.js";
 import paymentService from "../payment/payment.service.js";
 import { adminNotificationService } from "../admin/admin-notification.service.js";
+import activityLog from "../activity-log/activity-log.service.js";
+import { describeError } from "../observability/errors.js";
+import { getRequestContext, setCorrelationIdIfUnset } from "../observability/request-context.js";
 import crypto from "crypto";
 /**
  * Reconciliation states for a FAILED purchase that received a
@@ -142,10 +145,18 @@ class MembershipService {
          * check stops it from being upgraded (and its credits carried)
          * a second time.
          */
+        /*
+         * GROUP and PRIVATE are separate categories: only a membership of the
+         * target plan's type can be upgraded. Moving to the other category is
+         * a new purchase (POST /api/memberships/purchase), which never carries
+         * credits across.
+         */
+        const sameCategory = { membership: { type: targetMembership.type } };
         let currentMembership = await prisma.memberMembership.findFirst({
             where: {
                 userId,
                 status: MembershipStatus.ACTIVE,
+                ...sameCategory,
                 OR: [
                     { expiryDate: null },
                     { expiryDate: { gt: now } },
@@ -160,11 +171,11 @@ class MembershipService {
         });
         /*
          * If there is no valid membership, use the latest
-         * membership record, even if it has expired.
+         * membership record of this category, even if it has expired.
          */
         if (!currentMembership) {
             currentMembership = await prisma.memberMembership.findFirst({
-                where: { userId },
+                where: { userId, ...sameCategory },
                 include: {
                     membership: true,
                 },
@@ -174,6 +185,14 @@ class MembershipService {
             });
         }
         if (!currentMembership) {
+            const otherCategory = await prisma.memberMembership.findFirst({
+                where: { userId },
+                select: { id: true },
+            });
+            if (otherCategory) {
+                const label = targetMembership.type === "PRIVATE" ? "Private" : "Group";
+                throw new Error(`Group and Private are separate memberships. You don't have a ${label} membership to upgrade; please purchase this plan as a new membership.`);
+            }
             throw new Error("No previous membership found. Please purchase a new membership first.");
         }
         if (currentMembership.membershipId === targetMembership.id) {
@@ -259,26 +278,68 @@ class MembershipService {
             reusedPendingPurchase: false,
         };
     }
-    async initiateRenewal(userId, membershipId) {
+    async initiateRenewal(userId, membershipId, 
+    /**
+     * Optional: the member's own MemberMembership record being renewed
+     * (from GET /api/bookings/my/credits `memberships[].memberMembershipId`).
+     * It identifies the category unambiguously when the member holds both
+     * a GROUP and a PRIVATE membership.
+     */
+    memberMembershipId) {
         if (!userId) {
             throw new Error("Authentication is required.");
         }
         /*
-         * Find the member's latest membership.
+         * The membership being renewed: the one named by memberMembershipId
+         * (it must be this member's), else the member's latest membership.
          */
-        const currentMembership = await prisma.memberMembership.findFirst({
-            where: {
-                userId,
-            },
-            include: {
-                membership: true,
-            },
-            orderBy: {
-                createdAt: "desc",
-            },
-        });
+        const currentMembership = memberMembershipId
+            ? await prisma.memberMembership.findFirst({
+                where: {
+                    id: memberMembershipId,
+                    userId,
+                },
+                include: {
+                    membership: true,
+                },
+            })
+            : await prisma.memberMembership.findFirst({
+                where: {
+                    userId,
+                },
+                include: {
+                    membership: true,
+                },
+                orderBy: {
+                    createdAt: "desc",
+                },
+            });
+        if (memberMembershipId && !currentMembership) {
+            throw new Error("Membership to renew was not found.");
+        }
         if (!currentMembership && !membershipId) {
             throw new Error("No membership found to renew.");
+        }
+        /*
+         * Without a plan or record, "the latest membership" is ambiguous for a
+         * member holding both categories: ask which one instead of guessing.
+         */
+        if (!membershipId && !memberMembershipId) {
+            const now = new Date();
+            const activeTypes = await prisma.memberMembership.findMany({
+                where: {
+                    userId,
+                    status: MembershipStatus.ACTIVE,
+                    OR: [
+                        { expiryDate: null },
+                        { expiryDate: { gt: now } },
+                    ],
+                },
+                select: { membership: { select: { type: true } } },
+            });
+            if (new Set(activeTypes.map((row) => row.membership.type)).size > 1) {
+                throw new Error("You have both a Group and a Private membership. Please choose which membership to renew.");
+            }
         }
         /*
          * Renewal always uses the member's existing
@@ -293,6 +354,12 @@ class MembershipService {
         });
         if (!targetMembership) {
             throw new Error("Membership to renew was not found.");
+        }
+        // A renewal stays in the renewed membership's category.
+        if (memberMembershipId &&
+            currentMembership &&
+            currentMembership.membership.type !== targetMembership.type) {
+            throw new Error("Group and Private are separate memberships. A renewal must use a plan of the same type; purchase the other type as a new membership.");
         }
         if (!targetMembership.isActive) {
             throw new Error("This membership is no longer available.");
@@ -431,7 +498,59 @@ class MembershipService {
                 : null,
         };
     }
+    /**
+     * Completes a paid membership purchase (unchanged behaviour: see
+     * runCompleteMembershipPurchase) and records the outcome in the
+     * activity log. Errors are rethrown exactly as before.
+     */
     async completeMembershipPurchase(paymentReference, options = {}) {
+        const source = getRequestContext()?.path ?? "system";
+        // The payment reference identifies this operation. Claim it for the
+        // request only if nothing is tracked yet (registration, login, admin
+        // reconciliation); the callback and webhook have already set the same
+        // reference. The events below always carry it explicitly, so another
+        // payment's correlation ID is never overwritten.
+        setCorrelationIdIfUnset(paymentReference);
+        const correlationId = paymentReference || null;
+        try {
+            const result = await this.runCompleteMembershipPurchase(paymentReference, options);
+            activityLog.record({
+                action: "membership.purchase_completion",
+                stage: "SUCCEEDED",
+                status: "SUCCESS",
+                paymentReference,
+                correlationId,
+                description: "Membership purchase completed.",
+                // The callback and webhook can both complete the same purchase.
+                dedupeKey: `membership.purchase_completion:${paymentReference}`,
+                metadata: { source },
+            });
+            return result;
+        }
+        catch (error) {
+            const paidFailed = error instanceof PaidFailedPurchaseError;
+            const description = describeError(error);
+            activityLog.record({
+                action: "membership.purchase_completion",
+                stage: paidFailed ? "WARNING" : "FAILED",
+                status: paidFailed ? "WARNING" : "FAILURE",
+                paymentReference: paymentReference || null,
+                correlationId,
+                errorCode: paidFailed ? "PAID_FAILED_PURCHASE" : description.code,
+                errorMessage: description.logMessage,
+                description: paidFailed
+                    ? "Payment received for a cancelled or superseded purchase."
+                    : "Membership purchase completion failed.",
+                dedupeKey: paidFailed
+                    ? `membership.purchase_completion.paid_failed:${paymentReference}`
+                    : null,
+                metadata: { source, errorKind: description.kind },
+            });
+            throw error;
+        }
+    }
+    /** The original completion logic, unchanged. */
+    async runCompleteMembershipPurchase(paymentReference, options = {}) {
         if (!paymentReference) {
             throw new Error("Payment reference is required.");
         }

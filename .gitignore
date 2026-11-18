@@ -5,6 +5,4 @@ claude
 windsurf
 /src/generated/prisma
 config.bat
-.env
-.env.*
 !.env.example

@@ -339,13 +339,19 @@ async renewMembership(req: Request, res: Response) {
     }
 
     const { membershipId } = req.body;
+    // Optional and additive: which of the member's memberships to renew.
+    const memberMembershipId =
+      typeof req.body?.memberMembershipId === "string" && req.body.memberMembershipId
+        ? req.body.memberMembershipId
+        : undefined;
 
     recordInitiated("membership.renewal", userId, { membershipId });
 
     const result =
       await membershipService.initiateRenewal(
         userId,
-        membershipId
+        membershipId,
+        memberMembershipId
       );
 
     recordPaymentInitialized("membership.renewal", userId, result, { membershipId });

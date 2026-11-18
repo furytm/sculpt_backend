@@ -169,7 +169,53 @@ model HealthSafetyForm {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  revisions HealthSafetyRevision[]
+
   @@index([userId])
+}
+
+// Immutable history of Health & Safety declarations. Rows are only ever
+// inserted (never updated or deleted by the application).
+//
+// kind = BOOKING: a snapshot of a booking's HealthSafetyForm (the form
+//   stays the current declaration). formId becomes null if the booking
+//   and form are deleted; bookingId is kept as a plain snapshot.
+// kind = MEMBER: a member-level declaration made without a booking (a
+//   member with no booking has no HealthSafetyForm; none is invented).
+//
+// Deleting the member's account deletes their revisions, like their
+// HealthSafetyForms (existing cascade convention for health data).
+model HealthSafetyRevision {
+  id String @id @default(cuid())
+
+  // BOOKING | MEMBER
+  kind String
+
+  formId String?
+  form   HealthSafetyForm? @relation(fields: [formId], references: [id], onDelete: SetNull)
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Snapshot only (no relation): survives the booking's deletion.
+  bookingId String?
+
+  accepted           Boolean
+  notes              String?
+  declarationVersion String?
+  acceptedAt         DateTime?
+  submittedAt        DateTime?
+
+  // BACKFILL (migration) | BASELINE (state before a first update) | MEMBER_UPDATE
+  source      String
+  // SYSTEM | MEMBER
+  actorType   String
+  actorUserId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([formId, createdAt])
+  @@index([userId, kind, createdAt])
 }
 
 model Schedule {
@@ -332,6 +378,7 @@ model User {
   passwordResetTokens     PasswordResetToken[]
   emailChangeRequest      EmailChangeRequest?
   activityLogs            MemberActivityLog[]
+  healthSafetyRevisions   HealthSafetyRevision[]
 
   memberSchedules    MemberSchedule[]
   memberships         MemberMembership[]

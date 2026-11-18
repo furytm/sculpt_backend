@@ -190,4 +190,73 @@ export async function sendVerificationEmail(email, fullName, verificationUrl) {
         throw new Error("Unable to send verification email.");
     }
 }
+/** "jane.doe@example.com" becomes "j***@example.com". */
+function maskEmail(email) {
+    const [local, domain] = email.split("@");
+    if (!domain)
+        return "***";
+    return `${local.slice(0, 1)}***@${domain}`;
+}
+export async function sendEmailChangeCodeEmail({ to, fullName, code, purpose, newEmail, expiresInMinutes, }) {
+    const safeName = escapeHtml(fullName);
+    const safeCode = escapeHtml(code);
+    const safeNewEmail = escapeHtml(newEmail);
+    const intro = purpose === "current"
+        ? `<p>We received a request to change the email address on your Sculpt LAB account to <strong>${safeNewEmail}</strong>.</p>
+         <p>Enter this code to confirm it's you:</p>`
+        : `<p>Enter this code to confirm this email address for your Sculpt LAB account:</p>`;
+    const warning = purpose === "current"
+        ? `<p>If you didn't ask for this, don't share this code. Your email has not been changed. We recommend changing your password.</p>`
+        : `<p>If you didn't ask for this, you can ignore this email.</p>`;
+    const { error } = await resend.emails.send({
+        from: "Sculpt LAB <enquiriess@sculptlab.com.ng>",
+        to,
+        subject: purpose === "current"
+            ? "Confirm your Sculpt LAB email change"
+            : "Verify your new Sculpt LAB email address",
+        html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.7;color:#222;max-width:600px;margin:auto;">
+        <p>Hello ${safeName},</p>
+
+        ${intro}
+
+        <p style="font-size:28px;font-weight:bold;letter-spacing:6px;">${safeCode}</p>
+
+        <p>This code expires in ${expiresInMinutes} minutes and can only be used once.</p>
+
+        ${warning}
+
+        <p>Sculpt LAB</p>
+      </div>
+    `,
+    });
+    if (error) {
+        console.error("Email change code email error:", error);
+        throw new Error("Unable to send email change code.");
+    }
+}
+export async function sendEmailChangedNoticeEmail({ to, fullName, newEmail, }) {
+    const safeName = escapeHtml(fullName);
+    const safeNewEmail = escapeHtml(maskEmail(newEmail));
+    const { error } = await resend.emails.send({
+        from: "Sculpt LAB <enquiriess@sculptlab.com.ng>",
+        to,
+        subject: "Your Sculpt LAB email address was changed",
+        html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.7;color:#222;max-width:600px;margin:auto;">
+        <p>Hello ${safeName},</p>
+
+        <p>The email address on your Sculpt LAB account was changed to <strong>${safeNewEmail}</strong>. You'll now sign in with the new address.</p>
+
+        <p>If you didn't make this change, please contact Sculpt LAB immediately.</p>
+
+        <p>Sculpt LAB</p>
+      </div>
+    `,
+    });
+    if (error) {
+        console.error("Email changed notice error:", error);
+        throw new Error("Unable to send email changed notice.");
+    }
+}
 //# sourceMappingURL=mailer.js.map

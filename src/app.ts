@@ -15,6 +15,7 @@ import journalRoutes from './journal/journal.routes.js';
 import publicJournalRoutes from './journal/journal.public.routes.js';
 import { requestContextMiddleware, REQUEST_ID_HEADER } from "./observability/request-context.js";
 import { errorHandler } from "./observability/error-handler.js";
+import memberHealthSafetyRoutes from "./health-safety/member-health-safety.routes.js";
 
 
 
@@ -72,6 +73,8 @@ app.use(
   membershipActivationRoutes
 );
 app.use('/api/admin/journal', journalRoutes);
+// Member self-service (signed-in members).
+app.use("/api/members", memberHealthSafetyRoutes);
 
 // Last: errors no route handled (malformed JSON, escaped exceptions)
 // get a JSON response with the request ID instead of Express's HTML page.
