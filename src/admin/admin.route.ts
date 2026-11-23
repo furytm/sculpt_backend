@@ -12,6 +12,7 @@ import adminNotificationController from "./admin-notification.controller.js";
 import { adminAudit } from "./admin-activity-audit.js";
 import { activityLogController } from "../activity-log/activity-log.controller.js";
 import { healthSafetyController, adminMembershipPlansController } from "../health-safety/health-safety.controller.js";
+import { adminCreditsController } from "./admin-credits.controller.js";
 
 const router = Router();
 
@@ -184,6 +185,24 @@ router.post(
   requireAdmin,
   adminAudit.addOfflineAttendee,
   adminSessionController.addOfflineAttendee
+);
+
+// A registered member (not an offline attendee), with or without a credit.
+router.post(
+  "/sessions/:sessionId/members",
+  authenticate,
+  requireAdmin,
+  adminAudit.addMemberToSession,
+  adminSessionController.addMemberToSession
+);
+
+// Remove unused credits from one of a member's memberships.
+router.post(
+  "/members/:memberId/memberships/:memberMembershipId/credits/remove",
+  authenticate,
+  requireAdmin,
+  adminAudit.removeCredits,
+  adminCreditsController.removeCredits
 );
 
 router.get(

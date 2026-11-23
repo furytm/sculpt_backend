@@ -24,6 +24,7 @@ export type ActivityAction =
   | "credit.deduction"
   | "credit.restoration"
   | "credit.admin_assignment"
+  | "credit.admin_removal"
   | "membership.activation"
   // Phase 2: admin actions (actor = the admin, subject = the member).
   | "admin.offline_payment.confirm"
@@ -41,6 +42,8 @@ export type ActivityAction =
   | "admin.session.cancel"
   | "admin.session.reopen"
   | "admin.session.add_offline_attendee"
+  | "admin.session.add_member"
+  | "admin.membership.remove_credits"
   // Health & Safety (never the notes).
   | "health_safety.update"
   // Errors no route handled.
@@ -165,4 +168,9 @@ export const ALLOWED_METADATA_KEYS: ReadonlySet<string> = new Set([
   "upcomingBookingsUpdated",
   "declarationFormsCreated",
   "declarationChanged",
+  // Admin credit removal and admin member bookings (numbers and identifiers only).
+  "creditsRemoved",
+  "previousCreditsTotal",
+  "previousCreditsRemaining",
+  "creditMode",
 ]);

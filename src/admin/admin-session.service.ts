@@ -1,12 +1,26 @@
 import prisma from "../config/prisma.js";
 import crypto from "crypto";
 
+/** A refused offline-attendee request, with its HTTP status and code. */
+export class OfflineAttendeeError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "OfflineAttendeeError";
+  }
+}
+
 import {
   BookingStatus,
   MembershipType,
   PaymentMethod,
   PaymentStatus,
+  UserRole,
 } from "@prisma/client";
+import bookingService from "../booking/booking.service.js";
 
 class AdminSessionService {
 
@@ -121,8 +135,15 @@ class AdminSessionService {
   userId: true,
   memberMembershipId: true,
   createdAt: true,
+  // The catalogue plan on the booking: for offline attendees, the
+  // plan/package the admin recorded they paid for (no membership).
+  membershipId: true,
+  amount: true,
+  paymentMethod: true,
   membership: {
     select: {
+      id: true,
+      name: true,
       type: true,
     },
   },
@@ -232,8 +253,14 @@ bookings: {
     userId: true,
     memberMembershipId: true,
     createdAt: true,
+    // The catalogue plan on the booking (see getSessions).
+    membershipId: true,
+    amount: true,
+    paymentMethod: true,
     membership: {
       select: {
+        id: true,
+        name: true,
         type: true,
       },
     },
@@ -314,35 +341,70 @@ availableSlots,
   }
 
   
+/**
+ * Record a walk-in or offline-paid attendee who is NOT a registered
+ * member. Booking-only: no User, MemberMembership, credits, activation
+ * or membership purchase is created or touched.
+ *
+ * `membershipId` is a catalogue plan used only as the attendee's class
+ * type and rate: Booking.membershipId is required, and every capacity
+ * count reads the GROUP/PRIVATE type through it. Nothing is assigned
+ * to anyone.
+ *
+ * Rules (checked with the session row locked, so two admins can't take
+ * the last seat or add the same person twice):
+ * - the session is OPEN, its schedule active, and the class has not
+ *   ended (Lagos time); walk-ins can still be added up to the end;
+ * - always PAID and CONFIRMED, so the attendee holds a seat;
+ * - the same GROUP/PRIVATE capacity rules as member bookings;
+ * - at least an email or a phone number, and the same person (email,
+ *   or phone) can't be added twice to the session;
+ * - an email that belongs to a registered member is refused: use the
+ *   add-member action so the booking is linked to their account.
+ */
 async addOfflineAttendee(
   sessionId: string,
   data: {
     fullName: string;
-    email?: string;
-    phone?: string;
+    email?: string | null;
+    phone?: string | null;
     membershipId: string;
     amount?: number;
-    paymentStatus?: "PAID" | "PENDING";
+    bookingType?: "GROUP" | "PRIVATE";
   }
 ) {
   const fullName = data.fullName?.trim();
   const email = data.email?.trim().toLowerCase() || null;
   const phone = data.phone?.trim() || null;
+  const phoneDigits = phone ? phone.replace(/\D/g, "") : null;
 
   if (!fullName) {
-    throw new Error("Attendee name is required.");
+    throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Attendee name is required.");
   }
 
   if (!sessionId) {
-    throw new Error("Session ID is required.");
+    throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Session ID is required.");
   }
 
   if (!data.membershipId) {
-    throw new Error("Membership ID is required.");
+    throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Class type/rate is required.");
   }
 
-  const paymentStatus =
-    data.paymentStatus ?? "PAID";
+  if (!email && !phone) {
+    throw new OfflineAttendeeError(
+      400,
+      "VALIDATION_ERROR",
+      "Enter the attendee's email or phone number."
+    );
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Enter a valid email address.");
+  }
+
+  if (phone && (!phoneDigits || phoneDigits.length < 7)) {
+    throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Enter a valid phone number.");
+  }
 
   const result = await prisma.$transaction(async (tx) => {
     await tx.$queryRaw`
@@ -358,15 +420,23 @@ async addOfflineAttendee(
     });
 
     if (!session) {
-      throw new Error("Class session not found.");
+      throw new OfflineAttendeeError(404, "SESSION_NOT_FOUND", "Class session not found.");
     }
 
     if (session.status !== "OPEN") {
-      throw new Error("This class session is not open.");
+      throw new OfflineAttendeeError(409, "SESSION_NOT_OPEN", "This class session is not open.");
     }
 
     if (!session.schedule.isActive) {
-      throw new Error("This class schedule is not active.");
+      throw new OfflineAttendeeError(409, "SESSION_NOT_OPEN", "This class schedule is not active.");
+    }
+
+    if (this.getSessionEndAt(session.sessionDate, session.schedule.endTime) <= new Date()) {
+      throw new OfflineAttendeeError(
+        409,
+        "SESSION_ENDED",
+        "This class has already ended. Attendees can be added until the class ends."
+      );
     }
 
     const membership = await tx.membership.findUnique({
@@ -374,7 +444,35 @@ async addOfflineAttendee(
     });
 
     if (!membership || !membership.isActive) {
-      throw new Error("An active membership is required.");
+      throw new OfflineAttendeeError(
+        400,
+        "VALIDATION_ERROR",
+        "Select an active class type/rate."
+      );
+    }
+
+    if (data.bookingType && data.bookingType !== membership.type) {
+      throw new OfflineAttendeeError(
+        400,
+        "VALIDATION_ERROR",
+        `The selected rate is for ${membership.type.toLowerCase()} classes, not ${data.bookingType.toLowerCase()}.`
+      );
+    }
+
+    // Registered members are booked against their account instead.
+    if (email) {
+      const registered = await tx.user.findFirst({
+        where: { email: { equals: email, mode: "insensitive" } },
+        select: { id: true },
+      });
+
+      if (registered) {
+        throw new OfflineAttendeeError(
+          409,
+          "REGISTERED_MEMBER",
+          "This email belongs to a registered member. Add them as a member instead of an offline attendee."
+        );
+      }
     }
 
     const confirmed = await tx.booking.findMany({
@@ -388,9 +486,26 @@ async addOfflineAttendee(
         },
       },
       select: {
+        email: true,
+        phone: true,
         membership: { select: { type: true } },
       },
     });
+
+    // The same person can't hold two seats in one session.
+    const duplicate = confirmed.some(
+      (booking) =>
+        (email && booking.email?.trim().toLowerCase() === email) ||
+        (phoneDigits && booking.phone && booking.phone.replace(/\D/g, "") === phoneDigits)
+    );
+
+    if (duplicate) {
+      throw new OfflineAttendeeError(
+        409,
+        "DUPLICATE_ATTENDEE",
+        "This attendee is already booked for this session."
+      );
+    }
 
     const groupCount = confirmed.filter(
       (b) => b.membership.type === MembershipType.GROUP
@@ -402,13 +517,17 @@ async addOfflineAttendee(
 
     if (membership.type === MembershipType.PRIVATE) {
       if (groupCount > 0 || privateCount > 0) {
-        throw new Error(
+        throw new OfflineAttendeeError(
+          409,
+          "SESSION_OCCUPIED",
           "This session is already occupied and cannot be booked privately."
         );
       }
     } else if (membership.type === MembershipType.GROUP) {
       if (privateCount > 0) {
-        throw new Error(
+        throw new OfflineAttendeeError(
+          409,
+          "SESSION_PRIVATE",
           "This session is reserved for a private booking."
         );
       }
@@ -419,22 +538,22 @@ async addOfflineAttendee(
       );
 
       if (groupCount >= capacity) {
-        throw new Error("This group session is full.");
+        throw new OfflineAttendeeError(409, "SESSION_FULL", "This group session is full.");
       }
     } else {
-      throw new Error("Unsupported membership type.");
+      throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Unsupported class type.");
     }
 
     const amount = data.amount ?? membership.price;
 
     if (!Number.isSafeInteger(amount) || amount < 0) {
-      throw new Error("Amount must be a non-negative integer.");
+      throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Amount must be a non-negative integer.");
     }
 
     const paymentReference =
       `OFFLINE-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
 
-    return tx.booking.create({
+    const booking = await tx.booking.create({
       data: {
         fullName,
         email,
@@ -442,26 +561,160 @@ async addOfflineAttendee(
         sessionId,
         scheduleId: session.scheduleId,
         classId: session.schedule.className,
+        bookingDate: session.sessionDate,
         membershipId: membership.id,
         amount,
         paymentReference,
         paymentMethod: PaymentMethod.OFFLINE,
-        paymentStatus:
-          paymentStatus === "PAID"
-            ? PaymentStatus.PAID
-            : PaymentStatus.PENDING,
-        bookingStatus:
-          paymentStatus === "PAID"
-            ? BookingStatus.CONFIRMED
-            : BookingStatus.PENDING,
+        paymentStatus: PaymentStatus.PAID,
+        bookingStatus: BookingStatus.CONFIRMED,
         availableDays: [],
         preferredTimes: [],
       },
     });
+
+    return {
+      booking,
+      ratePlan: { id: membership.id, name: membership.name, type: membership.type, price: membership.price },
+    };
   });
 
-  return result;
+  return {
+    ...result.booking,
+    // Additive, for clarity in admin views.
+    attendeeType: "OFFLINE_ATTENDEE" as const,
+    bookingType: result.ratePlan.type,
+    // The plan/package recorded as paid for (booking.membershipId).
+    // Record-keeping only: no membership is created or activated.
+    ratePlan: result.ratePlan,
+  };
 }
+
+  /**
+   * When the class ends (UTC instant). sessionDate holds the Lagos date
+   * at UTC midnight; endTime is Lagos local time (UTC+1). An unreadable
+   * end time counts as the end of that Lagos day.
+   */
+  private getSessionEndAt(sessionDate: Date, endTime: string): Date {
+    try {
+      return this.getSessionStartAt(sessionDate, endTime.trim());
+    } catch {
+      return new Date(
+        Date.UTC(
+          sessionDate.getUTCFullYear(),
+          sessionDate.getUTCMonth(),
+          sessionDate.getUTCDate(),
+          23 - 1,
+          59
+        )
+      );
+    }
+  }
+
+  /**
+   * Add an existing registered member to a session (admin). Not an
+   * offline attendee: the booking is linked to the member's account and
+   * appears in their booking history.
+   *
+   * Uses the member booking core (BookingService.createMemberSessionBooking):
+   * the same session lock, two-hour rule, OPEN/active checks, member lock,
+   * GROUP/PRIVATE capacity, duplicate check and Google Calendar event.
+   *
+   * - USE_CREDIT: the member's eligible membership of `bookingType`, by
+   *   the normal selection rules; exactly one credit used (none for
+   *   unlimited); first-booking start dates as normal. Cancelling
+   *   restores that credit to the same membership.
+   * - PAID_OFFLINE: the amount paid at the studio, OFFLINE/PAID; no
+   *   membership used, assigned or created, no credit moves.
+   *   `ratePlanId` is the class type/rate (a catalogue plan), as for
+   *   offline attendees; the amount defaults to its price.
+   *
+   * No health declaration is created: the admin can't accept one on the
+   * member's behalf. The member's next dashboard declaration update
+   * applies to this booking (it is upcoming and CONFIRMED).
+   */
+  async addMemberToSession(
+    sessionId: string,
+    data: {
+      userId: string;
+      mode: "USE_CREDIT" | "PAID_OFFLINE";
+      bookingType?: "GROUP" | "PRIVATE";
+      ratePlanId?: string;
+      amount?: number;
+    }
+  ) {
+    const user = await prisma.user.findUnique({
+      where: { id: data.userId },
+      select: { id: true, role: true },
+    });
+
+    if (!user || user.role !== UserRole.MEMBER) {
+      throw new OfflineAttendeeError(404, "MEMBER_NOT_FOUND", "Registered member not found.");
+    }
+
+    let bookingType = data.bookingType as MembershipType | undefined;
+    let ratePlan: { id: string; type: MembershipType } | undefined;
+    let amount: number | undefined;
+
+    if (data.mode === "PAID_OFFLINE") {
+      const plan = data.ratePlanId
+        ? await prisma.membership.findUnique({ where: { id: data.ratePlanId } })
+        : null;
+
+      if (!plan || !plan.isActive) {
+        throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Select an active class type/rate.");
+      }
+
+      if (bookingType && bookingType !== plan.type) {
+        throw new OfflineAttendeeError(
+          400,
+          "VALIDATION_ERROR",
+          `The selected rate is for ${plan.type.toLowerCase()} classes, not ${bookingType.toLowerCase()}.`
+        );
+      }
+
+      bookingType = plan.type;
+      ratePlan = { id: plan.id, type: plan.type };
+      amount = data.amount ?? plan.price;
+    }
+
+    if (!bookingType) {
+      throw new OfflineAttendeeError(400, "VALIDATION_ERROR", "Class type must be GROUP or PRIVATE.");
+    }
+
+    const created = await bookingService.createMemberSessionBooking({
+      userId: user.id,
+      sessionId,
+      bookingType,
+      mode: data.mode,
+      ratePlan,
+      amount,
+      referencePrefix: "ADMIN",
+    });
+
+    const booking = await bookingService.addBookingCalendarEvent(created);
+
+    // The funding membership as committed (after the credit was used).
+    const funded = booking.memberMembershipId
+      ? await prisma.memberMembership.findUnique({
+          where: { id: booking.memberMembershipId },
+          select: { creditsTotal: true, creditsUsed: true },
+        })
+      : null;
+    const creditsDeducted = funded && funded.creditsTotal !== null ? 1 : 0;
+
+    return {
+      booking,
+      mode: data.mode,
+      bookingType,
+      creditsDeducted,
+      // That membership's remaining balance (null when unlimited or paid offline).
+      creditsRemaining:
+        funded && funded.creditsTotal !== null
+          ? Math.max(funded.creditsTotal - funded.creditsUsed, 0)
+          : null,
+    };
+  }
 
   /**
    * Cancel an upcoming class session.

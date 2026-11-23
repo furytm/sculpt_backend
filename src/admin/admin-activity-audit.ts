@@ -29,6 +29,9 @@ export const adminAudit = {
     metadataFromResponse: (payload: Json) => ({
       classSessionId: payload?.sessionId ?? null,
       bookingStatus: payload?.bookingStatus ?? null,
+      bookingType: payload?.bookingType ?? null,
+      paymentMethod: payload?.paymentMethod ?? null,
+      amount: Number.isInteger(payload?.amount) ? payload.amount : null,
     }),
   }),
 
@@ -182,6 +185,112 @@ export const adminAudit = {
             creditsTotal,
             creditsUsed,
             creditsRemaining: Math.max(creditsTotal - (creditsUsed ?? 0), 0),
+          },
+        });
+      }
+    },
+  }),
+
+  removeCredits: auditAction({
+    action: "admin.membership.remove_credits",
+    description: "Admin removed credits from a membership",
+    entityType: "MEMBER_MEMBERSHIP",
+    entityParam: "memberMembershipId",
+    onSuccess: ({ payload, actor }) => {
+      const memberMembershipId = typeof payload?.memberMembershipId === "string" ? payload.memberMembershipId : null;
+      const userId = typeof payload?.userId === "string" ? payload.userId : null;
+      const previous = payload?.previous ?? {};
+      const updated = payload?.updated ?? {};
+      const metadata = {
+        memberMembershipId,
+        membershipId: payload?.membershipId ?? null,
+        creditsRemoved: Number.isInteger(payload?.creditsRemoved) ? payload.creditsRemoved : null,
+        previousCreditsTotal: Number.isInteger(previous.creditsTotal) ? previous.creditsTotal : null,
+        previousCreditsRemaining: Number.isInteger(previous.remainingCredits) ? previous.remainingCredits : null,
+        creditsTotal: Number.isInteger(updated.creditsTotal) ? updated.creditsTotal : null,
+        creditsUsed: Number.isInteger(updated.creditsUsed) ? updated.creditsUsed : null,
+        creditsRemaining: Number.isInteger(updated.remainingCredits) ? updated.remainingCredits : null,
+      };
+
+      record({
+        action: "admin.membership.remove_credits",
+        stage: "SUCCEEDED",
+        status: "SUCCESS",
+        actorType: actor.actorType,
+        actorUserId: actor.actorUserId,
+        userId,
+        entityType: "MEMBER_MEMBERSHIP",
+        entityId: memberMembershipId,
+        description: "Admin removed credits from a membership",
+        metadata,
+      });
+
+      record({
+        action: "credit.admin_removal",
+        stage: "SUCCEEDED",
+        status: "SUCCESS",
+        actorType: actor.actorType,
+        actorUserId: actor.actorUserId,
+        userId,
+        entityType: "MEMBER_MEMBERSHIP",
+        entityId: memberMembershipId,
+        description: "Admin removed unused class credits.",
+        metadata,
+      });
+    },
+  }),
+
+  addMemberToSession: auditAction({
+    action: "admin.session.add_member",
+    description: "Admin added a registered member to a class session",
+    entityType: "BOOKING",
+    entityIdFromResponse: (payload: Json) => payload?.booking?.id ?? null,
+    subjectFromResponse: (payload: Json) => payload?.booking?.userId ?? null,
+    onSuccess: ({ payload, actor }) => {
+      const booking = payload?.booking ?? {};
+      const bookingId = typeof booking.id === "string" ? booking.id : null;
+      const userId = typeof booking.userId === "string" ? booking.userId : null;
+
+      record({
+        action: "admin.session.add_member",
+        stage: "SUCCEEDED",
+        status: "SUCCESS",
+        actorType: actor.actorType,
+        actorUserId: actor.actorUserId,
+        userId,
+        entityType: "BOOKING",
+        entityId: bookingId,
+        paymentReference: typeof booking.paymentReference === "string" ? booking.paymentReference : null,
+        description: "Admin added a registered member to a class session",
+        metadata: {
+          bookingId,
+          classSessionId: booking.sessionId ?? null,
+          creditMode: payload?.mode ?? null,
+          bookingType: payload?.bookingType ?? null,
+          paymentMethod: booking.paymentMethod ?? null,
+          amount: Number.isInteger(booking.amount) ? booking.amount : null,
+          memberMembershipId: booking.memberMembershipId ?? null,
+        },
+      });
+
+      // Same credit event the member booking records.
+      if (payload?.mode === "USE_CREDIT" && booking.memberMembershipId) {
+        record({
+          action: "credit.deduction",
+          stage: "SUCCEEDED",
+          status: "SUCCESS",
+          actorType: actor.actorType,
+          actorUserId: actor.actorUserId,
+          userId,
+          entityType: "MEMBER_MEMBERSHIP",
+          entityId: booking.memberMembershipId,
+          description: "Admin booking used a membership credit.",
+          dedupeKey: bookingId ? `credit.deduction:booking:${bookingId}` : null,
+          metadata: {
+            bookingId,
+            memberMembershipId: booking.memberMembershipId,
+            creditsDeducted: payload?.creditsDeducted ?? null,
+            creditsRemaining: Number.isInteger(payload?.creditsRemaining) ? payload.creditsRemaining : null,
           },
         });
       }

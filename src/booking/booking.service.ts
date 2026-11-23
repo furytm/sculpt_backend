@@ -2980,6 +2980,60 @@ if (healthDeclaration?.accepted !== true) {
   );
 }
 
+  const booking = await this.createMemberSessionBooking({
+    userId,
+    sessionId,
+    bookingType,
+    mode: "USE_CREDIT",
+    healthDeclaration,
+    referencePrefix: "SL",
+  });
+
+  return this.addBookingCalendarEvent(booking);
+}
+
+/**
+ * The transactional core of a member's session booking, shared by the
+ * member endpoint (bookMemberSession) and the admin add-member action.
+ * Same session lock, two-hour rule, OPEN/active checks, member lock,
+ * GROUP/PRIVATE capacity, duplicate check and booking fields for both.
+ *
+ * - USE_CREDIT: the normal membership selection, first-booking start,
+ *   and exactly one credit used (none for unlimited); the booking is
+ *   linked to that MemberMembership, so cancelling restores the credit.
+ * - PAID_OFFLINE (admin only): no membership is used, chosen or
+ *   created and no credit moves. The booking is linked to the member's
+ *   account with memberMembershipId null, so cancelling restores
+ *   nothing. `ratePlan` (a catalogue plan) gives the GROUP/PRIVATE type
+ *   capacity counts read, like an offline attendee's.
+ *
+ * A HealthSafetyForm is created only when a declaration is given (the
+ * member endpoint always gives one). Calendar events are added after
+ * commit by addBookingCalendarEvent.
+ */
+async createMemberSessionBooking(params: {
+  userId: string;
+  sessionId: string;
+  bookingType: MembershipType;
+  mode: "USE_CREDIT" | "PAID_OFFLINE";
+  healthDeclaration?: { accepted: boolean; notes?: string };
+  /** PAID_OFFLINE: the class type/rate plan and the amount paid. */
+  ratePlan?: { id: string; type: MembershipType };
+  amount?: number;
+  /** "SL" for member bookings, "ADMIN" for admin-created ones. */
+  referencePrefix: "SL" | "ADMIN";
+}) {
+  const { userId, sessionId, bookingType, mode, healthDeclaration } = params;
+
+  if (mode === "PAID_OFFLINE") {
+    if (!params.ratePlan || params.ratePlan.type !== bookingType) {
+      throw new Error("The class type/rate does not match this booking type.");
+    }
+    if (params.amount === undefined || !Number.isSafeInteger(params.amount) || params.amount < 0) {
+      throw new Error("Amount must be a non-negative whole number.");
+    }
+  }
+
   const booking =
     await prisma.$transaction(
       async (tx) => {
@@ -3071,6 +3125,16 @@ if (healthDeclaration?.accepted !== true) {
           WHERE id = ${userId}
           FOR UPDATE
         `;
+
+        // -----------------------------------------------------
+        // PAID_OFFLINE: no membership is used. Same capacity rules.
+        // -----------------------------------------------------
+
+        // USE_CREDIT: unchanged membership selection, availability
+        // and credit checks, in their original order.
+        const selection = mode === "PAID_OFFLINE"
+          ? (await this.assertSessionAvailable(tx, session.id, bookingType), null)
+          : await (async () => {
 
         // -----------------------------------------------------
         // FIND ACTIVE MEMBERSHIP
@@ -3231,6 +3295,14 @@ if (healthDeclaration?.accepted !== true) {
             )
           : null;
 
+        return { membership, awaitingMembership, firstBookingStartDate, firstBookingExpiryDate };
+          })();
+
+        const membership = selection?.membership ?? null;
+        const awaitingMembership = selection?.awaitingMembership;
+        const firstBookingStartDate = selection?.firstBookingStartDate ?? null;
+        const firstBookingExpiryDate = selection?.firstBookingExpiryDate ?? null;
+
         // -----------------------------------------------------
         // PREVENT DUPLICATE SESSION BOOKING
         // -----------------------------------------------------
@@ -3282,7 +3354,7 @@ if (healthDeclaration?.accepted !== true) {
         // -----------------------------------------------------
 
         const reference =
-          `SL-${Date.now()}-${crypto
+          `${params.referencePrefix}-${Date.now()}-${crypto
             .randomBytes(4)
             .toString("hex")}`;
 
@@ -3317,14 +3389,15 @@ if (healthDeclaration?.accepted !== true) {
                 session.sessionDate,
 
               membershipId:
-                membership.membershipId,
+                membership?.membershipId ?? params.ratePlan!.id,
 
               // Link booking to the active
-              // MemberMembership record.
+              // MemberMembership record (none when
+              // paid offline: no credit was used).
               memberMembershipId:
-                membership.id,
+                membership?.id ?? null,
 
-              amount: 0,
+              amount: membership ? 0 : params.amount!,
 
               paymentReference:
                 reference,
@@ -3353,6 +3426,7 @@ if (healthDeclaration?.accepted !== true) {
           });
 
           
+if (healthDeclaration) {
 await tx.healthSafetyForm.create({
   data: {
     bookingId: createdBooking.id,
@@ -3366,6 +3440,12 @@ await tx.healthSafetyForm.create({
     consent: [],
   },
 });
+}
+
+        // PAID_OFFLINE: no credit moves.
+        if (!membership) {
+          return createdBooking;
+        }
 
         // -----------------------------------------------------
         // CONSUME CREDIT
@@ -3441,6 +3521,23 @@ await tx.healthSafetyForm.create({
       }
     );
 
+  return booking;
+}
+
+/**
+ * Adds the Google Calendar event for a committed member session booking
+ * (unchanged behaviour, moved out of bookMemberSession so the admin
+ * add-member action does the same). Never undoes the booking.
+ */
+async addBookingCalendarEvent(
+  booking: Prisma.BookingGetPayload<{
+    include: {
+      membership: true;
+      memberMembership: true;
+      session: { include: { schedule: true } };
+    };
+  }>
+) {
   // =====================================================
   // GOOGLE CALENDAR
   // =====================================================
