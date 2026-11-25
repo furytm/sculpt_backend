@@ -845,8 +845,11 @@ private async attemptFirstClassBooking(
       sessionId: purchase.firstSessionId,
       reason,
       // Retrying can't help once another class has started the
-      // membership; the class must be booked normally instead.
-      retryAvailable: !reason.includes("already started from another booking"),
+      // membership, or once the membership is no longer active; the
+      // class must be booked normally instead.
+      retryAvailable:
+        !reason.includes("already started from another booking") &&
+        !reason.includes("membership for this purchase is no longer active"),
     };
   }
 }

@@ -44,6 +44,7 @@ export type ActivityAction =
   | "admin.session.add_offline_attendee"
   | "admin.session.add_member"
   | "admin.membership.remove_credits"
+  | "admin.membership.remove_pool_credits"
   // Health & Safety (never the notes).
   | "health_safety.update"
   // Errors no route handled.
@@ -173,4 +174,9 @@ export const ALLOWED_METADATA_KEYS: ReadonlySet<string> = new Set([
   "previousCreditsTotal",
   "previousCreditsRemaining",
   "creditMode",
+  // Pooled credit removal (numbers and identifiers only).
+  "membershipType",
+  "previousPoolRemaining",
+  "poolRemaining",
+  "recordsAffected",
 ]);

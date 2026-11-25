@@ -2468,7 +2468,15 @@ return sessions
                   expiryDate:
                     membershipExpiry,
 
-                  creditsTotal,
+                  // An existing record already holds its allowance (set
+                  // when it was created, and possibly reduced by an admin
+                  // since). Resetting it to the plan's limit here would
+                  // undo that removal, so it is kept unless the record
+                  // was for a different plan.
+                  ...(memberMembership.membershipId ===
+                  currentBooking.membershipId
+                    ? {}
+                    : { creditsTotal }),
                 },
               });
           }
@@ -2748,7 +2756,11 @@ private async confirmPrivateBooking(
             status: MembershipStatus.ACTIVE,
             startDate: membershipStart,
             expiryDate: membershipExpiry,
-            creditsTotal,
+            // Keep the existing record's allowance (it may have been
+            // reduced by an admin); see confirmGroupBooking.
+            ...(booking.memberMembership.membershipId === booking.membershipId
+              ? {}
+              : { creditsTotal }),
           },
         })
       : await tx.memberMembership.create({
@@ -4430,6 +4442,18 @@ if (!memberMembership) {
       if (existingBooking.bookingStatus === BookingStatus.CONFIRMED) {
         return existingBooking;
       }
+    }
+
+    // Only an ACTIVE membership can take its first class. Confirming it
+    // sets the record ACTIVE, so a retry against a record an upgrade has
+    // since replaced (EXPIRED, its credits already carried into the new
+    // membership) or one that was cancelled would bring it back and make
+    // the same credits usable twice. (An already-confirmed first class is
+    // returned unchanged above.)
+    if (memberMembership.status !== MembershipStatus.ACTIVE) {
+      throw new Error(
+        "The membership for this purchase is no longer active (it was replaced, expired or cancelled), so its first class can't be booked. Book the class from the member's current membership instead."
+      );
     }
 
     // The checkout's health declaration covers this first class.

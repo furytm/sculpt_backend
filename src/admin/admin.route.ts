@@ -205,6 +205,24 @@ router.post(
   adminCreditsController.removeCredits
 );
 
+// Remove unused credits from a member's whole GROUP or PRIVATE pool,
+// spread across its membership records.
+router.post(
+  "/members/:memberId/credit-pools/:type/credits/remove",
+  authenticate,
+  requireAdmin,
+  adminAudit.removePoolCredits,
+  adminCreditsController.removePoolCredits
+);
+
+// Read-only: what that removal would do now (no writes, no audit event).
+router.post(
+  "/members/:memberId/credit-pools/:type/credits/preview",
+  authenticate,
+  requireAdmin,
+  adminCreditsController.previewPoolCredits
+);
+
 router.get(
   '/members/:userId/classes',
   authenticate,

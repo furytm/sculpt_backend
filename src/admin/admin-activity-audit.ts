@@ -240,6 +240,78 @@ export const adminAudit = {
     },
   }),
 
+  /**
+   * Pooled removal: one summary event for the member and pool, plus one
+   * credit.admin_removal event per membership row that lost credits (the
+   * metadata store holds flat values only, so each row is its own event).
+   * All share the request's correlation ID.
+   */
+  removePoolCredits: auditAction({
+    action: "admin.membership.remove_pool_credits",
+    description: "Admin removed credits from a member's credit pool",
+    entityType: "USER",
+    entityParam: "memberId",
+    subjectUserParam: "memberId",
+    onSuccess: ({ payload, actor }) => {
+      const userId = typeof payload?.userId === "string" ? payload.userId : null;
+      const memberId = typeof payload?.memberId === "string" ? payload.memberId : null;
+      const membershipType = typeof payload?.membershipType === "string" ? payload.membershipType : null;
+      const int = (value: unknown) => (Number.isInteger(value) ? (value as number) : null);
+      const previousPoolRemaining = int(payload?.previous?.poolRemaining);
+      const poolRemaining = int(payload?.updated?.poolRemaining);
+      const allocations: Json[] = Array.isArray(payload?.allocations) ? payload.allocations : [];
+
+      record({
+        action: "admin.membership.remove_pool_credits",
+        stage: "SUCCEEDED",
+        status: "SUCCESS",
+        actorType: actor.actorType,
+        actorUserId: actor.actorUserId,
+        userId,
+        // An offline member has no account: the pool is its own membership row.
+        entityType: userId ? "USER" : "MEMBER_MEMBERSHIP",
+        entityId: userId ?? memberId,
+        description: "Admin removed credits from a member's credit pool",
+        metadata: {
+          membershipType,
+          creditsRemoved: int(payload?.creditsRemoved),
+          previousPoolRemaining,
+          poolRemaining,
+          recordsAffected: allocations.length,
+        },
+      });
+
+      for (const item of allocations) {
+        const memberMembershipId = typeof item?.memberMembershipId === "string" ? item.memberMembershipId : null;
+        record({
+          action: "credit.admin_removal",
+          stage: "SUCCEEDED",
+          status: "SUCCESS",
+          actorType: actor.actorType,
+          actorUserId: actor.actorUserId,
+          userId,
+          entityType: "MEMBER_MEMBERSHIP",
+          entityId: memberMembershipId,
+          description: "Admin removed unused class credits (from the member's credit pool).",
+          metadata: {
+            source: "credit_pool",
+            membershipType,
+            memberMembershipId,
+            membershipId: item?.membershipId ?? null,
+            creditsRemoved: int(item?.creditsRemoved),
+            previousCreditsTotal: int(item?.previous?.creditsTotal),
+            previousCreditsRemaining: int(item?.previous?.remainingCredits),
+            creditsTotal: int(item?.updated?.creditsTotal),
+            creditsUsed: int(item?.updated?.creditsUsed),
+            creditsRemaining: int(item?.updated?.remainingCredits),
+            previousPoolRemaining,
+            poolRemaining,
+          },
+        });
+      }
+    },
+  }),
+
   addMemberToSession: auditAction({
     action: "admin.session.add_member",
     description: "Admin added a registered member to a class session",
