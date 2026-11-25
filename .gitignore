@@ -1,8 +1,13 @@
-node_modules
-# Keep environment variables out of version control
-agents
-claude
-windsurf
-/src/generated/prisma
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Other files
+agents/
+claude/
+windsurf/
+src/generated/prisma/
 config.bat
-!.env
